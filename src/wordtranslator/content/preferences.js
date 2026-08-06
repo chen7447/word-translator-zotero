@@ -435,7 +435,7 @@
       #wordtranslator-pref-root .wt-test-btn { padding: 6px 12px; color: #2c7be5; border-color: #2c7be5; background: #fff; }
     `)]);
 
-    const title = el("h2", {}, [txt("单词翻译 Word Translator")]);
+    const title = el("h2", {}, [txt("说明")]);
 
     const intro = el("p", { class: "wt-hint", style: "margin: -8px 0 16px;" }, [
       txt("划词后点击「添加单词并翻译」，翻译结果会追加到 PDF 右侧的单词本面板。"),
