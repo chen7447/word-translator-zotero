@@ -678,8 +678,12 @@ _configVersion: 0,
         const rawStr = Zotero.Prefs.get("extensions.zotero.wordtranslator.config", true);
         if (rawStr) { try { raw = JSON.parse(rawStr); } catch (e1) {} }
       }
-      this._data = this._normalize(raw);
-      this._debugLog("_reloadDataFromDisk: apis=" + ((this._data && this._data.apis && this._data.apis.length) || 0));
+      // 仅当读到有效数据时才覆盖内存中的 _data；
+      // 读到空时保留现有 _data（避免写入失败导致内存被冲掉）
+      if (raw && typeof raw === "object") {
+        this._data = this._normalize(raw);
+      }
+      this._debugLog("_reloadDataFromDisk: apis=" + ((this._data && this._data.apis && this._data.apis.length) || 0) + ", rawFromDisk=" + !!raw);
     } catch (e) {
       this._debugLog("_reloadDataFromDisk ERROR: " + (e && (e.stack || e.message || String(e))));
     }
