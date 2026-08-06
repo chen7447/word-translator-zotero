@@ -116,6 +116,16 @@ _configVersion: 0,
       try {
         Zotero.WordTranslator.addonVersion = this._addonVersion;
         Zotero.WordTranslator.buildTime = this._buildTime;
+        try {
+          let pp = null;
+          const prof = Zotero.ProfileDir || Zotero.profileDirectory;
+          if (prof && typeof prof === "object") { try { pp = prof.path; } catch (e) {} if (!pp) try { pp = String(prof); } catch (e) {} }
+          else if (typeof prof === "string") pp = prof;
+          if (pp) {
+            const sep = pp.indexOf("\\") >= 0 ? "\\" : "/";
+            Zotero.WordTranslator.prefsPath = pp.replace(/[\\/]+$/, "") + sep + "prefs.js";
+          }
+        } catch (e) {}
       } catch (e) {}
       await this.loadDataFromDisk();
       this._loadWordsFromDisk();
