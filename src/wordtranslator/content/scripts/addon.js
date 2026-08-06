@@ -21,6 +21,8 @@ var WordTranslator = {
   _initialized: false,
   _addonRoot: "",
   _addonID: "",
+  _addonVersion: "",
+  _buildTime: "",
   _itemWords: new Map(),      // itemID -> [{word, translation, pending}]
   _panelUIDs: new Map(),      // itemID -> { paneUID, refresh }
   _paneKey: null,
@@ -109,6 +111,12 @@ _configVersion: 0,
       this._initialized = true;
       this._addonRoot = (typeof addonRoot !== 'undefined' && addonRoot) ? addonRoot : '';
       this._addonID = (typeof addonID !== 'undefined' && addonID) ? addonID : '';
+      this._addonVersion = (typeof addonVersion !== 'undefined' && addonVersion) ? addonVersion : '';
+      if (!this._buildTime) this._buildTime = new Date().toISOString();
+      try {
+        Zotero.WordTranslator.addonVersion = this._addonVersion;
+        Zotero.WordTranslator.buildTime = this._buildTime;
+      } catch (e) {}
       await this.loadDataFromDisk();
       this._loadWordsFromDisk();
       await this.registerPrefsWindow();

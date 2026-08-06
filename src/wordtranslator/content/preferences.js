@@ -385,6 +385,32 @@
   }
 
   // ----- 构建面板 -----
+  function getPrefsFilePath() {
+    try {
+      const dir = Zotero.ProfileDir || Zotero.profileDirectory;
+      if (!dir) return "";
+      const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+      try { f.initWithFile(dir); } catch (e) { f.initWithPath(dir.path || String(dir)); }
+      f.append("prefs.js");
+      return f.path;
+    } catch (e) { return ""; }
+  }
+
+  function openFolderOfPrefs() {
+    try {
+      const dir = Zotero.ProfileDir || Zotero.profileDirectory;
+      if (!dir) return;
+      const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+      try { f.initWithFile(dir); } catch (e) { f.initWithPath(dir.path || String(dir)); }
+      if (f.exists()) { try { f.launch(); return; } catch (e2) {} }
+      if (Zotero.Utilities && Zotero.Utilities.Internal && typeof Zotero.Utilities.Internal.openInShell === "function") {
+        Zotero.Utilities.Internal.openInShell(f.path);
+      }
+    } catch (e) {
+      debugLog("openFolderOfPrefs ERROR: " + (e && e.message || e));
+    }
+  }
+
   function buildPrefsPane() {
     const root = get("wordtranslator-pref-root");
     if (!root) return false;
@@ -563,12 +589,54 @@
     ]);
 
     // —— 状态 ——
+        // —— 保存目录 ——
+    const prefsPath = getPrefsFilePath();
+    const sectionSaveDir = el("section", { class: "wt-section", id: "wt-save-dir" }, [
+      el("h3", {}, [txt("保存目录")]),
+      el("div", { class: "wt-row" }, [
+        el("label", { class: "wt-label" }, [txt("单词本保存在")]),
+        el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
+          (() => { const inp = el("input", { type: "text", readonly: "readonly", class: "wt-input", id: "wt-prefs-path", style: "flex:1;min-width:0;background:#f5f5f5;color:#666;font-size:12px;" }); inp.value = prefsPath; return inp; })(),
+          (() => { const b = el("button", { type: "button", class: "wt-btn wt-btn-mini", id: "wt-open-prefs-dir" }, [txt("浏览")]); return b; })(),
+        ]),
+      ]),
+      el("div", { class: "wt-row" }, [
+        el("label", { class: "wt-label" }, [txt("接口配置保存在")]),
+        el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
+          (() => { const inp = el("input", { type: "text", readonly: "readonly", class: "wt-input", id: "wt-prefs-path2", style: "flex:1;min-width:0;background:#f5f5f5;color:#666;font-size:12px;" }); inp.value = prefsPath; return inp; })(),
+          (() => { const b = el("button", { type: "button", class: "wt-btn wt-btn-mini", id: "wt-open-prefs-dir2" }, [txt("浏览")]); return b; })(),
+        ]),
+      ]),
+      el("p", { class: "wt-hint" }, [txt("上述两项都存在 Zotero 配置文件 prefs.js 中（本地缓存，不会上传）。点击“浏览”可打开所在文件夹。")]),
+    ]);
+
+    // —— 关于 ——
+    const aboutVer = typeof Zotero.WordTranslator !== "undefined" && Zotero.WordTranslator.addonVersion
+      ? Zotero.WordTranslator.addonVersion
+      : (typeof addonVersion !== "undefined" ? addonVersion : "3.1.1");
+    const aboutBuild = typeof Zotero.WordTranslator !== "undefined" && Zotero.WordTranslator.buildTime
+      ? Zotero.WordTranslator.buildTime
+      : "";
+    const sectionAbout = el("section", { class: "wt-section", id: "wt-about" }, [
+      el("h3", {}, [txt("关于")]),
+      el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
+        el("span", { class: "wt-label" }, [txt("Word Translator 版本 " + aboutVer)]),
+        (aboutBuild ? el("span", { style: "color:#888;font-size:12px;" }, [txt("修改时间 " + aboutBuild)]) : null),
+      ]),
+      el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
+        (() => {
+          const a = el("a", { href: "https://github.com/chen7447/word-translator-zotero", target: "_blank", style: "color:#1e88e5;text-decoration:underline;cursor:pointer;" }, [txt("Github")]);
+          return a;
+        })(),
+      ]),
+    ]);
+
     const footer = el("div", {}, [
       el("hr", { class: "wt-divider" }),
       el("p", { id: "wt-status", class: "wt-status" }, [txt("就绪")]),
     ]);
 
-    root.append(style, title, intro, sectionGeneral, sectionAppearance, sectionPrompt, sectionApis, footer);
+    root.append(style, title, intro, sectionGeneral, sectionAppearance, sectionPrompt, sectionApis, sectionSaveDir, sectionAbout, footer);
     return true;
   }
 
@@ -577,6 +645,8 @@
       const e = get(id);
       if (e) e.addEventListener(evt, fn);
     }
+    bind("wt-open-prefs-dir", "click", () => openFolderOfPrefs());
+    bind("wt-open-prefs-dir2", "click", () => openFolderOfPrefs());
     bind("wt-api-add", "click", () => openEditor(-1));
     bind("wt-api-save", "click", saveApi);
     bind("wt-api-cancel", "click", closeEditor);
