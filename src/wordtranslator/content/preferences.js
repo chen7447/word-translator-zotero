@@ -395,8 +395,11 @@
   // ----- 构建面板 -----
   function getApiConfigFilePath() {
     try {
-      if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.getApiConfigPath === "function") {
-        return Zotero.WordTranslator.getApiConfigPath();
+      if (Zotero && Zotero.WordTranslator) {
+        if (Zotero.WordTranslator.apiConfigPath) return String(Zotero.WordTranslator.apiConfigPath);
+        if (typeof Zotero.WordTranslator.getApiConfigPath === "function") {
+          return Zotero.WordTranslator.getApiConfigPath();
+        }
       }
     } catch (e0) {}
     return "";
@@ -404,8 +407,11 @@
 
   function getWordsDirPath() {
     try {
-      if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.getWordsDirPath === "function") {
-        return Zotero.WordTranslator.getWordsDirPath();
+      if (Zotero && Zotero.WordTranslator) {
+        if (Zotero.WordTranslator.wordsDirPath) return String(Zotero.WordTranslator.wordsDirPath);
+        if (typeof Zotero.WordTranslator.getWordsDirPath === "function") {
+          return Zotero.WordTranslator.getWordsDirPath();
+        }
       }
     } catch (e0) {}
     return "";
