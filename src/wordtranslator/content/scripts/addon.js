@@ -193,6 +193,10 @@ _configVersion: 0,
       } catch (e) {}
         // 暴露其他资源给偏好面板使用
         try { Zotero.WordTranslator.openExternalURL = (url) => this._openExternalURL(url); } catch (e) {}
+        try { Zotero.WordTranslator.getDataDirPath = () => (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getDataDirPath()) || ""; } catch (e) {}
+        try { Zotero.WordTranslator.getApiConfigPath = () => (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getApiConfigPath()) || ""; } catch (e) {}
+        try { Zotero.WordTranslator.getWordsDirPath = () => (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getWordsDirPath()) || ""; } catch (e) {}
+        try { Zotero.WordTranslator.openDataDir = () => this._openInOS((Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getDataDirPath()) || ""); } catch (e) {}
         try { Zotero.WordTranslator.openInOS = (path) => this._openInOS(path); } catch (e) {}
       await this.loadDataFromDisk();
       this._loadWordsFromDisk();
@@ -207,8 +211,24 @@ _configVersion: 0,
 
   async loadDataFromDisk() {
     try {
-      const rawStr = Zotero.Prefs.get("extensions.zotero.wordtranslator.config", true);
-      const raw = rawStr ? JSON.parse(rawStr) : null;
+      // 优先读独立文件；无文件时回退读 prefs.js 旧数据（一次性迁移）
+      let raw = null;
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.loadApiConfig === "function") {
+        try { raw = Zotero.WordTranslatorStorage.loadApiConfig(); } catch (e0) {}
+      }
+      if (!raw) {
+        const rawStr = Zotero.Prefs.get("extensions.zotero.wordtranslator.config", true);
+        if (rawStr) { try { raw = JSON.parse(rawStr); } catch (e1) {} }
+        if (raw) {
+          this._debugLog("loadDataFromDisk: migrating old prefs config to file");
+          try {
+            if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveApiConfig === "function") {
+              Zotero.WordTranslatorStorage.saveApiConfig(raw);
+            }
+          } catch (e2) {}
+          try { Zotero.Prefs.clear && Zotero.Prefs.clear("extensions.zotero.wordtranslator.config", true); } catch (e3) {}
+        }
+      }
       this._data = this._normalize(raw);
       this._debugLog("loadDataFromDisk OK, apis=" + (this._data.apis || []).length);
     } catch (e) {
@@ -601,8 +621,14 @@ _configVersion: 0,
 
   async _reloadDataFromDisk() {
     try {
-      const rawStr = Zotero.Prefs.get("extensions.zotero.wordtranslator.config", true);
-      const raw = rawStr ? JSON.parse(rawStr) : null;
+      let raw = null;
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.loadApiConfig === "function") {
+        try { raw = Zotero.WordTranslatorStorage.loadApiConfig(); } catch (e0) {}
+      }
+      if (!raw) {
+        const rawStr = Zotero.Prefs.get("extensions.zotero.wordtranslator.config", true);
+        if (rawStr) { try { raw = JSON.parse(rawStr); } catch (e1) {} }
+      }
       this._data = this._normalize(raw);
       this._debugLog("_reloadDataFromDisk: apis=" + ((this._data && this._data.apis && this._data.apis.length) || 0));
     } catch (e) {
@@ -895,21 +921,45 @@ _configVersion: 0,
   },
 
   // ---- 单词本紓存与读取（跨插件升级/重启）----
+  // ---- 单词本存储与读取（存于 profile/wordtranslator/words/ 下，按条目分文件）---
   _wordsPrefKey: "extensions.zotero.wordtranslator.words",
 
   _loadWordsFromDisk() {
     try {
-      const raw = Zotero.Prefs.get(this._wordsPrefKey, true);
-      if (!raw) { this._debugLog("_loadWordsFromDisk: no persisted data"); return; }
-      const obj = JSON.parse(raw);
-      this._itemWords = new Map();
-      for (const k of Object.keys(obj || {})) {
-        const id = Number(k);
-        if (!Number.isFinite(id)) continue;
-        const list = Array.isArray(obj[k]) ? obj[k].map(function (w) {
-          return { word: String(w.word || ""), translation: String(w.translation || ""), pending: !!w.pending };
-        }) : [];
-        if (list.length > 0) this._itemWords.set(id, list);
+      let migrated = false;
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.loadWordsMap === "function") {
+        try {
+          const map = Zotero.WordTranslatorStorage.loadWordsMap();
+          this._itemWords = map;
+          if (map.size > 0) migrated = true;
+        } catch (e0) {}
+      }
+      // 旧版 prefs.js 数据迁移（仅当文件目录为空时）
+      if (!migrated) {
+        const raw = Zotero.Prefs.get(this._wordsPrefKey, true);
+        if (raw) {
+          this._debugLog("_loadWordsFromDisk: migrating old prefs words to files");
+          const obj = JSON.parse(raw);
+          this._itemWords = new Map();
+          for (const k of Object.keys(obj || {})) {
+            const id = Number(k);
+            if (!Number.isFinite(id)) continue;
+            const list = Array.isArray(obj[k]) ? obj[k].map(function (w) {
+              return { word: String(w.word || ""), translation: String(w.translation || ""), pending: !!w.pending };
+            }) : [];
+            if (list.length > 0) {
+              this._itemWords.set(id, list);
+              try {
+                if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItem === "function") {
+                  Zotero.WordTranslatorStorage.saveWordsForItem(id, list);
+                }
+              } catch (e1) {}
+            }
+          }
+          try { Zotero.Prefs.clear && Zotero.Prefs.clear(this._wordsPrefKey, true); } catch (e2) {}
+        } else {
+          this._debugLog("_loadWordsFromDisk: no persisted data");
+        }
       }
       this._debugLog("_loadWordsFromDisk: loaded " + this._itemWords.size + " item(s)");
     } catch (e) {
@@ -919,6 +969,13 @@ _configVersion: 0,
 
   _persistWords() {
     try {
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItemDebounced === "function") {
+        for (const [itemID, list] of this._itemWords) {
+          Zotero.WordTranslatorStorage.saveWordsForItemDebounced(itemID, list, 300);
+        }
+        return;
+      }
+      // 兜底：仍写 prefs
       const obj = {};
       for (const [itemID, list] of this._itemWords) {
         obj[String(itemID)] = list;
@@ -930,6 +987,18 @@ _configVersion: 0,
   },
 
   _clearAllWordsStore() {
+    try {
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.flushAll === "function") {
+        Zotero.WordTranslatorStorage.flushAll();
+      }
+      for (const itemID of Array.from(this._itemWords.keys())) {
+        try {
+          if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItem === "function") {
+            Zotero.WordTranslatorStorage.saveWordsForItem(itemID, []);
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
     try { Zotero.Prefs.clear && Zotero.Prefs.clear(this._wordsPrefKey, true); } catch (e) {}
     this._itemWords = new Map();
   },
@@ -937,7 +1006,13 @@ _configVersion: 0,
 
   _saveData() {
     try {
-      Zotero.Prefs.set("extensions.zotero.wordtranslator.config", JSON.stringify(this._data), true);
+      let ok = false;
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveApiConfig === "function") {
+        ok = Zotero.WordTranslatorStorage.saveApiConfig(this._data);
+      }
+      if (!ok) {
+        Zotero.Prefs.set("extensions.zotero.wordtranslator.config", JSON.stringify(this._data), true);
+      }
       const main = Zotero.getMainWindow();
       if (main && main.document) {
         try {
