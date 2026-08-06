@@ -89,7 +89,7 @@ function shutdown({ id, version, resourceURI, rootURI }, reason) {
   }
   if (typeof Zotero !== "undefined" && Zotero.WordTranslator) {
     try {
-      Zotero.WordTranslator.shutdown();
+      Zotero.WordTranslator.shutdown(reason);
     } catch (e) {
       logError(e);
     }

@@ -80,8 +80,12 @@ _configVersion: 0,
 
 
 
-  shutdown() {
+  shutdown(reason) {
     try {
+      // 升级或禁用时保存一次，避免丢数据
+      if (reason === ADDON_UPGRADE || reason === ADDON_DISABLE || reason === APP_SHUTDOWN) {
+        try { this._persistWords(); } catch (e2) {}
+      }
       for (const [, handler] of this._readerTabHandlers || []) {
         try { Zotero.Reader.unregisterEventListener("renderTextSelectionPopup", handler); } catch (e) {}
       }
@@ -106,6 +110,7 @@ _configVersion: 0,
       this._addonRoot = (typeof addonRoot !== 'undefined' && addonRoot) ? addonRoot : '';
       this._addonID = (typeof addonID !== 'undefined' && addonID) ? addonID : '';
       await this.loadDataFromDisk();
+      this._loadWordsFromDisk();
       await this.registerPrefsWindow();
       this.registerReaderEvents();
       this.registerItemPaneSection();
@@ -313,6 +318,7 @@ _configVersion: 0,
     const card = { word, translation: "翻译中…", pending: true };
     list.push(card);
     this._itemWords.set(Number(paneID), list);
+    this._persistWords();
     this._debugLog("_addWordForReader added: paneID=" + paneID + ", count=" + list.length);
 
     this._refreshItemPane(paneID);
@@ -397,6 +403,7 @@ _configVersion: 0,
     if (!list) return;
     list.splice(index, 1);
     this._itemWords.set(id, list);
+    this._persistWords();
     this._refreshItemPane(id);
   },
 
@@ -555,6 +562,7 @@ _configVersion: 0,
   _clearAllWordsForItem(itemID) {
     const id = Number(itemID);
     this._itemWords.set(id, []);
+    this._persistWords();
     this._refreshItemPane(id);
   },
 
@@ -800,6 +808,47 @@ _configVersion: 0,
     const i = (this._data && this._data.activeApiIndex) || 0;
     return apis[i] || apis[0] || null;
   },
+
+  // ---- 单词本紓存与读取（跨插件升级/重启）----
+  _wordsPrefKey: "extensions.zotero.wordtranslator.words",
+
+  _loadWordsFromDisk() {
+    try {
+      const raw = Zotero.Prefs.get(this._wordsPrefKey, true);
+      if (!raw) { this._debugLog("_loadWordsFromDisk: no persisted data"); return; }
+      const obj = JSON.parse(raw);
+      this._itemWords = new Map();
+      for (const k of Object.keys(obj || {})) {
+        const id = Number(k);
+        if (!Number.isFinite(id)) continue;
+        const list = Array.isArray(obj[k]) ? obj[k].map(function (w) {
+          return { word: String(w.word || ""), translation: String(w.translation || ""), pending: !!w.pending };
+        }) : [];
+        if (list.length > 0) this._itemWords.set(id, list);
+      }
+      this._debugLog("_loadWordsFromDisk: loaded " + this._itemWords.size + " item(s)");
+    } catch (e) {
+      this._debugLog("_loadWordsFromDisk ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _persistWords() {
+    try {
+      const obj = {};
+      for (const [itemID, list] of this._itemWords) {
+        obj[String(itemID)] = list;
+      }
+      Zotero.Prefs.set(this._wordsPrefKey, JSON.stringify(obj), true);
+    } catch (e) {
+      this._debugLog("_persistWords ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _clearAllWordsStore() {
+    try { Zotero.Prefs.clear && Zotero.Prefs.clear(this._wordsPrefKey, true); } catch (e) {}
+    this._itemWords = new Map();
+  },
+
 
   _saveData() {
     try {
