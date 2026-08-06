@@ -15,10 +15,31 @@ var WordTranslatorStorage = {
   // ---------- 路径 ----------
   getProfileDir() {
     try {
+      // Zotero 7+ 官方推荐：Zotero.Profile.dir 是 profile 路径字符串
+      if (Zotero && Zotero.Profile && Zotero.Profile.dir) {
+        return String(Zotero.Profile.dir);
+      }
+    } catch (e) {}
+    try {
+      // Zotero 6 兼容：getProfileDirectory() 返回 nsIFile
+      if (Zotero && typeof Zotero.getProfileDirectory === "function") {
+        const d = Zotero.getProfileDirectory();
+        if (d) return d;
+      }
+    } catch (e) {}
+    try {
+      // 更早版本兼容
       if (Zotero && Zotero.ProfileDir) return Zotero.ProfileDir;
     } catch (e) {}
     try {
       if (Zotero && Zotero.profileDirectory) return Zotero.profileDirectory;
+    } catch (e) {}
+    try {
+      // 兜底：Mozilla dirsvc
+      if (typeof Services !== "undefined" && Services.dirsvc && typeof Components !== "undefined") {
+        const d = Services.dirsvc.get("ProfD", Components.interfaces.nsIFile);
+        if (d) return d;
+      }
     } catch (e) {}
     return null;
   },
@@ -26,6 +47,7 @@ var WordTranslatorStorage = {
   getProfileDirPath() {
     const dir = this.getProfileDir();
     if (!dir) return "";
+    if (typeof dir === "string") return dir;
     try {
       if (dir.path) return dir.path;
     } catch (e) {}
@@ -37,7 +59,11 @@ var WordTranslatorStorage = {
     const profile = this.getProfileDir();
     if (!profile) throw new Error("no profile dir");
     const root = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-    try { root.initWithFile(profile); } catch (e) { root.initWithPath(profile.path || String(profile)); }
+    if (typeof profile === "string") {
+      root.initWithPath(profile);
+    } else {
+      try { root.initWithFile(profile); } catch (e) { root.initWithPath(profile.path || String(profile)); }
+    }
     root.append("wordtranslator");
     if (!root.exists() || !root.isDirectory()) {
       root.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
