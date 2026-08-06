@@ -69,6 +69,9 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
     ctx.Services = Services;
     ctx.Components = Components;
 
+    // 加载独立文件存储层（必须先于 addon.js，addon.init 会用到）
+    Services.scriptloader.loadSubScript(rootURI + "content/scripts/storage.js", ctx);
+
     Services.scriptloader.loadSubScript(rootURI + "content/scripts/addon.js", ctx);
 
     if (Zotero.WordTranslator) {
