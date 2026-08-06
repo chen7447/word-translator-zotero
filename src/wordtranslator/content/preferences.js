@@ -386,81 +386,35 @@
 
   // ----- 构建面板 -----
   function getPrefsFilePath() {
-    let dir = null;
-    try { dir = Zotero.ProfileDir || Zotero.profileDirectory; } catch (e0) {}
-    let p = null;
-    if (dir && typeof dir === "object") {
-      try { p = dir.path; } catch (e1) {}
-      if (!p) try { p = String(dir); } catch (e2) {}
-    } else if (typeof dir === "string" && dir) {
-      p = dir;
-    }
-    if (!p) {
-      try { if (Zotero && Zotero.WordTranslator && Zotero.WordTranslator.prefsPath) p = Zotero.WordTranslator.prefsPath; } catch (e3) {}
-    }
-    if (!p) return "";
-    const sep = p.indexOf("\\") >= 0 ? "\\" : "/";
-    return p.replace(/[\\/]+$/, "") + sep + "prefs.js";
-  }
-
-  function openFolderOfPrefs() {
     try {
-      const dir = Zotero.ProfileDir || Zotero.profileDirectory;
-      let path = null;
-      if (dir && typeof dir === "object") { try { path = dir.path; } catch (e) {} if (!path) try { path = String(dir); } catch (e) {} }
-      else if (typeof dir === "string") path = dir;
-      if (!path) return;
-      // 1) Components 可用时：nsIFile.launch()
-      try {
-        if (typeof Components !== "undefined") {
-          const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-          try { f.initWithPath(path); } catch (e1) {}
-          if (f && f.exists()) { try { f.launch(); return; } catch (e2) {} }
-        }
-      } catch (e) {}
-      // 2) 退而以 Zotero 提供的 shell 打开
-      try {
-        if (Zotero.Utilities && Zotero.Utilities.Internal && typeof Zotero.Utilities.Internal.openInShell === "function") {
-          Zotero.Utilities.Internal.openInShell(path);
-          return;
-        }
-      } catch (e) {}
-      // 3) 最后退耀：复制路径到剪贴板提示
-      try { if (Zotero.Utilities && Zotero.Utilities.Internal && Zotero.Utilities.Internal.copyTextToClipboard) Zotero.Utilities.Internal.copyTextToClipboard(path); } catch (e) {}
-      setStatus("已复制路径到剪贴板：" + path);
-    } catch (e) {
-      debugLog("openFolderOfPrefs ERROR: " + (e && e.message || e));
-    }
-  }
-
-    function getPrefsFilePath() {
-    let dir = null;
-    try { dir = Zotero.ProfileDir || Zotero.profileDirectory; } catch (e0) {}
-    let p = null;
-    if (dir && typeof dir === "object") {
-      try { p = dir.path; } catch (e1) {}
-      if (!p) try { p = String(dir); } catch (e2) {}
-    } else if (typeof dir === "string" && dir) {
-      p = dir;
-    }
-    if (!p) {
-      try { if (Zotero && Zotero.WordTranslator && Zotero.WordTranslator.prefsPath) p = Zotero.WordTranslator.prefsPath; } catch (e3) {}
-    }
-    if (!p) return "";
-    const sep = p.indexOf("\\") >= 0 ? "\\" : "/";
-    return p.replace(/[\\/]+$/, "") + sep + "prefs.js";
-  }
-
-  function openFolderOfPrefs() {
-    try {
-      const dir = Zotero.ProfileDir || Zotero.profileDirectory;
-      if (!dir) return;
-      const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-      try { f.initWithFile(dir); } catch (e) { f.initWithPath(dir.path || String(dir)); }
-      if (f.exists()) { try { f.launch(); return; } catch (e2) {} }
-      if (Zotero.Utilities && Zotero.Utilities.Internal && typeof Zotero.Utilities.Internal.openInShell === "function") {
-        Zotero.Utilities.Internal.openInShell(f.path);
+      if (Zotero && Zotero.WordTranslator && Zotero.WordTranslator.prefsPath) {
+        return Zotero.WordTranslator.prefsPath;
       }
+    } catch (e0) {}
+    let dir = null;
+    try { dir = Zotero.ProfileDir || Zotero.profileDirectory; } catch (e1) {}
+    let p = null;
+    if (dir && typeof dir === "object") {
+      try { p = dir.path; } catch (e2) {}
+      if (!p) try { p = String(dir); } catch (e3) {}
+    } else if (typeof dir === "string" && dir) {
+      p = dir;
+    }
+    if (!p) return "";
+    const sep = p.indexOf("\\") >= 0 ? "\\" : "/";
+    return p.replace(/[\\/]+$/, "") + sep + "prefs.js";
+  }
+
+  function openFolderOfPrefs() {
+    try {
+      const prefsPath = getPrefsFilePath();
+      if (!prefsPath) { setStatus("未找到 Zotero 配置文件路径"); return; }
+      const dir = prefsPath.replace(/[\\/]+[^\\/]+$/, "");
+      if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.openInOS === "function") {
+        Zotero.WordTranslator.openInOS(dir);
+        return;
+      }
+      setStatus("无法打开文件夹: " + dir);
     } catch (e) {
       debugLog("openFolderOfPrefs ERROR: " + (e && e.message || e));
     }
@@ -668,7 +622,7 @@
     // —— 关于 ——
     const aboutVer = typeof Zotero.WordTranslator !== "undefined" && Zotero.WordTranslator.addonVersion
       ? Zotero.WordTranslator.addonVersion
-      : (typeof addonVersion !== "undefined" ? addonVersion : "3.1.1");
+      : (typeof addonVersion !== "undefined" ? addonVersion : "3.1.4");
     const aboutBuild = typeof Zotero.WordTranslator !== "undefined" && Zotero.WordTranslator.buildTime
       ? Zotero.WordTranslator.buildTime
       : "";
@@ -709,26 +663,10 @@
           ev.preventDefault();
           ev.stopPropagation();
           const url = gh.getAttribute("href") || gh.href;
-          if (Zotero.Utilities && Zotero.Utilities.Internal && typeof Zotero.Utilities.Internal.openInShell === "function") {
-            // 跳转外部链接：用 hiddenWindow loadURL 推送到默认浏览器
-            try {
-              const io = Components.classes["@mozilla.org/network/io-service;1"].getService(Components.interfaces.nsIIOService);
-              const uri = io.newURI(url, null, null);
-              if (Zotero.Utilities && typeof Zotero.Utilities.Internal.loadURL === "function") {
-                Zotero.Utilities.Internal.loadURL(uri);
-                return;
-              }
-            } catch (e) {}
-            try {
-              const ext = Components.classes["@mozilla.org/uriloader/external-protocol-service;1"].getService(Components.interfaces.nsIExternalProtocolService);
-              const io = Components.classes["@mozilla.org/network/io-service;1"].getService(Components.interfaces.nsIIOService);
-              const uri = io.newURI(url, null, null);
-              ext.loadURI(uri, null);
-              return;
-            } catch (e) {}
-            // 最后退耀：复制 URL
-            if (Zotero.Utilities.Internal.copyTextToClipboard) Zotero.Utilities.Internal.copyTextToClipboard(url);
-            setStatus("已复制链接到剪贴板：" + url);
+          if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.openExternalURL === "function") {
+            Zotero.WordTranslator.openExternalURL(url);
+          } else {
+            setStatus("无法打开外部浏览器");
           }
         } catch (e) { debugLog("github click ERROR: " + (e && e.message || e)); }
       }, true);
