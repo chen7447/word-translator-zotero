@@ -188,21 +188,40 @@ _configVersion: 0,
           if (pp) {
             const sep = pp.indexOf("\\") >= 0 ? "\\" : "/";
             Zotero.WordTranslator.prefsPath = pp.replace(/[\\/]+$/, "") + sep + "prefs.js";
+            // 预计算数据目录路径（纯字符串，偏好沙箱可直接读取，避免沙箱内 Components 不可用）
+            const baseDir = pp.replace(/[\\/]+$/, "") + sep + "wordtranslator";
+            Zotero.WordTranslator.dataDirPath = baseDir;
+            Zotero.WordTranslator.apiConfigPath = baseDir + sep + "api-config.json";
+            Zotero.WordTranslator.wordsDirPath = baseDir + sep + "words";
           }
         } catch (e) {}
       } catch (e) {}
         // 暴露其他资源给偏好面板使用
         try { Zotero.WordTranslator.openExternalURL = (url) => this._openExternalURL(url); } catch (e) {}
-        try { Zotero.WordTranslator.getDataDirPath = () => (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getDataDirPath()) || ""; } catch (e) {}
-        try { Zotero.WordTranslator.getApiConfigPath = () => (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getApiConfigPath()) || ""; } catch (e) {}
-        try { Zotero.WordTranslator.getWordsDirPath = () => (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getWordsDirPath()) || ""; } catch (e) {}
-        try { Zotero.WordTranslator.openDataDir = () => this._openInOS((Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getDataDirPath()) || ""); } catch (e) {}
+        try { Zotero.WordTranslator.getDataDirPath = () => Zotero.WordTranslator.dataDirPath || (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getDataDirPath()) || ""; } catch (e) {}
+        try { Zotero.WordTranslator.getApiConfigPath = () => Zotero.WordTranslator.apiConfigPath || (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getApiConfigPath()) || ""; } catch (e) {}
+        try { Zotero.WordTranslator.getWordsDirPath = () => Zotero.WordTranslator.wordsDirPath || (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getWordsDirPath()) || ""; } catch (e) {}
+        try { Zotero.WordTranslator.openDataDir = () => this._openInOS(Zotero.WordTranslator.dataDirPath || (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getDataDirPath()) || ""); } catch (e) {}
         try { Zotero.WordTranslator.openInOS = (path) => this._openInOS(path); } catch (e) {}
         // 偏好沙箱读取助手：返回 JSON 字符串（沙箱内无 Components，不能直接调 storage.js）
         try { Zotero.WordTranslator.readApiConfigString = () => { try { const S = Zotero.WordTranslatorStorage; if (S && typeof S.loadApiConfig === "function") { const obj = S.loadApiConfig(); return obj ? JSON.stringify(obj) : ""; } } catch (e0) {} return ""; }; } catch (e) {}
         try { Zotero.WordTranslator.writeApiConfigString = (jsonStr) => { try { const S = Zotero.WordTranslatorStorage; if (S && typeof S.saveApiConfig === "function") { const obj = jsonStr ? JSON.parse(jsonStr) : null; return !!S.saveApiConfig(obj); } } catch (e0) {} return false; }; } catch (e) {}
       await this.loadDataFromDisk();
       this._loadWordsFromDisk();
+      // 主动验证存储层：确保数据目录存在并写盘（输出日志便于定位写文件失败）
+      try {
+        if (Zotero.WordTranslatorStorage) {
+          const dir = Zotero.WordTranslatorStorage.getDataDirPath();
+          const apiPath = Zotero.WordTranslatorStorage.getApiConfigPath();
+          this._debugLog("storage verify: dataDir=" + dir + ", apiPath=" + apiPath);
+          if (this._data && this._data.apis && this._data.apis.length > 0) {
+            const ok = Zotero.WordTranslatorStorage.saveApiConfig(this._data);
+            this._debugLog("storage verify: saveApiConfig=" + ok + ", apis=" + this._data.apis.length);
+          }
+        } else {
+          this._debugLog("storage verify: WordTranslatorStorage NOT FOUND");
+        }
+      } catch (e) { this._debugLog("storage verify ERROR: " + (e && (e.stack || e.message || String(e)))); }
       await this.registerPrefsWindow();
       this.registerReaderEvents();
       this.registerItemPaneSection();
