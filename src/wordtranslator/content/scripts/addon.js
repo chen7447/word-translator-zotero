@@ -29,11 +29,38 @@ var WordTranslator = {
   _prefWindowLoaded: false,
   _paneRefresh: null,
 
+  _getProfileDir() {
+    try {
+      if (Zotero && Zotero.Profile && Zotero.Profile.dir) {
+        return String(Zotero.Profile.dir);
+      }
+    } catch (e) {}
+    try {
+      if (Zotero && typeof Zotero.getProfileDirectory === "function") {
+        const d = Zotero.getProfileDirectory();
+        if (d) return d;
+      }
+    } catch (e) {}
+    try {
+      if (Zotero && Zotero.ProfileDir) return Zotero.ProfileDir;
+    } catch (e) {}
+    try {
+      if (Zotero && Zotero.profileDirectory) return Zotero.profileDirectory;
+    } catch (e) {}
+    try {
+      if (typeof Services !== "undefined" && Services.dirsvc && typeof Components !== "undefined") {
+        const d = Services.dirsvc.get("ProfD", Components.interfaces.nsIFile);
+        if (d) return d;
+      }
+    } catch (e) {}
+    return null;
+  },
+
   _debugWriteToFile(msg) {
     try {
       if (typeof Components === "undefined") return;
       var profileDir = null;
-      try { profileDir = (Zotero && Zotero.ProfileDir) ? Zotero.ProfileDir : (Zotero && Zotero.profileDirectory ? Zotero.profileDirectory : null); } catch (e0) {}
+      try { profileDir = this._getProfileDir(); } catch (e0) {}
       if (!profileDir) return;
       var line = "[" + new Date().toISOString() + "] [WordTranslator] " + String(msg) + "\n";
       var wfile = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
@@ -132,8 +159,8 @@ _configVersion: 0,
       this._configVersion++;
       this._debugLog("_onConfigChange: version=" + this._configVersion);
       // ???? Item Pane ???? custom sections??????? section?
-      if (Zotero && Zotero.Notifier && typeof Zotero.Notifier.queue === "function") {
-        Zotero.Notifier.queue("refresh", "itempane", []);
+      if (Zotero && Zotero.Notifier && typeof Zotero.Notifier.trigger === "function") {
+        Zotero.Notifier.trigger("refresh", "itempane", []).catch(function (e) { try { Zotero.debug("[WordTranslator] notifier trigger ERROR: " + (e && (e.message || e))); } catch (e2) {} });
       }
       // ?????????? refresh ??
       if (this._paneRefresh && typeof this._paneRefresh === "function") {
@@ -182,7 +209,7 @@ _configVersion: 0,
         Zotero.WordTranslator.buildTime = this._buildTime;
         try {
           let pp = null;
-          const prof = Zotero.ProfileDir || Zotero.profileDirectory;
+          const prof = this._getProfileDir();
           if (prof && typeof prof === "object") { try { pp = prof.path; } catch (e) {} if (!pp) try { pp = String(prof); } catch (e) {} }
           else if (typeof prof === "string") pp = prof;
           if (pp) {
