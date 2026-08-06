@@ -459,28 +459,31 @@ _configVersion: 0,
   applyFontSizeToPane() {
     try {
       const fs = Number(this._data && this._data.fontSize) || 13;
-      // 优先：直接操作当前已渲染 pane 的 body（最稳，跨 chrome browser 也能用）
+      // 优先：只对当前 pane 里的 .wt-card-text 设置字号
       const cur = this._currentPane;
       if (cur && cur.body) {
-        cur.body.style.fontSize = fs + "px";
-        this._debugLog("applyFontSizeToPane: " + fs + "px applied via _currentPane.body");
+        const nodes = cur.body.querySelectorAll(".wt-card-text");
+        for (let i = 0; i < nodes.length; i++) nodes[i].style.fontSize = fs + "px";
+        this._debugLog("applyFontSizeToPane: " + fs + "px applied to " + nodes.length + " .wt-card-text via _currentPane");
         return;
       }
       // 回退：扫描主 doc（可能在同一 doc 中）
       const win = Zotero.getMainWindow();
       const doc = win && win.document;
       if (!doc) return;
-      const nodes = doc.querySelectorAll(".wordtranslator-pane-body");
+      const nodes = doc.querySelectorAll(".wt-card-text");
       let n = 0;
       for (let i = 0; i < nodes.length; i++) { nodes[i].style.fontSize = fs + "px"; n++; }
       // 再回退：遍历所有已知 paneUID，对每个用 dataset.wtPaneUid 找 body
       if (n === 0 && this._panelUIDs && this._panelUIDs.size > 0) {
         for (const [itemID, entry] of this._panelUIDs) {
           if (!entry || !entry.paneUID) continue;
-          // 可能在主 doc 或子 doc
           let body = doc.querySelector && doc.querySelector("[data-wt-pane-uid=\"" + entry.paneUID + "\"]");
-          if (body) { body.style.fontSize = fs + "px"; n++; continue; }
-          // 子 doc（browser element）
+          if (body) {
+            const inner = body.querySelectorAll(".wt-card-text");
+            for (let i = 0; i < inner.length; i++) { inner[i].style.fontSize = fs + "px"; n++; }
+            continue;
+          }
           try {
             const browsers = doc.getElementsByTagName && doc.getElementsByTagName("browser");
             if (browsers) {
@@ -488,7 +491,11 @@ _configVersion: 0,
                 const sd = browsers[i2].contentDocument;
                 if (!sd) continue;
                 const b = sd.querySelector("[data-wt-pane-uid=\"" + entry.paneUID + "\"]");
-                if (b) { b.style.fontSize = fs + "px"; n++; break; }
+                if (b) {
+                  const inner = b.querySelectorAll(".wt-card-text");
+                  for (let i = 0; i < inner.length; i++) { inner[i].style.fontSize = fs + "px"; n++; }
+                  break;
+                }
               }
             }
           } catch (e2) { /* ignore */ }
@@ -707,10 +714,7 @@ _configVersion: 0,
       style.textContent = this._getPaneCSS();
       body.append(style);
     }
-    // 应用字体大小
-    const fsVal = Number(this._data && this._data.fontSize) || 13;
-    body.style.fontSize = fsVal + "px";
-    // 保存当前 pane 的 doc / body 引用，以便点击放大/缩小按钮后直接操作该 body
+    // 保存当前 pane 的 doc / body 引用，以便点击放大/缩小按钮后只对卡片文本动态调整
     this._currentPane = { doc: doc, body: body };
   },
 
@@ -720,12 +724,16 @@ _configVersion: 0,
     const txt = (s) => this._createTxt(doc, s);
 
     const card = el("div", { style: "display:flex;align-items:flex-start;gap:6px;padding:6px 8px;border:1px solid rgba(0,0,0,0.1);border-radius:8px;background:rgba(255,255,255,0.6);" });
-    const wordEl = el("span", { style: "font-weight:600;color:#1e88e5;word-break:break-word;" }, [txt(w.word)]);
-    const arrowEl = el("span", { style: "color:#666;flex-shrink:0;" }, [txt(" -- ")]);
-    const transEl = el("span", { style: "flex:1;min-width:0;word-break:break-word;", ...(w.pending ? { style: "flex:1;min-width:0;word-break:break-word;color:#999;" } : {}) }, [txt(w.translation)]);
+    const fsVal = Number(this._data && this._data.fontSize) || 13;
+    // 文本部分包在一个容器里，只对它应用字号，并且可被选中
+    const textWrap = el("div", { class: "wt-card-text", style: "flex:1;min-width:0;font-size:" + fsVal + "px;line-height:1.5;user-select:text;-webkit-user-select:text;cursor:text;" });
+    const wordEl = el("span", { class: "wt-card-word", style: "font-weight:600;color:#1e88e5;word-break:break-word;" }, [txt(w.word)]);
+    const arrowEl = el("span", { class: "wt-card-arrow", style: "color:#666;flex-shrink:0;margin:0 2px;" }, [txt(" -- ")]);
+    const transEl = el("span", { class: "wt-card-trans", style: "word-break:break-word;" + (w.pending ? "color:#999;" : "") }, [txt(w.translation)]);
+    textWrap.append(wordEl, arrowEl, transEl);
     const delBtn = el("button", { title: "删除", style: "flex-shrink:0;border:none;background:transparent;color:#999;cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;" }, [txt("✕")]);
     delBtn.addEventListener("click", () => this._deleteWordForItem(itemID, idx));
-    card.append(wordEl, arrowEl, transEl, delBtn);
+    card.append(textWrap, delBtn);
     return card;
   },
 
@@ -752,7 +760,7 @@ _configVersion: 0,
   },
 
   _getPaneCSS() {
-    return ".wordtranslator-pane-body button:hover { background: rgba(0,0,0,0.06); } .wordtranslator-pane-body select { color: #222; background: #fff; }";
+    return ".wordtranslator-pane-body button:hover { background: rgba(0,0,0,0.06); } .wordtranslator-pane-body select { color: #222; background: #fff; } .wt-card-text { user-select: text; -webkit-user-select: text; cursor: text; }";
   },
 
   // ---------- 偏好面板 onload ----------
