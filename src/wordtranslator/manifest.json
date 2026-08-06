@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "Word Translator for Zotero",
+  "version": "2.7.9",
+  "description": "专业英文单词划词翻译，生成 [单词--译文] 单词卡片，支持多 API 配置与自定义提示词。",
+  "author": "chen7447",
+  "homepage_url": "https://github.com/chen7447/word-translator-zotero",
+  "icons": {
+    "48": "content/icons/favicon.png",
+    "96": "content/icons/favicon.png"
+  },
+  "applications": {
+    "zotero": {
+      "id": "wordtranslator@example.com",
+      "update_url": "https://raw.githubusercontent.com/chen7447/word-translator-zotero/main/update.json",
+      "strict_min_version": "7.9.9",
+      "strict_max_version": "9999.*"
+    }
+  }
+}
