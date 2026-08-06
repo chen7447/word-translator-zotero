@@ -1,0 +1,12 @@
+{
+  "addons": {
+    "wordtranslator@example.com": {
+      "updates": [
+        {
+          "version": "2.5.0",
+          "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v2.5.0/wordtranslator-2.5.0.xpi"
+        }
+      ]
+    }
+  }
+}
