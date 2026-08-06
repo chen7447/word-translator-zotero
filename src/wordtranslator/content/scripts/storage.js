@@ -75,6 +75,23 @@ var WordTranslatorStorage = {
     }
     this._root = root;
     this._wordsDir = words;
+    // 启动时清理上一次写入失败留下的 .tmp 残留，避免后续读盘失败
+    try {
+      const cleanTmp = (dir) => {
+        if (!dir || !dir.exists()) return;
+        const entries = dir.directoryEntries;
+        while (entries.hasMoreElements()) {
+          const f = entries.getNext().QueryInterface(Components.interfaces.nsIFile);
+          if (!f.isFile()) continue;
+          const name = f.leafName || "";
+          if (name.endsWith(".tmp")) {
+            try { f.remove(false); } catch (e) {}
+          }
+        }
+      };
+      cleanTmp(root);
+      cleanTmp(words);
+    } catch (e) {}
     return words;
   },
 
@@ -105,25 +122,29 @@ var WordTranslatorStorage = {
   },
 
   // ---------- 原子写 ----------
-  _writeFileAtomically(file, text) {
-    const tmp = file.clone();
-    tmp.leafName = file.leafName + ".tmp";
-    const out = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
-    out.init(tmp, 0x02 | 0x08 | 0x10, 0o666, 0);
-    const conv = Components.classes["@mozilla.org/intl/scriptableunicodeconverter;1"].createInstance(Components.interfaces.nsIScriptableUnicodeConverter);
-    conv.charset = "UTF-8";
-    const stream = conv.convertToInputStream(text);
-    const available = stream.available();
-    const bytes = stream.readBytes(available);
-    const bstream = Components.classes["@mozilla.org/binaryoutputstream;1"].createInstance(Components.interfaces.nsIBinaryOutputStream);
-    bstream.setOutputStream(out);
-    bstream.writeBytes(bytes, available);
-    bstream.close();
-    out.close();
-    if (file.exists()) {
-      try { file.remove(false); } catch (e) {}
+    _writeFileAtomically(file, text) {
+    // 优先 Zotero.File.putContents（官方实现，使用 UTF-8 ConverterOutputStream，0x20 = TRUNCATE）。
+    if (typeof Zotero !== "undefined" && Zotero.File && typeof Zotero.File.putContents === "function") {
+      try { Zotero.File.putContents(file, text); return; } catch (e) {}
     }
-    tmp.moveTo(null, file.leafName);
+    // 回退：直接 XPCOM 实现（与 Zotero.File.putContents 行为一致）。
+    try {
+      if (file.exists()) { try { file.remove(false); } catch (e) {} }
+      const fos = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
+      fos.init(file, 0x02 | 0x08 | 0x20, 0o664, 0); // WRONLY | CREATE | TRUNCATE
+      const os = Components.classes["@mozilla.org/intl/converter-output-stream;1"].createInstance(Components.interfaces.nsIConverterOutputStream);
+      os.init(fos, "UTF-8", 4096, "?".charCodeAt(0));
+      os.writeString(text);
+      os.close();
+      fos.close();
+    } catch (e2) {
+      try {
+        const tmp2 = file.clone();
+        tmp2.leafName = file.leafName + ".tmp";
+        if (tmp2.exists()) tmp2.remove(false);
+      } catch (e3) {}
+      throw e2;
+    }
   },
 
   _readFile(file) {
