@@ -127,6 +127,272 @@
     try { notifyConfigChanged(); } catch (e) { debugLog("notify ERROR: " + (e && e.message || e)); }
   }
 
+  // ----- 渲染 API 列表 -----
+  function renderApis() {
+    const tbody = get("wt-apis-tbody");
+    if (!tbody) return;
+    tbody.replaceChildren();
+    if (!data.apis.length) {
+      const tr = el("tr", {}, [el("td", { colspan: "5", style: "color:#888;font-size:12px;padding:8px;" }, [txt("还没有配置 API，点击下方“+ 添加服务商”开始配置。")])]);
+      tbody.append(tr);
+      return;
+    }
+    data.apis.forEach((api, i) => {
+      const tr = el("tr", { class: i === editingIndex ? "selected" : "" });
+      const tdDefault = el("td");
+      const radio = el("input", { type: "radio", name: "pref-default-api" });
+      radio.checked = i === data.activeApiIndex;
+      radio.addEventListener("change", () => {
+        data.activeApiIndex = i;
+        save(true);
+        renderApis();
+      });
+      tdDefault.append(radio);
+      const tdName = el("td", {}, [txt(api.name || "(未命名)")]);
+      const tdProvider = el("td", {}, [txt(providerLabel(api))]);
+      const tdModel = el("td", {}, [txt(api.model || "")]);
+      const tdOp = el("td");
+      const editBtn = el("button", { type: "button", class: "pref-mini-btn" }, [txt("编辑")]);
+      editBtn.addEventListener("click", () => openEditor(i));
+      const delBtn = el("button", { type: "button", class: "pref-mini-btn pref-danger" }, [txt("删除")]);
+      delBtn.addEventListener("click", () => {
+        if (!confirm("确认删除 API “" + (api.name || "(未命名)") + "”？")) return;
+        data.apis.splice(i, 1);
+        if (data.activeApiIndex >= data.apis.length) data.activeApiIndex = Math.max(0, data.apis.length - 1);
+        if (data.activeApiIndex === i) data.activeApiIndex = Math.min(i, data.apis.length - 1);
+        if (editingIndex === i) closeEditor();
+        save(true);
+        renderApis();
+      });
+      tdOp.append(editBtn, txt(" "), delBtn);
+      tr.append(tdDefault, tdName, tdProvider, tdModel, tdOp);
+      tr.addEventListener("dblclick", () => openEditor(i));
+      tbody.append(tr);
+    });
+  }
+
+  function providerLabel(api) {
+    if (api.provider === "deepseek") return "DeepSeek";
+    if (api.provider === "openai") return "OpenAI";
+    return "自定义";
+  }
+
+  // ----- 编辑面板 -----
+  function openEditor(index) {
+    editingIndex = index;
+    const editor = get("wt-api-editor");
+    if (!editor) return;
+    editor.hidden = false;
+    const api = index >= 0 ? data.apis[index] : {
+      provider: "openai",
+      name: "",
+      baseUrl: "",
+      apiKey: "",
+      model: "",
+    };
+    get("wt-api-name").value = api.name || "";
+    get("wt-api-provider").value = api.provider || "openai";
+    get("wt-api-baseurl").value = api.baseUrl || "";
+    get("wt-api-key").value = api.apiKey || "";
+    get("wt-api-model").value = api.model || "";
+    updateProviderPreset();
+    get("wt-api-editor-title").textContent = (index >= 0 ? "编辑" : "添加") + "服务商";
+    renderApis();
+  }
+
+  function closeEditor() {
+    editingIndex = -1;
+    const editor = get("wt-api-editor");
+    if (editor) editor.hidden = true;
+    renderApis();
+  }
+
+  function updateProviderPreset() {
+    const prov = get("wt-api-provider").value;
+    const preset = get("wt-api-baseurl");
+    preset.readOnly = false;
+    preset.style.background = "";
+    if (prov === "openai") {
+      if (!preset.value) preset.value = "https://api.openai.com/v1";
+      preset.placeholder = "https://api.openai.com/v1";
+    } else if (prov === "deepseek") {
+      if (!preset.value) preset.value = "https://api.deepseek.com";
+      preset.placeholder = "https://api.deepseek.com";
+    } else {
+      preset.placeholder = "例如 https://api.example.com/v1";
+    }
+  }
+
+  function saveApi() {
+    const name = (get("wt-api-name").value || "").trim();
+    const provider = get("wt-api-provider").value;
+    const baseUrl = (get("wt-api-baseurl").value || "").trim().replace(/\/+$/, "");
+    const apiKey = (get("wt-api-key").value || "").trim();
+    const model = (get("wt-api-model").value || "").trim();
+    if (!name) { setStatus("请填写名称"); return; }
+    if (!apiKey) { setStatus("请填写 API Key"); return; }
+    if (!model) { setStatus("请选择或填写模型"); return; }
+    const api = { name, provider, baseUrl, apiKey, model };
+    if (editingIndex >= 0) {
+      data.apis[editingIndex] = api;
+    } else {
+      data.apis.push(api);
+    }
+    if (data.apis.length === 1) data.activeApiIndex = 0;
+    closeEditor();
+    save(true);
+  }
+
+  /**
+   * ?????????????????????? window.prompt??
+   * @param {string[]} ids ?? ID ??
+   * @returns {Promise<string|null>} ??????? ID????? null
+   */
+  function showModelPicker(ids) {
+    return new Promise((resolve) => {
+      const overlay = document.createElementNS(HTML_NS, "div");
+      overlay.setAttribute("class", "wt-modal-overlay");
+      overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;z-index:9999;";
+
+      const dlg = document.createElementNS(HTML_NS, "div");
+      dlg.style.cssText = "background:#fff;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.25);width:480px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column;padding:16px;";
+
+      const title = document.createElementNS(HTML_NS, "div");
+      title.style.cssText = "font-weight:600;font-size:14px;margin-bottom:8px;color:#222;";
+      title.textContent = "Found " + ids.length + " models. Click to select. Use the search box to filter.";
+      dlg.appendChild(title);
+
+      const search = document.createElementNS(HTML_NS, "input");
+      search.type = "text";
+      search.placeholder = "Search model id...";
+      search.style.cssText = "width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid #ccc;border-radius:6px;margin-bottom:8px;font-size:13px;";
+      dlg.appendChild(search);
+
+      const listBox = document.createElementNS(HTML_NS, "div");
+      listBox.style.cssText = "flex:1;min-height:240px;max-height:50vh;overflow-y:auto;border:1px solid #e0e0e0;border-radius:6px;background:#fafafa;";
+      dlg.appendChild(listBox);
+
+      function renderList(filter) {
+        listBox.replaceChildren();
+        const f = (filter || "").trim().toLowerCase();
+        const matched = f ? ids.filter((x) => String(x).toLowerCase().includes(f)) : ids;
+        if (matched.length === 0) {
+          const empty = document.createElementNS(HTML_NS, "div");
+          empty.style.cssText = "padding:20px;color:#999;text-align:center;font-size:13px;";
+          empty.textContent = "No matches";
+          listBox.appendChild(empty);
+          return;
+        }
+        matched.forEach((mid) => {
+          const row = document.createElementNS(HTML_NS, "div");
+          row.style.cssText = "padding:6px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0;word-break:break-all;";
+          row.textContent = mid;
+          row.addEventListener("mouseenter", () => { row.style.background = "#e3f2fd"; });
+          row.addEventListener("mouseleave", () => { row.style.background = ""; });
+          row.addEventListener("click", () => { cleanup(mid); });
+          listBox.appendChild(row);
+        });
+        const note = document.createElementNS(HTML_NS, "div");
+        note.style.cssText = "padding:6px 12px;color:#888;font-size:12px;text-align:right;";
+        note.textContent = "Showing " + matched.length + " / " + ids.length;
+        listBox.appendChild(note);
+      }
+      renderList("");
+
+      let picked = null;
+      function cleanup(val) {
+        picked = val;
+        try { overlay.remove(); } catch (e) {}
+        resolve(picked);
+      }
+      search.addEventListener("input", () => renderList(search.value));
+      search.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          const f = search.value.trim();
+          if (f && ids.includes(f)) cleanup(f);
+          else {
+            const rows = listBox.querySelectorAll("div");
+            for (const r of rows) {
+              const t = r.textContent;
+              if (t && ids.includes(t) && r.style.cursor === "pointer") { cleanup(t); return; }
+            }
+          }
+        } else if (ev.key === "Escape") {
+          cleanup(null);
+        }
+      });
+
+      const btnBar = document.createElementNS(HTML_NS, "div");
+      btnBar.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:10px;";
+      const cancel = document.createElementNS(HTML_NS, "button");
+      cancel.textContent = "Cancel";
+      cancel.style.cssText = "padding:5px 16px;border:1px solid #ccc;background:#f5f5f5;border-radius:6px;cursor:pointer;";
+      cancel.addEventListener("click", () => cleanup(null));
+      btnBar.appendChild(cancel);
+      dlg.appendChild(btnBar);
+
+      overlay.appendChild(dlg);
+      document.getElementById("wordtranslator-pref-root").appendChild(overlay);
+      overlay.addEventListener("click", (ev) => { if (ev.target === overlay) cleanup(null); });
+      setTimeout(() => { try { search.focus(); } catch (e) {} }, 50);
+    });
+  }
+
+  async function fetchModels() {
+    const prov = get("wt-api-provider").value;
+    const baseUrl = (get("wt-api-baseurl").value || "").trim().replace(/\/+$/, "");
+    const apiKey = (get("wt-api-key").value || "").trim();
+    if (!baseUrl) { setStatus("Please fill in API URL first"); return; }
+    if (!apiKey) { setStatus("Please fill in API Key first"); return; }
+    let url = baseUrl + "/models";
+    setStatus("Fetching model list...");
+    try {
+      const resp = await Zotero.HTTP.request("GET", url, {
+        headers: { Authorization: "Bearer " + apiKey },
+        responseType: "json",
+      });
+      if (resp.status !== 200) {
+        setStatus("Fetch failed (" + resp.status + ")");
+        return;
+      }
+      const list = (resp.response && (resp.response.data || resp.response)) || [];
+      const ids = Array.isArray(list) ? list.map((x) => x && (x.id || x)).filter(Boolean) : [];
+      if (ids.length === 0) {
+        setStatus("No models found in response");
+        return;
+      }
+      const picked = await showModelPicker(ids);
+      if (picked && picked.trim()) {
+        get("wt-api-model").value = picked.trim();
+        setStatus("Filled model: " + picked.trim());
+      } else {
+        setStatus("Cancelled");
+      }
+    } catch (e) {
+      setStatus("Fetch failed: " + (e && e.message || e));
+    }
+  }
+
+  
+
+  async function testApi() {
+    setStatus("正在测试…");
+    const name = (get("wt-api-name").value || "").trim();
+    const provider = get("wt-api-provider").value;
+    const baseUrl = (get("wt-api-baseurl").value || "").trim().replace(/\/+$/, "");
+    const apiKey = (get("wt-api-key").value || "").trim();
+    const model = (get("wt-api-model").value || "").trim();
+    if (!apiKey || !model) { setStatus("请先填写 API Key 与模型"); return; }
+    const api = { provider, baseUrl, apiKey, model, name };
+    try {
+      const ok = await Zotero.WordTranslator.testApi(api);
+      setStatus(ok ? "测试成功 ✓" : "测试失败（请检查 Key / URL / 模型）");
+    } catch (e) {
+      setStatus("测试失败：" + (e && e.message || e));
+    }
+  }
+
+  // ----- 构建面板 -----
   function getApiConfigFilePath() {
     try {
       if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.getApiConfigPath === "function") {
@@ -357,14 +623,12 @@
       el("p", { class: "wt-hint" }, [txt("以上数据存在 Zotero 配置目录下的 wordtranslator 文件夹中（本地缓存，不会上传）。点击“浏览”可打开该文件夹。")]),
     ]);
 
-    // ——— 关于 ———
     const aboutVer = typeof Zotero.WordTranslator !== "undefined" && Zotero.WordTranslator.addonVersion
       ? Zotero.WordTranslator.addonVersion
-      : (typeof addonVersion !== "undefined" ? addonVersion : "4.0.0");
+      : (typeof addonVersion !== "undefined" ? addonVersion : "4.0.1");
     const aboutBuild = typeof Zotero.WordTranslator !== "undefined" && Zotero.WordTranslator.buildTime
       ? Zotero.WordTranslator.buildTime
       : "";
-
     const sectionAbout = el("section", { class: "wt-section", id: "wt-about" }, [
       el("h3", {}, [txt("关于")]),
       el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
