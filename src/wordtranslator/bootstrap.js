@@ -9,7 +9,20 @@ function logError(err) {
       var msg = (err && (err.stack || err.message || String(err))) || String(err);
       var line = "[" + new Date().toISOString() + "] [bootstrap] " + msg + "\n";
       var profileDir = null;
-      try { profileDir = (Zotero && Zotero.ProfileDir) ? Zotero.ProfileDir : (Zotero && Zotero.profileDirectory ? Zotero.profileDirectory : null); } catch (e0) {}
+      try {
+        profileDir = null;
+        if (Zotero && Zotero.Profile && Zotero.Profile.dir) {
+          profileDir = String(Zotero.Profile.dir);
+        }
+        if (!profileDir && Zotero && typeof Zotero.getProfileDirectory === "function") {
+          profileDir = Zotero.getProfileDirectory();
+        }
+        if (!profileDir && Zotero && Zotero.ProfileDir) profileDir = Zotero.ProfileDir;
+        if (!profileDir && Zotero && Zotero.profileDirectory) profileDir = Zotero.profileDirectory;
+        if (!profileDir && typeof Services !== "undefined" && Services.dirsvc && typeof Components !== "undefined") {
+          profileDir = Services.dirsvc.get("ProfD", Components.interfaces.nsIFile);
+        }
+      } catch (e0) {}
       if (!profileDir) { try { Zotero.debug("[bootstrap] " + msg); } catch (e1) {} return; }
       var file = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
       try { file.initWithFile(profileDir); } catch (e1) { file.initWithPath(profileDir.path || String(profileDir)); }
