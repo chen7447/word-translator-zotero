@@ -61,6 +61,70 @@ var WordTranslator = {
     this._debugWriteToFile(msg);
   },
 
+  _openExternalURL(url) {
+    try {
+      if (!url) return false;
+      this._debugLog("_openExternalURL: " + url);
+      // 优先：Zotero.Utilities.Internal.openInShell。Zotero 9 常定义为外部资源打开
+      try {
+        if (Zotero.Utilities && Zotero.Utilities.Internal && typeof Zotero.Utilities.Internal.openInShell === "function") {
+          Zotero.Utilities.Internal.openInShell(url);
+          return true;
+        }
+      } catch (e) { this._debugLog("_openExternalURL openInShell ERROR: " + (e && e.message || e)); }
+      // 回退：nsIExternalProtocolService
+      try {
+        const io = Services.io;
+        const eps = Components.classes["@mozilla.org/uriloader/external-protocol-service;1"].getService(Components.interfaces.nsIExternalProtocolService);
+        eps.loadURI(io.newURI(url, null, null), null);
+        return true;
+      } catch (e) { this._debugLog("_openExternalURL ext-protocol ERROR: " + (e && e.message || e)); }
+      // 最后退耀：复制到剪贴板
+      try {
+        const clipboardHelper = Components.classes["@mozilla.org/widget/clipboardhelper;1"].getService(Components.interfaces.nsIClipboardHelper);
+        clipboardHelper.copyString(url);
+        return false;
+      } catch (e) {}
+      return false;
+    } catch (e) {
+      this._debugLog("_openExternalURL ERROR: " + (e && (e.stack || e.message || String(e))));
+      return false;
+    }
+  },
+
+  _openInOS(path) {
+    try {
+      if (!path) return false;
+      this._debugLog("_openInOS: " + path);
+      // 1) nsIFile.launch()
+      try {
+        const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+        f.initWithPath(path);
+        if (f.exists()) {
+          f.launch();
+          return true;
+        }
+      } catch (e) { this._debugLog("_openInOS nsIFile ERROR: " + (e && e.message || e)); }
+      // 2) Zotero.Utilities.Internal.openInShell
+      try {
+        if (Zotero.Utilities && Zotero.Utilities.Internal && typeof Zotero.Utilities.Internal.openInShell === "function") {
+          Zotero.Utilities.Internal.openInShell(path);
+          return true;
+        }
+      } catch (e) { this._debugLog("_openInOS openInShell ERROR: " + (e && e.message || e)); }
+      // 3) 复制到剪贴板
+      try {
+        const clipboardHelper = Components.classes["@mozilla.org/widget/clipboardhelper;1"].getService(Components.interfaces.nsIClipboardHelper);
+        clipboardHelper.copyString(path);
+        return false;
+      } catch (e) {}
+      return false;
+    } catch (e) {
+      this._debugLog("_openInOS ERROR: " + (e && (e.stack || e.message || String(e))));
+      return false;
+    }
+  },
+
 _configVersion: 0,
 
   _onConfigChange() {
@@ -127,6 +191,9 @@ _configVersion: 0,
           }
         } catch (e) {}
       } catch (e) {}
+        // 暴露其他资源给偏好面板使用
+        try { Zotero.WordTranslator.openExternalURL = (url) => this._openExternalURL(url); } catch (e) {}
+        try { Zotero.WordTranslator.openInOS = (path) => this._openInOS(path); } catch (e) {}
       await this.loadDataFromDisk();
       this._loadWordsFromDisk();
       await this.registerPrefsWindow();
