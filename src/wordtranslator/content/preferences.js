@@ -107,8 +107,8 @@
     try {
       let ok = false;
       try {
-        if (Zotero && Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveApiConfig === "function") {
-          ok = Zotero.WordTranslatorStorage.saveApiConfig(data);
+        if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.writeApiConfigString === "function") {
+          ok = Zotero.WordTranslator.writeApiConfigString(JSON.stringify(data));
         }
       } catch (e0) {}
       if (!ok) {
@@ -749,8 +749,9 @@
     try {
       let res = null;
       try {
-        if (Zotero && Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.loadApiConfig === "function") {
-          res = Zotero.WordTranslatorStorage.loadApiConfig();
+        if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.readApiConfigString === "function") {
+          const s = Zotero.WordTranslator.readApiConfigString();
+          if (s) { try { res = JSON.parse(s); } catch (e0) {} }
         }
       } catch (e0) {}
       if (!res) {
