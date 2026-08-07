@@ -30,6 +30,8 @@ var WordTranslator = {
   _paneRefresh: null,
   _hotkeyPressed: null,
   _hotkeyJustReleased: null,
+  _hotkeyModifiers: null,
+  _hotkeyGlobalBound: false,
 
   _getProfileDir() {
     try {
@@ -371,6 +373,66 @@ _configVersion: 0,
         }
       }
     } catch (e) {}
+    // 全局监听：主窗口挂 keydown/keyup/mousedown，焦点在 debug 界面等处也能记录快捷键状态
+    try {
+      this._bindGlobalHotkeyListener();
+    } catch (e) {
+      this._debugLog("global hotkey ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _bindGlobalHotkeyListener() {
+    try {
+      if (this._hotkeyGlobalBound) return;
+      const win = Zotero.getMainWindow();
+      const target = win && (win.document || win);
+      if (!target) return;
+      this._hotkeyGlobalBound = true;
+      const self = this;
+      target.addEventListener("keydown", function (ev) {
+        try {
+          if (!self._data || !self._data.hotkeyEnabled) return;
+          if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
+          self._hotkeyPressed = { mod: self._data.hotkeyModifier || "ctrl", time: Date.now() };
+          self._hotkeyJustReleased = null;
+          self._debugLog("hotkey pressed (global): mod=" + JSON.stringify(self._hotkeyPressed));
+        } catch (e) {}
+      }, true);
+      target.addEventListener("keyup", function (ev) {
+        try {
+          if (!self._data || !self._data.hotkeyEnabled) return;
+          const pressed = self._hotkeyPressed;
+          if (!pressed || !pressed.mod) return;
+          if (Date.now() - (pressed.time || 0) > 30000) return;
+          const k = (ev.key || "").toLowerCase();
+          const isMod = (k === "control" || k === "shift" || k === "alt" || k === "meta");
+          if (!isMod) {
+            const still = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() });
+            if (!still) return;
+          }
+          self._hotkeyPressed = null;
+          const pending = self._hotkeyPending;
+          if (!pending || !pending.text) {
+            self._debugLog("hotkey released (global) without selection: mod=" + pressed.mod);
+            return;
+          }
+          self._hotkeyJustReleased = { mod: pressed.mod, time: Date.now() };
+          self._debugLog("hotkey released (global): mod=" + pressed.mod + ", word=" + JSON.stringify(pending.text));
+          self._triggerHotkeyTranslate(pending);
+        } catch (e) {}
+      }, true);
+      target.addEventListener("mousedown", function (ev) {
+        try {
+          if (!self._data || !self._data.hotkeyEnabled) return;
+          if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
+          self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() };
+          self._debugLog("hotkey mousedown (global): mods=" + JSON.stringify(self._hotkeyModifiers));
+        } catch (e) {}
+      }, true);
+      this._debugLog("global hotkey listener bound");
+    } catch (e) {
+      this._debugLog("_bindGlobalHotkeyListener ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
   },
 
   _bindHotkeyForReaderInstance(reader) {
@@ -432,6 +494,15 @@ _configVersion: 0,
       if (!this._hotkeyBoundWindows) this._hotkeyBoundWindows = new Set();
       this._hotkeyBoundWindows.add(win);
       const self = this;
+      // 记录修饰键状态（mousedown 先于 mouseup/popup 发生，对应“按住快捷键 + 双击/划词”路径）
+      win.addEventListener("mousedown", function (ev) {
+        try {
+          if (!self._data || !self._data.hotkeyEnabled) return;
+          if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
+          self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() };
+          self._debugLog("hotkey mousedown: mods=" + JSON.stringify(self._hotkeyModifiers));
+        } catch (e) {}
+      }, true);
       // 按下组合键：记录“快捷键按下”状态。
       // 修饰键本体（Control/Alt）按下也记录，保证“按住修饰键 + 纯鼠标划词”流程可用。
       win.addEventListener("keydown", function (ev) {
@@ -525,15 +596,24 @@ _configVersion: 0,
       });
       return;
     }
-    // 快捷键-划词翻译：组合键已按下时，等 keyup 触发；已松开但刚刚触发过（兜底）则不重复
+    // 快捷键-划词翻译：三条路径
     if (this._data.hotkeyEnabled) {
-      if (this._hotkeyPressed && this._hotkeyPressed.mod) {
-        this._debugLog("hotkey held while selecting; waiting for keyup");
+      // 路径 A：mousedown 时修饰键已匹配（按住快捷键 + 双击/划词），popup 出现立即触发
+      if (this._hotkeyMatches(this._hotkeyModifiers)) {
+        this._debugLog("hotkey translate (mousedown): mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(text));
+        this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
         return;
       }
+      // 路径 B：快捷键正按住且已产生选中文本（按下→划词→popup），立即触发。
+      // 不依赖后续 keyup（焦点可能在 debug 界面等浮层，keyup 不一定收到）。
+      if (this._hotkeyPressed && this._hotkeyPressed.mod) {
+        this._debugLog("hotkey held; translating selected text immediately");
+        this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
+        return;
+      }
+      // 路径 C：keyup 已触发过（兜底防止 keyup 未收到）
       const released = this._hotkeyJustReleased;
       if (released && released.mod && Date.now() - (released.time || 0) < 2000) {
-        // keyup 路径应已触发；此处兜底防止极少数 keyup 未收到的情况
         this._hotkeyJustReleased = null;
         this._debugLog("hotkey translate (release fallback): mod=" + released.mod + ", word=" + JSON.stringify(text));
         this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
@@ -640,6 +720,9 @@ _configVersion: 0,
       this._lastHotkeyWord = pending.text;
       this._lastHotkeyTime = now;
       this._hotkeyPending = null;
+      this._hotkeyModifiers = null;
+      this._hotkeyPressed = null;
+      this._hotkeyJustReleased = null;
       this._debugLog("hotkey translate: mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(pending.text));
       this._addWordForReader(pending.reader, pending.text).catch((err) => {
         this._debugLog("hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
