@@ -175,10 +175,8 @@ _configVersion: 0,
 
   shutdown(reason) {
     try {
-      // 升级或禁用时保存一次，避免丢数据
-      if (reason === ADDON_UPGRADE || reason === ADDON_DISABLE || reason === APP_SHUTDOWN) {
-        try { this._persistWords(); } catch (e2) {}
-      }
+      // 无论原因，关闭/升级/禁用时都立即写盘，避免防抖定时器未触发导致数据丢失
+      try { this._flushAndPersistWords(); } catch (e2) {}
       for (const [, handler] of this._readerTabHandlers || []) {
         try { Zotero.Reader.unregisterEventListener("renderTextSelectionPopup", handler); } catch (e) {}
       }
@@ -249,6 +247,27 @@ _configVersion: 0,
           this._debugLog("storage verify: WordTranslatorStorage NOT FOUND");
         }
       } catch (e) { this._debugLog("storage verify ERROR: " + (e && (e.stack || e.message || String(e)))); }
+      // 启动路径检测：明确打印数据文件是否存在，便于排查
+      try {
+        if (Zotero.WordTranslatorStorage) {
+          const dirP = Zotero.WordTranslatorStorage.getDataDirPath();
+          const apiP = Zotero.WordTranslatorStorage.getApiConfigPath();
+          const wordsDir = Zotero.WordTranslatorStorage.getWordsDirPath();
+          let apiExists = false;
+          let wordsExists = false;
+          try {
+            const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+            f.initWithPath(apiP);
+            apiExists = f.exists();
+          } catch (e4) {}
+          try {
+            const f2 = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+            f2.initWithPath(wordsDir);
+            wordsExists = f2.exists() && f2.isDirectory();
+          } catch (e5) {}
+          this._debugLog("storage paths: dataDir=" + dirP + " | apiConfig=" + apiP + " (exists=" + apiExists + ") | wordsDir=" + wordsDir + " (exists=" + wordsExists + ")");
+        }
+      } catch (e6) {}
       await this.registerPrefsWindow();
       this.registerReaderEvents();
       this.registerItemPaneSection();
@@ -493,6 +512,7 @@ _configVersion: 0,
       this._debugLog("translate ERROR: " + (e && (e.stack || e.message || String(e))));
     } finally {
       card.pending = false;
+      this._persistWords();
       this._refreshItemPane(paneID);
       this._debugLog("_addWordForReader finished: paneID=" + paneID);
     }
@@ -1036,6 +1056,28 @@ _configVersion: 0,
       Zotero.Prefs.set(this._wordsPrefKey, JSON.stringify(obj), true);
     } catch (e) {
       this._debugLog("_persistWords ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 立即 flush 防抖定时器并将当前内存中的全部单词本数据写盘
+  _flushAndPersistWords() {
+    try {
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.flushAll === "function") {
+        Zotero.WordTranslatorStorage.flushAll();
+      }
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItem === "function") {
+        for (const [itemID, list] of this._itemWords) {
+          try { Zotero.WordTranslatorStorage.saveWordsForItem(itemID, list); } catch (e1) {}
+        }
+        return;
+      }
+      const obj = {};
+      for (const [itemID, list] of this._itemWords) {
+        obj[String(itemID)] = list;
+      }
+      Zotero.Prefs.set(this._wordsPrefKey, JSON.stringify(obj), true);
+    } catch (e) {
+      this._debugLog("_flushAndPersistWords ERROR: " + (e && (e.stack || e.message || String(e))));
     }
   },
 
