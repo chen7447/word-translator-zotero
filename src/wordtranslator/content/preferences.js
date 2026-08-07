@@ -546,11 +546,8 @@
         (() => {
           const sel = el("select", { class: "wt-select", id: "wt-hotkey-mod" });
           sel.append(el("option", { value: "ctrl" }, [txt("Ctrl")]));
-          sel.append(el("option", { value: "shift" }, [txt("Shift")]));
           sel.append(el("option", { value: "alt" }, [txt("Alt")]));
-          sel.append(el("option", { value: "ctrl+shift" }, [txt("Ctrl + Shift")]));
           sel.append(el("option", { value: "ctrl+alt" }, [txt("Ctrl + Alt")]));
-          sel.append(el("option", { value: "alt+shift" }, [txt("Alt + Shift")]));
           return sel;
         })(),
         el("p", { class: "wt-hint", style: "width:100%;" }, [txt("按下组合键 + 划选文本，即自动翻译并加入单词本。组合键仅可选一种。")]),
@@ -842,7 +839,11 @@
     if (enabled) enabled.checked = !!data.enabled;
     if (autoTranslate) autoTranslate.checked = !!data.autoTranslate;
     if (hotkeyEnabled) hotkeyEnabled.checked = !!data.hotkeyEnabled;
-    if (hotkeyMod) hotkeyMod.value = data.hotkeyModifier || "ctrl";
+    if (hotkeyMod) {
+      let hv = data.hotkeyModifier || "ctrl";
+      if (hv === "shift" || hv === "ctrl+shift" || hv === "alt+shift") hv = "ctrl";
+      hotkeyMod.value = hv;
+    }
     if (promptSystem) promptSystem.value = data.promptSystem || DEFAULT_PROMPT_SYSTEM;
     if (promptUser) promptUser.value = data.promptUser || DEFAULT_PROMPT_USER;
     if (promptGlobal) promptGlobal.value = data.promptGlobal || DEFAULT_PROMPT_GLOBAL;
