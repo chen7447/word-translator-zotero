@@ -55,6 +55,14 @@
 
   let data = null;
 
+  function applyHotkeyUI() {
+    try {
+      const en = get("wt-hotkey-enabled");
+      const wrap = get("wt-hotkey-mod-wrap");
+      if (wrap) wrap.style.display = en && en.checked ? "" : "none";
+    } catch (e) {}
+  }
+
   function applyPromptModeUI() {
     try {
       const mode = data.promptMode || "split";
@@ -97,6 +105,8 @@
     contextMenuLabel: "添加单词并翻译",
     enabled: true,
     autoTranslate: false,
+    hotkeyEnabled: false,
+    hotkeyModifier: "ctrl",
     promptMode: "split",
     promptSystem: DEFAULT_PROMPT_SYSTEM,
     promptUser: DEFAULT_PROMPT_USER,
@@ -532,6 +542,24 @@
         (() => { const c = el("input", { type: "checkbox", id: "wt-auto-translate" }); return c; })(),
         el("label", { for: "wt-auto-translate" }, [txt("选中文本后自动翻译并加入单词本")]),
       ]),
+      el("div", { class: "wt-row-inline", style: "margin-top:6px;" }, [
+        (() => { const c = el("input", { type: "checkbox", id: "wt-hotkey-enabled" }); return c; })(),
+        el("label", { for: "wt-hotkey-enabled" }, [txt("快捷键-划词翻译")]),
+      ]),
+      el("div", { class: "wt-row", id: "wt-hotkey-mod-wrap", style: "margin:4px 0 0 22px;" }, [
+        el("label", { class: "wt-label", for: "wt-hotkey-mod" }, [txt("快捷键组合")]),
+        (() => {
+          const sel = el("select", { class: "wt-select", id: "wt-hotkey-mod" });
+          sel.append(el("option", { value: "ctrl" }, [txt("Ctrl")]));
+          sel.append(el("option", { value: "shift" }, [txt("Shift")]));
+          sel.append(el("option", { value: "alt" }, [txt("Alt")]));
+          sel.append(el("option", { value: "ctrl+shift" }, [txt("Ctrl + Shift")]));
+          sel.append(el("option", { value: "ctrl+alt" }, [txt("Ctrl + Alt")]));
+          sel.append(el("option", { value: "alt+shift" }, [txt("Alt + Shift")]));
+          return sel;
+        })(),
+        el("p", { class: "wt-hint", style: "width:100%;" }, [txt("按下组合键 + 划选文本，即自动翻译并加入单词本。组合键仅可选一种。")]),
+      ]),
     ]);
 
     // —— 外观 ——
@@ -763,6 +791,10 @@
     if (en) en.addEventListener("change", () => { data.enabled = en.checked; save(false); });
     const at = get("wt-auto-translate");
     if (at) at.addEventListener("change", () => { data.autoTranslate = at.checked; save(false); });
+    const hkEn = get("wt-hotkey-enabled");
+    if (hkEn) hkEn.addEventListener("change", () => { data.hotkeyEnabled = hkEn.checked; save(false); applyHotkeyUI(); });
+    const hkMod = get("wt-hotkey-mod");
+    if (hkMod) hkMod.addEventListener("change", () => { data.hotkeyModifier = hkMod.value; save(false); });
 
     const rSplit = get("wt-prompt-mode-split");
     if (rSplit) rSplit.addEventListener("change", () => { data.promptMode = "split"; save(false); applyPromptModeUI(); });
@@ -806,16 +838,21 @@
     const contextLabel = get("wt-context-label");
     const enabled = get("wt-enabled");
     const autoTranslate = get("wt-auto-translate");
+    const hotkeyEnabled = get("wt-hotkey-enabled");
+    const hotkeyMod = get("wt-hotkey-mod");
     const promptSystem = get("wt-prompt-system");
     const promptUser = get("wt-prompt-user");
     const promptGlobal = get("wt-prompt-global");
     if (contextLabel) contextLabel.value = data.contextMenuLabel || "";
     if (enabled) enabled.checked = !!data.enabled;
     if (autoTranslate) autoTranslate.checked = !!data.autoTranslate;
+    if (hotkeyEnabled) hotkeyEnabled.checked = !!data.hotkeyEnabled;
+    if (hotkeyMod) hotkeyMod.value = data.hotkeyModifier || "ctrl";
     if (promptSystem) promptSystem.value = data.promptSystem || DEFAULT_PROMPT_SYSTEM;
     if (promptUser) promptUser.value = data.promptUser || DEFAULT_PROMPT_USER;
     if (promptGlobal) promptGlobal.value = data.promptGlobal || DEFAULT_PROMPT_GLOBAL;
     applyPromptModeUI();
+    applyHotkeyUI();
     const fontSize = get("wt-font-size");
     const fontSizeRange = get("wt-font-size-range");
     const fsVal = Number(data.fontSize) || 13;
