@@ -50,26 +50,84 @@
 
   let data = null;
 
+  // “快捷键-划词翻译” 与 “自定义快捷键” 二选一互斥：
+  //   - 任一为 on，另一个强制为 off；
+  //   - 都可各自关闭，但永远不能同时为 on；
+  //   - 至少一个为 on 时，显示对应的设置行；都为 off 时全部收起。
   function applyHotkeyUI() {
     try {
       const en = get("wt-hotkey-enabled");
-      const wrap = get("wt-hotkey-mod-wrap");
-      const customWrap = get("wt-hotkey-custom-wrap");
-      if (wrap) wrap.style.display = en && en.checked ? "" : "none";
-      if (customWrap) customWrap.style.display = en && en.checked ? "" : "none";
       const useCustom = get("wt-hotkey-custom-enabled");
-      if (useCustom && customWrap) {
-        const modWrap = get("wt-hotkey-mod-wrap");
-        if (modWrap) modWrap.style.display = en && en.checked && !useCustom.checked ? "" : "none";
-        customWrap.style.display = en && en.checked ? "" : "none";
+      const modWrap = get("wt-hotkey-mod-wrap");
+      const customWrap = get("wt-hotkey-custom-wrap");
+      // 数据层互斥（双保险：UI 与 change 处理器都会同步）
+      if (en && useCustom) {
+        if (en.checked && useCustom.checked) {
+          // 不允许同时 on：以当前较新的为准。这里统一让后者胜出会出循环，
+          // 因此仅在 UI 阶段不修复两者同时 on，让 change 处理器负责修正。
+        }
+      }
+      // UI 展示
+      const anyOn = (en && en.checked) || (useCustom && useCustom.checked);
+      if (modWrap) modWrap.style.display = (en && en.checked) ? "" : "none";
+      if (customWrap) customWrap.style.display = (useCustom && useCustom.checked) ? "" : "none";
+      // 提示行提示状态
+      const hint = get("wt-hotkey-hint");
+      if (hint) hint.textContent = anyOn
+        ? "已开启划词快捷键，划选文本即自动翻译并加入单词本。"
+        : "划词快捷键已关闭。";
+    } catch (e) {}
+  }
+
+  // 数据层互斥：开启 a 时关闭 b；关闭其中一个不影响另一个。
+  function syncHotkeyMutex(origin) {
+    try {
+      const en = get("wt-hotkey-enabled");
+      const useCustom = get("wt-hotkey-custom-enabled");
+      if (!en || !useCustom) return;
+      if (origin === "preset" && en.checked) {
+        useCustom.checked = false;
+        data.customHotkeyEnabled = false;
+      } else if (origin === "custom" && useCustom.checked) {
+        en.checked = false;
+        data.hotkeyEnabled = false;
       }
     } catch (e) {}
   }
+  // “绑定「添加单词并翻译」快捷键（先选区后按绑定键）”UI：
+  //   - 总开关 wt-addword-hotkey-enabled（默认开启，即与划词翻译合并后的“先选区后按绑定键”）
+  //   - 单选：Ctrl / Alt / Shift / 自定义绑定按键（wt-addword-mode-*）
   function applyAddWordHotkeyUI() {
     try {
       const en = get("wt-addword-hotkey-enabled");
       const wrap = get("wt-addword-hotkey-wrap");
       if (wrap) wrap.style.display = en && en.checked ? "" : "none";
+      // 收起状态：仅收起界面，不改变已保存的数据（关闭时即关闭本功能）
+      if (!(en && en.checked)) {
+        const cw = get("wt-addword-custom-wrap");
+        if (cw) cw.style.display = "none";
+        const hint = get("wt-addword-mode-hint");
+        if (hint) hint.textContent = "开启后：先选中单词，再按下绑定按键，立即执行「添加单词并翻译」。";
+        return;
+      }
+      // 兼容旧数据：none / mouse3 / mouse4 / mouse5 自动迁移到 custom，避免全部未选
+      let mode = data.addWordHotkeyMode || "custom";
+      if (mode === "none" || mode === "mouse3" || mode === "mouse4" || mode === "mouse5") mode = "custom";
+      data.addWordHotkeyMode = mode;
+      const ids = ["ctrl", "alt", "shift", "custom"];
+      for (const id of ids) {
+        const r = get("wt-addword-mode-" + id);
+        if (r) r.checked = (mode === id);
+      }
+      const cw = get("wt-addword-custom-wrap");
+      if (cw) cw.style.display = (mode === "custom") ? "" : "none";
+      const hint = get("wt-addword-mode-hint");
+      if (hint) {
+        if (mode === "ctrl") hint.textContent = "先选中单词，再按下 Ctrl 键，立即执行「添加单词并翻译」。";
+        else if (mode === "alt") hint.textContent = "先选中单词，再按下 Alt 键，立即执行「添加单词并翻译」。";
+        else if (mode === "shift") hint.textContent = "先选中单词，再按下 Shift 键，立即执行「添加单词并翻译」。";
+        else hint.textContent = "请在下方输入框双击录制键盘组合键（如 Ctrl+Enter、Alt+Z）。";
+      }
     } catch (e) {}
   }
 
@@ -124,7 +182,8 @@
       const keyName = (k.length === 1 ? k : k === "enter" ? "Enter" : k === " " ? "Space" : k);
       if (k.length === 1) parts.push(k.toUpperCase());
       else parts.push(keyName);
-      const spec = parts.join("+").toLowerCase();
+      // 保留大小写：Ctrl/Alt/Shift 首字母大写，如 "Alt+C"、"Ctrl+Alt+C"
+      const spec = parts.join("+");
       recording = false;
       inp.value = spec;
       inp.dataset.prev = spec;
@@ -133,33 +192,62 @@
       document.removeEventListener("mousedown", mouseHandler, true);
       inp.blur();
     };
-    const mouseHandler = (ev) => {
+    // 鼠标按键 → spec 映射
+    // Firefox/Zotero 中侧键可能默认是浏览器前进/后退，需要在最早的事件阶段（pointerdown）
+    // 就 preventDefault 抢占，否则浏览器可能已经消费了事件。
+    const buttonToSpec = (b) => {
+      if (b === 0) return "mouse1"; // 左键
+      if (b === 1) return "mouse3"; // 中键（滚轮按下）
+      if (b === 2) return "mouse2"; // 右键
+      if (b === 3) return "mouse4"; // 侧键 1 / xbutton1 / 后退
+      if (b === 4) return "mouse5"; // 侧键 2 / xbutton2 / 前进
+      return null;
+    };
+    const clearRecorder = () => {
+      recording = false;
+      document.removeEventListener("keydown", keyHandler, true);
+      document.removeEventListener("mousedown", mouseHandler, true);
+      document.removeEventListener("mouseup", mouseHandler, true);
+      document.removeEventListener("pointerdown", pointerHandler, true);
+      document.removeEventListener("auxclick", auxHandler, true);
+    };
+    const commit = (ev, spec) => {
+      try { ev.preventDefault(); ev.stopPropagation(); } catch (e2) {}
+      recording = false;
+      inp.value = spec;
+      inp.dataset.prev = spec;
+      if (onRecord) onRecord(spec);
+      clearRecorder();
+      try { inp.blur(); } catch (e2) {}
+    };
+    const tryHandleFromButton = (ev) => {
       if (!recording) return;
-      // 侧键 button=4/5；左键(0)在输入框外点击不应录制
-      if (ev.button === 4 || ev.button === 5) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const spec = ev.button === 4 ? "mouse4" : "mouse5";
-        recording = false;
-        inp.value = spec;
-        inp.dataset.prev = spec;
-        if (onRecord) onRecord(spec);
-        document.removeEventListener("keydown", keyHandler, true);
-        document.removeEventListener("mousedown", mouseHandler, true);
-        inp.blur();
-      }
+      const b = ev.button;
+      const spec = buttonToSpec(b);
+      if (spec) commit(ev, spec);
+    };
+    const mouseHandler = (ev) => { tryHandleFromButton(ev); };
+    const pointerHandler = (ev) => {
+      // pointerdown 是最先触发的事件，必须抢占浏览器前进/后退默认行为
+      tryHandleFromButton(ev);
+    };
+    const auxHandler = (ev) => {
+      // 侧键通常触发 auxclick（非主按钮点击）；即使 mousedown 被浏览器吃掉，这里也能兜住
+      tryHandleFromButton(ev);
     };
     inp.addEventListener("dblclick", () => {
       recording = true;
       inp.value = "请按键…";
       document.addEventListener("keydown", keyHandler, true);
+      // 同时监听 mousedown、mouseup、pointerdown、auxclick，覆盖浏览器差异
       document.addEventListener("mousedown", mouseHandler, true);
+      document.addEventListener("mouseup", mouseHandler, true);
+      document.addEventListener("pointerdown", pointerHandler, true);
+      document.addEventListener("auxclick", auxHandler, true);
     });
     inp.addEventListener("blur", () => {
       if (recording) {
-        recording = false;
-        document.removeEventListener("keydown", keyHandler, true);
-        document.removeEventListener("mousedown", mouseHandler, true);
+        clearRecorder();
         inp.value = inp.dataset.prev || "";
       }
     });
@@ -180,8 +268,9 @@
     hotkeyModifier: "ctrl",
     customHotkeyEnabled: false,
     customHotkey: "",
-    addWordHotkeyEnabled: false,
+    addWordHotkeyEnabled: true,
     addWordHotkey: "",
+    addWordHotkeyMode: "ctrl", // "ctrl" | "alt" | "shift" | "custom"
     promptMode: "split",
     promptSystem: DEFAULT_PROMPT_SYSTEM,
     promptUser: DEFAULT_PROMPT_USER,
@@ -199,6 +288,11 @@
       ...raw,
       apis: Array.isArray(raw.apis) ? raw.apis : [],
       activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
+      // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）
+      addWordHotkeyEnabled: typeof raw.addWordHotkeyEnabled === "boolean" ? raw.addWordHotkeyEnabled : true,
+      addWordHotkeyMode: (raw.addWordHotkeyMode === "ctrl" || raw.addWordHotkeyMode === "alt" ||
+        raw.addWordHotkeyMode === "shift" || raw.addWordHotkeyMode === "custom")
+        ? raw.addWordHotkeyMode : "ctrl",
     };
   }
 
@@ -240,6 +334,7 @@
       }
     } catch (e) {}
     try { Zotero.WordTranslator && Zotero.WordTranslator.loadDataFromDisk(); } catch (e) {}
+    try { if (Zotero.WordTranslator && typeof Zotero.WordTranslator._invalidatePrefsCache === "function") Zotero.WordTranslator._invalidatePrefsCache(); } catch (e) {}
     try { notifyConfigChanged(); } catch (e) { debugLog("notify ERROR: " + (e && e.message || e)); }
   }
 
@@ -611,7 +706,14 @@
       ]),
       el("div", { class: "wt-row-inline" }, [
         (() => { const c = el("input", { type: "checkbox", id: "wt-enabled" }); return c; })(),
-        el("label", { for: "wt-enabled" }, [txt("启用「添加单词并翻译」菜单项")]),
+        (() => {
+          const lbl = el("label", { for: "wt-enabled" }, [
+            txt("启用「"),
+            el("span", { id: "wt-enabled-label", class: "wt-link-text" }, [txt("添加单词并翻译")]),
+            txt("」菜单项"),
+          ]);
+          return lbl;
+        })(),
       ]),
       el("div", { class: "wt-row-inline" }, [
         (() => { const c = el("input", { type: "checkbox", id: "wt-auto-translate" }); return c; })(),
@@ -619,20 +721,82 @@
       ]),
       el("div", { class: "wt-row-inline", style: "margin-top:6px;" }, [
         (() => { const c = el("input", { type: "checkbox", id: "wt-addword-hotkey-enabled" }); return c; })(),
-        el("label", { for: "wt-addword-hotkey-enabled" }, [txt("添加快捷键：选中单词后按下绑定键执行「添加单词并翻译」")]),
+        (() => {
+          const link = el("span", {
+            id: "wt-addword-link",
+            class: "wt-link",
+            title: "这个菜单项名称可以修改",
+            tabindex: "0",
+            role: "link",
+            style: "color:#0d6efd;text-decoration:underline;cursor:pointer;outline:none;",
+          }, [txt("「添加单词并翻译」")]);
+          const lbl = el("label", { for: "wt-addword-hotkey-enabled" }, [
+            txt("绑定"),
+            link,
+            txt("快捷键（先选区后按绑定键触发）"),
+          ]);
+          return lbl;
+        })(),
       ]),
       el("div", { class: "wt-row", id: "wt-addword-hotkey-wrap", style: "margin:4px 0 0 22px;" }, [
-        el("label", { class: "wt-label", for: "wt-addword-hotkey" }, [txt("绑定按键")]),
+        // 触发方式单选：Ctrl / Alt / Shift / 自定义绑定按键（Mouse4/Mouse5 在 Zotero 中无法被监听，已移除）
+        el("div", { class: "wt-row-inline", style: "gap:14px;flex-wrap:wrap;" }, [
+          (() => {
+            const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+              (() => { const r = el("input", { type: "radio", name: "wt-addword-mode", id: "wt-addword-mode-ctrl", value: "ctrl" }); return r; })(),
+              txt("Ctrl"),
+            ]);
+            return l;
+          })(),
+          (() => {
+            const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+              (() => { const r = el("input", { type: "radio", name: "wt-addword-mode", id: "wt-addword-mode-alt", value: "alt" }); return r; })(),
+              txt("Alt"),
+            ]);
+            return l;
+          })(),
+          (() => {
+            const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+              (() => { const r = el("input", { type: "radio", name: "wt-addword-mode", id: "wt-addword-mode-shift", value: "shift" }); return r; })(),
+              txt("Shift"),
+            ]);
+            return l;
+          })(),
+          (() => {
+            const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+              (() => { const r = el("input", { type: "radio", name: "wt-addword-mode", id: "wt-addword-mode-custom", value: "custom" }); return r; })(),
+              txt("自定义绑定按键"),
+            ]);
+            return l;
+          })(),
+        ]),
+        el("div", { class: "wt-row", id: "wt-addword-custom-wrap", style: "margin:6px 0 0 4px;display:none;" }, [
+          el("label", { class: "wt-label", for: "wt-addword-hotkey" }, [txt("绑定按键")]),
+          (() => {
+            const inp = el("input", { type: "text", id: "wt-addword-hotkey", class: "wt-input", readonly: "readonly", placeholder: "双击此处设置（如 Ctrl+Enter、Alt+Z）" });
+            return inp;
+          })(),
+        ]),
+        el("p", { class: "wt-hint", id: "wt-addword-mode-hint", style: "width:100%;margin-top:4px;" }, [txt("先选中单词，再按下绑定按键，立即执行「添加单词并翻译」。")]),
+      ]),
+      // —— 快捷键-划词翻译（二选一，互斥）——
+      el("div", { class: "wt-row-inline", style: "gap:16px;margin-top:6px;" }, [
         (() => {
-          const inp = el("input", { type: "text", id: "wt-addword-hotkey", class: "wt-input", readonly: "readonly", placeholder: "双击此处设置（如 Mouse5、Ctrl+Enter）" });
-          return inp;
+          const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+            (() => { const c = el("input", { type: "checkbox", id: "wt-hotkey-enabled" }); return c; })(),
+            txt("快捷键-划词翻译"),
+          ]);
+          return l;
         })(),
-        el("p", { class: "wt-hint", style: "width:100%;" }, [txt("选中单词后按下绑定按键，立即执行「添加单词并翻译」。支持键盘组合键与鼠标侧键。")]),
+        (() => {
+          const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+            (() => { const c = el("input", { type: "checkbox", id: "wt-hotkey-custom-enabled" }); return c; })(),
+            txt("自定义快捷键"),
+          ]);
+          return l;
+        })(),
       ]),
-      el("div", { class: "wt-row-inline", style: "margin-top:6px;" }, [
-        (() => { const c = el("input", { type: "checkbox", id: "wt-hotkey-enabled" }); return c; })(),
-        el("label", { for: "wt-hotkey-enabled" }, [txt("快捷键-划词翻译")]),
-      ]),
+      el("p", { class: "wt-hint", id: "wt-hotkey-hint", style: "margin:-2px 0 6px;" }, [txt("划词快捷键已关闭。")]),
       el("div", { class: "wt-row", id: "wt-hotkey-mod-wrap", style: "margin:4px 0 0 22px;" }, [
         el("label", { class: "wt-label", for: "wt-hotkey-mod" }, [txt("快捷键组合")]),
         (() => {
@@ -644,17 +808,13 @@
         })(),
         el("p", { class: "wt-hint", style: "width:100%;" }, [txt("按下组合键 + 划选文本，即自动翻译并加入单词本。组合键仅可选一种。")]),
       ]),
-      el("div", { class: "wt-row-inline", style: "margin-top:4px;" }, [
-        (() => { const c = el("input", { type: "checkbox", id: "wt-hotkey-custom-enabled" }); return c; })(),
-        el("label", { for: "wt-hotkey-custom-enabled" }, [txt("自定义快捷键（与上方组合键二选一）")]),
-      ]),
       el("div", { class: "wt-row", id: "wt-hotkey-custom-wrap", style: "margin:4px 0 0 22px;" }, [
         el("label", { class: "wt-label", for: "wt-hotkey-custom" }, [txt("自定义快捷键")]),
         (() => {
-          const inp = el("input", { type: "text", id: "wt-hotkey-custom", class: "wt-input", readonly: "readonly", placeholder: "双击此处设置（如 Ctrl+D、Alt+1、鼠标侧键）" });
+          const inp = el("input", { type: "text", id: "wt-hotkey-custom", class: "wt-input", readonly: "readonly", placeholder: "双击此处设置（如 Ctrl+D、Alt+1）" });
           return inp;
         })(),
-        el("p", { class: "wt-hint", style: "width:100%;" }, [txt("双击输入框后按组合键或鼠标侧键进行录制。支持 Ctrl/Alt/Shift + 字母或数字，以及鼠标侧键（Mouse4/Mouse5）。")]),
+        el("p", { class: "wt-hint", style: "width:100%;" }, [txt("双击输入框后按组合键进行录制。支持 Ctrl/Alt/Shift + 字母或数字。")]),
       ]),
     ]);
 
@@ -882,21 +1042,95 @@
     });
 
     const ctxLabel = get("wt-context-label");
-    if (ctxLabel) ctxLabel.addEventListener("input", () => { data.contextMenuLabel = ctxLabel.value; save(false); });
+    const syncContextLabelRefs = () => {
+      try {
+        const label = (data.contextMenuLabel || "").trim() || "添加单词并翻译";
+        const enLbl = get("wt-enabled-label");
+        if (enLbl) enLbl.textContent = label;
+        const link = get("wt-addword-link");
+        if (link) {
+          // 使用 “「label」” 形式作为视觉提示
+          while (link.firstChild) link.removeChild(link.firstChild);
+          link.append(document.createTextNode("「" + label + "」"));
+        }
+      } catch (e) {}
+    };
+    if (ctxLabel) ctxLabel.addEventListener("input", () => {
+      data.contextMenuLabel = ctxLabel.value;
+      syncContextLabelRefs();
+      save(false);
+    });
+    // Click on "「添加单词并翻译」" span inside the addword-hotkey label -> jump to context-menu-label.
+    const addWordLink = get("wt-addword-link");
+    if (addWordLink) {
+      const jumpToCtx = function (ev) {
+        try {
+          if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+          const target = get("wt-context-label");
+          if (!target) return;
+          try { target.scrollIntoView({ block: "center" }); } catch (e2) {}
+          try { target.focus(); } catch (e2) {}
+          try { target.select && target.select(); } catch (e2) {}
+        } catch (e3) {}
+      };
+      addWordLink.addEventListener("click", jumpToCtx, true);
+      addWordLink.addEventListener("keydown", function (ev) {
+        try {
+          const k = (ev.key || "").toLowerCase();
+          if (k === "enter" || k === " ") { jumpToCtx(ev); }
+        } catch (e2) {}
+      }, true);
+      // Hover visual cue: emphasize underline on hover.
+      addWordLink.addEventListener("mouseenter", function () {
+        try { addWordLink.style.textDecoration = "underline double"; } catch (e2) {}
+      }, true);
+      addWordLink.addEventListener("mouseleave", function () {
+        try { addWordLink.style.textDecoration = "underline"; } catch (e2) {}
+      }, true);
+    }
     const en = get("wt-enabled");
     if (en) en.addEventListener("change", () => { data.enabled = en.checked; save(false); });
     const at = get("wt-auto-translate");
     if (at) at.addEventListener("change", () => { data.autoTranslate = at.checked; save(false); });
     const hkEn = get("wt-hotkey-enabled");
-    if (hkEn) hkEn.addEventListener("change", () => { data.hotkeyEnabled = hkEn.checked; save(false); applyHotkeyUI(); });
+    if (hkEn) hkEn.addEventListener("change", () => {
+      // 互斥：开启“快捷键-划词翻译”必须先关闭“自定义快捷键”
+      if (hkEn.checked) { syncHotkeyMutex("preset"); }
+      data.hotkeyEnabled = hkEn.checked;
+      save(false); applyHotkeyUI();
+    });
     const hkMod = get("wt-hotkey-mod");
     if (hkMod) hkMod.addEventListener("change", () => { data.hotkeyModifier = hkMod.value; save(false); });
     const hkCustomEn = get("wt-hotkey-custom-enabled");
-    if (hkCustomEn) hkCustomEn.addEventListener("change", () => { data.customHotkeyEnabled = hkCustomEn.checked; save(false); applyHotkeyUI(); });
+    if (hkCustomEn) hkCustomEn.addEventListener("change", () => {
+      // 互斥：开启“自定义快捷键”必须先关闭“快捷键-划词翻译”
+      if (hkCustomEn.checked) { syncHotkeyMutex("custom"); }
+      data.customHotkeyEnabled = hkCustomEn.checked;
+      save(false); applyHotkeyUI();
+    });
     makeHotkeyRecorder("wt-hotkey-custom", (spec) => { data.customHotkey = spec; save(false); });
     const awEn = get("wt-addword-hotkey-enabled");
-    if (awEn) awEn.addEventListener("change", () => { data.addWordHotkeyEnabled = awEn.checked; save(false); applyAddWordHotkeyUI(); });
-    makeHotkeyRecorder("wt-addword-hotkey", (spec) => { data.addWordHotkey = spec; save(false); });
+    if (awEn) awEn.addEventListener("change", () => {
+      data.addWordHotkeyEnabled = awEn.checked;
+      save(false); applyAddWordHotkeyUI();
+    });
+    ["ctrl", "alt", "shift", "custom"].forEach((mode) => {
+      const r = get("wt-addword-mode-" + mode);
+      if (r) r.addEventListener("change", () => {
+        if (r.checked) {
+          data.addWordHotkeyMode = mode;
+          save(false); applyAddWordHotkeyUI();
+        }
+      });
+    });
+    makeHotkeyRecorder("wt-addword-hotkey", (spec) => {
+      data.addWordHotkey = spec;
+      // 录制即视为切到 custom 模式（如果尚未选中）
+      if (data.addWordHotkeyMode !== "custom") {
+        data.addWordHotkeyMode = "custom";
+      }
+      save(false); applyAddWordHotkeyUI();
+    });
 
     const rSplit = get("wt-prompt-mode-split");
     if (rSplit) rSplit.addEventListener("change", () => { data.promptMode = "split"; save(false); applyPromptModeUI(); });
@@ -950,6 +1184,7 @@
     const promptUser = get("wt-prompt-user");
     const promptGlobal = get("wt-prompt-global");
     if (contextLabel) contextLabel.value = data.contextMenuLabel || "";
+    try { syncContextLabelRefs(); } catch (e) {}
     if (enabled) enabled.checked = !!data.enabled;
     if (autoTranslate) autoTranslate.checked = !!data.autoTranslate;
     if (hotkeyEnabled) hotkeyEnabled.checked = !!data.hotkeyEnabled;
@@ -962,6 +1197,12 @@
     if (hotkeyCustom) { hotkeyCustom.value = data.customHotkey || ""; hotkeyCustom.dataset.prev = data.customHotkey || ""; }
     if (addWordHotkeyEnabled) addWordHotkeyEnabled.checked = !!data.addWordHotkeyEnabled;
     if (addWordHotkey) { addWordHotkey.value = data.addWordHotkey || ""; addWordHotkey.dataset.prev = data.addWordHotkey || ""; }
+    // 兼容旧数据：none / mouse3 / mouse4 / mouse5 自动迁移到 custom，避免全部未选
+    if (!data.addWordHotkeyMode || data.addWordHotkeyMode === "none" ||
+        data.addWordHotkeyMode === "mouse3" || data.addWordHotkeyMode === "mouse4" || data.addWordHotkeyMode === "mouse5") {
+      data.addWordHotkeyMode = "custom";
+    }
+    applyAddWordHotkeyUI();
     if (promptSystem) promptSystem.value = data.promptSystem || DEFAULT_PROMPT_SYSTEM;
     if (promptUser) promptUser.value = data.promptUser || DEFAULT_PROMPT_USER;
     if (promptGlobal) promptGlobal.value = data.promptGlobal || DEFAULT_PROMPT_GLOBAL;
