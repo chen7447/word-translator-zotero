@@ -340,24 +340,26 @@ _configVersion: 0,
     };
     Zotero.Reader.registerEventListener("renderTextSelectionPopup", handler, this._addonID);
     this._readerTabHandlers.set("popup", handler);
-    // 注册 tab 通知：阅读器打开后立即给 PDF iframe 文档挂上快捷键监听，
+    // 阅读器打开时（renderToolbar 事件）主动给 PDF iframe 挂快捷键监听，
     // 保证“按住修饰键 + 第一次划词”也能生效（首次 popup 时再挂就太晚了）。
     try {
-      if (Zotero.Notifier && !this._hotkeyNotifierID) {
+      if (!this._hotkeyToolbarHandler) {
         const self = this;
-        this._hotkeyNotifierID = Zotero.Notifier.registerObserver({
-          notify(event, type, ids, extraData) {
-            try {
-              if (event !== "add" || type !== "tab" || !ids || !ids.length) return;
-              for (const tabID of ids) {
-                try { self._bindHotkeyForTab(tabID); } catch (e) {}
+        this._hotkeyToolbarHandler = (event) => {
+          try {
+            // renderToolbar 事件的 detail 不含 reader 字段，遍历当前所有阅读器绑定
+            const readers = Zotero.Reader && Zotero.Reader._readers;
+            if (readers && readers.length) {
+              for (const r of readers) {
+                try { self._bindHotkeyForReaderInstance(r); } catch (e) {}
               }
-            } catch (e) {}
-          },
-        }, ["tab"], "wordtranslator-hotkey");
+            }
+          } catch (e) {}
+        };
+        Zotero.Reader.registerEventListener("renderToolbar", this._hotkeyToolbarHandler, this._addonID);
       }
     } catch (e) {
-      this._debugLog("hotkey notifier ERROR: " + (e && (e.stack || e.message || String(e))));
+      this._debugLog("hotkey renderToolbar ERROR: " + (e && (e.stack || e.message || String(e))));
     }
     // 启动兜底：遍历已打开的阅读器，绑定快捷键监听
     try {
@@ -370,23 +372,67 @@ _configVersion: 0,
     } catch (e) {}
   },
 
-  _bindHotkeyForTab(tabID) {
+  _bindHotkeyForReaderInstance(reader) {
     try {
-      if (!tabID) return;
-      const reader = Zotero.Reader && Zotero.Reader.getByTabID && Zotero.Reader.getByTabID(tabID);
-      if (reader) this._bindHotkeyForReaderInstance(reader);
+      if (!reader || !reader.tabID) return;
+      const key = "wtHotkeyBound_" + this._addonID;
+      if (reader[key]) return;
+      reader[key] = true;
+      const self = this;
+      this._debugLog("hotkey bind start: itemID=" + (reader && reader.itemID) + ", tabID=" + (reader && reader.tabID));
+      // 先绑阅读器主窗口 iframe（稳定存在；PDF iframe 事件会冒泡到这里）
+      try {
+        this._bindHotkeyModifierListener(reader._iframeWindow);
+      } catch (e) {}
+      // PDF.js 视图 iframe 需要等初始化完成，轮询等待
+      this._waitForHotkeyWindow(reader, 0);
     } catch (e) {
-      this._debugLog("_bindHotkeyForTab ERROR: " + (e && (e.message || String(e))));
+      this._debugLog("_bindHotkeyForReaderInstance ERROR: " + (e && (e.stack || e.message || String(e))));
     }
   },
 
-  _bindHotkeyForReaderInstance(reader) {
+  _waitForHotkeyWindow(reader, attempt) {
     try {
-      const doc = this._getHotkeyTargetDoc(reader, null);
-      if (!doc || doc.dataset.wtMousedownBound) return;
-      doc.dataset.wtMousedownBound = "1";
+      const internal = reader && reader._internalReader;
+      let win = null;
+      try {
+        const primary = internal && (internal._primaryView || internal.primaryView);
+        if (primary) {
+          win = primary._iframeWindow || primary.iframeWindow;
+        }
+      } catch (e) {}
+      if (!win) {
+        try {
+          const secondary = internal && (internal._secondaryView || internal.secondaryView);
+          if (secondary) {
+            win = secondary._iframeWindow || secondary.iframeWindow;
+          }
+        } catch (e) {}
+      }
+      if (win) {
+        this._bindHotkeyModifierListener(win);
+        return;
+      }
+      if (attempt < 100) {
+        const self = this;
+        setTimeout(function () { self._waitForHotkeyWindow(reader, attempt + 1); }, 100);
+      } else {
+        this._debugLog("hotkey wait timeout: tabID=" + (reader && reader.tabID));
+      }
+    } catch (e) {
+      this._debugLog("_waitForHotkeyWindow ERROR: " + (e && (e.message || String(e))));
+    }
+  },
+
+  _bindHotkeyModifierListener(win) {
+    try {
+      if (!win) return;
+      if (this._hotkeyBoundWindows && this._hotkeyBoundWindows.has(win)) return;
+      if (!this._hotkeyBoundWindows) this._hotkeyBoundWindows = new Set();
+      this._hotkeyBoundWindows.add(win);
       const self = this;
-      doc.addEventListener("mousedown", function (ev) {
+      // 记录修饰键状态（mousedown 先于 mouseup/popup 发生）
+      win.addEventListener("mousedown", function (ev) {
         try {
           self._hotkeyModifiers = {
             ctrl: !!ev.ctrlKey,
@@ -399,9 +445,18 @@ _configVersion: 0,
           }
         } catch (e) {}
       }, true);
-      this._debugLog("hotkey bound to reader doc (proactive): itemID=" + (reader && reader.itemID) + ", tabID=" + (reader && reader.tabID));
+      // keydown 兜底：划词后按组合键也能触发
+      win.addEventListener("keydown", function (ev) {
+        try {
+          if (self._hotkeyPending) {
+            self._hotkeyPending.time = Date.now();
+          }
+          self._onHotkeyKeydown(win, ev);
+        } catch (e) { self._debugLog("hotkey keydown ERROR: " + (e && (e.message || e))); }
+      }, true);
+      this._debugLog("hotkey bound to iframe window");
     } catch (e) {
-      this._debugLog("_bindHotkeyForReaderInstance ERROR: " + (e && (e.stack || e.message || String(e))));
+      this._debugLog("_bindHotkeyModifierListener ERROR: " + (e && (e.message || String(e))));
     }
   },
 
@@ -416,45 +471,25 @@ _configVersion: 0,
     } catch (e) {}
     if (!this._data || !this._data.enabled) return;
     const text = (params && params.annotation && params.annotation.text || "").trim();
-    if (!text) return;
+    this._debugLog("popup text: len=" + text.length + ", text=" + JSON.stringify(text.slice(0, 120)));
+    if (!text) {
+      this._debugLog("popup skip: no selected text");
+      return;
+    }
+    if (text.length > 500) {
+      this._debugLog("popup skip: text too long (" + text.length + ")");
+      return;
+    }
 
-        // 快捷键-划词翻译：mousedown 先于 mouseup 发生，先记录修饰键状态。
-    // 注意：popup 事件里的 doc 是阅读器主窗口文档，鼠标/按键事件实际发生在
-    // PDF.js 的 iframe 文档（reader._internalReader._primaryView._iframeDocument）中。
+    // 快捷键-划词翻译：mousedown 先于 mouseup 发生，先记录修饰键状态。
+    // 鼠标/按键事件实际发生在 PDF.js 的 iframe window（reader._internalReader._primaryView._iframeWindow）。
     try {
-      const hotkeyDoc = this._getHotkeyTargetDoc(reader, doc);
-      if (hotkeyDoc) {
-        if (!hotkeyDoc.dataset.wtMousedownBound) {
-          hotkeyDoc.dataset.wtMousedownBound = "1";
-          const self = this;
-          hotkeyDoc.addEventListener("mousedown", function (ev) {
-            try {
-              self._hotkeyModifiers = {
-                ctrl: !!ev.ctrlKey,
-                shift: !!ev.shiftKey,
-                alt: !!ev.altKey,
-                time: Date.now(),
-              };
-              if (self._data && self._data.hotkeyEnabled) {
-                self._debugLog("hotkey mousedown: mods=" + JSON.stringify(self._hotkeyModifiers));
-              }
-            } catch (e) {}
-          }, true);
-        }
-        if (!hotkeyDoc.dataset.wtHotkeyKeydownBound) {
-          hotkeyDoc.dataset.wtHotkeyKeydownBound = "1";
-          const self = this;
-          hotkeyDoc.addEventListener("keydown", function (ev) {
-            try {
-              if (self._hotkeyPending) {
-                self._hotkeyPending.reader = reader;
-                self._hotkeyPending.text = text;
-                self._hotkeyPending.time = Date.now();
-              }
-              self._onHotkeyKeydown(hotkeyDoc, ev);
-            } catch (e) { self._debugLog("hotkey keydown ERROR: " + (e && (e.message || e))); }
-          }, true);
-        }
+      const hotkeyWin = this._getHotkeyTargetWindow(reader);
+      if (hotkeyWin) {
+        this._debugLog("hotkey target window found; binding");
+        this._bindHotkeyModifierListener(hotkeyWin);
+      } else {
+        this._debugLog("hotkey target window NOT found; internal=" + !!(reader && reader._internalReader));
       }
     } catch (e) {
       this._debugLog("hotkey bind ERROR: " + (e && (e.stack || e.message || String(e))));
@@ -530,27 +565,36 @@ _configVersion: 0,
 
 
   // 快捷键-划词翻译：组合键按下时触发翻译
-  _getHotkeyTargetDoc(reader, fallbackDoc) {
+  _getHotkeyTargetWindow(reader) {
     try {
       const internal = reader && reader._internalReader;
       if (internal) {
         try {
           const primary = internal._primaryView || internal.primaryView;
           if (primary) {
-            const d = primary._iframeDocument || primary.iframeDocument ||
-              (primary._iframeWindow && primary._iframeWindow.document);
-            if (d) return d;
+            const w = primary._iframeWindow || primary.iframeWindow;
+            if (w) return w;
           }
         } catch (e) {}
         try {
           const secondary = internal._secondaryView || internal.secondaryView;
           if (secondary) {
-            const d = secondary._iframeDocument || secondary.iframeDocument ||
-              (secondary._iframeWindow && secondary._iframeWindow.document);
-            if (d) return d;
+            const w = secondary._iframeWindow || secondary.iframeWindow;
+            if (w) return w;
           }
         } catch (e) {}
       }
+    } catch (e) {}
+    try {
+      if (reader && reader._iframeWindow) return reader._iframeWindow;
+    } catch (e) {}
+    return null;
+  },
+
+  _getHotkeyTargetDoc(reader, fallbackDoc) {
+    try {
+      const w = this._getHotkeyTargetWindow(reader);
+      if (w && w.document) return w.document;
     } catch (e) {}
     return fallbackDoc || null;
   },
@@ -708,8 +752,20 @@ _configVersion: 0,
       ", paneID=" + paneID
     );
 
+    const normWord = String(word || "").trim();
+    if (!normWord) {
+      this._debugLog("_addWordForReader ABORT: word empty");
+      return;
+    }
     const list = this._itemWords.get(Number(paneID)) || [];
-    const card = { word, translation: "翻译中…", pending: true };
+    const exists = list.some(function (c) {
+      return c && String(c.word || "").toLowerCase() === normWord.toLowerCase();
+    });
+    if (exists) {
+      this._debugLog("_addWordForReader skip (duplicate): " + JSON.stringify(normWord));
+      return;
+    }
+    const card = { word: normWord, translation: "翻译中…", pending: true };
     list.push(card);
     this._itemWords.set(Number(paneID), list);
     this._persistWords();
