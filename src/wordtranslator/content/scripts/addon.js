@@ -354,6 +354,18 @@ _configVersion: 0,
     if (!this._data || !this._data.enabled) return;
     const text = (params && params.annotation && params.annotation.text || "").trim();
     if (!text) return;
+
+    // 快捷键-划词翻译：缓存当前选中文本，并给该 doc 挂一次 keydown 监听
+    try {
+      this._hotkeyPending = { reader: reader, text: text, time: Date.now() };
+      if (doc && !doc.dataset.wtHotkeyBound) {
+        doc.dataset.wtHotkeyBound = "1";
+        const self = this;
+        doc.addEventListener("keydown", function (ev) {
+          try { self._onHotkeyKeydown(doc, ev); } catch (e) { self._debugLog("hotkey keydown ERROR: " + (e && (e.message || e))); }
+        }, true);
+      }
+    } catch (e) {}
     // 自动翻译：开启后选中文本即自动加入单词本并翻译（不显示按钮）
     if (this._data.autoTranslate) {
       // 防抖去重：相同文本 2 秒内不重复自动添加
@@ -404,6 +416,43 @@ _configVersion: 0,
     append(btn);
   },
 
+
+  // 快捷键-划词翻译：组合键按下时触发翻译
+  _onHotkeyKeydown(doc, ev) {
+    try {
+      if (!this._data || !this._data.hotkeyEnabled) return;
+      const mod = (this._data.hotkeyModifier) || "ctrl";
+      const match =
+        (mod === "ctrl" && ev.ctrlKey && !ev.shiftKey && !ev.altKey) ||
+        (mod === "shift" && ev.shiftKey && !ev.ctrlKey && !ev.altKey) ||
+        (mod === "alt" && ev.altKey && !ev.ctrlKey && !ev.shiftKey) ||
+        (mod === "ctrl+shift" && ev.ctrlKey && ev.shiftKey && !ev.altKey) ||
+        (mod === "ctrl+alt" && ev.ctrlKey && ev.altKey && !ev.shiftKey) ||
+        (mod === "alt+shift" && ev.altKey && ev.shiftKey && !ev.ctrlKey);
+      if (!match) return;
+      // 只响应修饰键本身或普通键（避免按住 Ctrl 时每个键都触发）
+      const k = (ev.key || "").toLowerCase();
+      if (k === "control" || k === "shift" || k === "alt" || k === "meta") return;
+      const pending = this._hotkeyPending;
+      if (!pending || !pending.text) return;
+      // 新鲜度检查：10 秒内有效
+      if (Date.now() - (pending.time || 0) > 10000) return;
+      const now = Date.now();
+      if (this._lastHotkeyWord === pending.text && now - (this._lastHotkeyTime || 0) < 2000) {
+        return;
+      }
+      this._lastHotkeyWord = pending.text;
+      this._lastHotkeyTime = now;
+      ev.preventDefault();
+      ev.stopPropagation();
+      this._debugLog("hotkey translate: mod=" + mod + ", word=" + JSON.stringify(pending.text));
+      this._addWordForReader(pending.reader, pending.text).catch((err) => {
+        this._debugLog("hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
+      });
+    } catch (e) {
+      this._debugLog("_onHotkeyKeydown ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
 
   _getReaderItemID(reader) {
     if (!reader) return null;
@@ -1010,6 +1059,8 @@ _configVersion: 0,
       contextMenuLabel: "添加单词并翻译",
       enabled: true,
       autoTranslate: false,
+      hotkeyEnabled: false,
+      hotkeyModifier: "ctrl",
       promptSystem:
         "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。",
       promptUser: "请将以下英文单词或短语翻译为专业中文：{{word}}",
