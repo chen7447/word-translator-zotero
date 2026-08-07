@@ -313,7 +313,38 @@
   }
 
   // ----- 保存 -----
+  // ----- 快捷键冲突检测 -----
+  function getSelectionHotkeySpec() {
+    if (data.customHotkeyEnabled) {
+      return String(data.customHotkey || "").toLowerCase();
+    }
+    if (data.hotkeyEnabled) {
+      return String(data.hotkeyModifier || "").toLowerCase();
+    }
+    return "";
+  }
+
+  function getAddWordHotkeySpec() {
+    if (!data.addWordHotkeyEnabled) return "";
+    const mode = data.addWordHotkeyMode || "custom";
+    if (mode === "ctrl" || mode === "alt" || mode === "shift") {
+      return mode;
+    }
+    return String(data.addWordHotkey || "").toLowerCase();
+  }
+
+  function hasHotkeyConflict() {
+    const selectionSpec = getSelectionHotkeySpec();
+    const addWordSpec = getAddWordHotkeySpec();
+    if (!selectionSpec || !addWordSpec) return false;
+    return selectionSpec === addWordSpec;
+  }
+
   function save(showStatus) {
+    if (hasHotkeyConflict()) {
+      setStatus("快捷键冲突：划词翻译快捷键与先选区后按绑定键不能使用同一个按键");
+      return;
+    }
     try {
       let ok = false;
       try {
