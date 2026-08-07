@@ -28,6 +28,7 @@ var WordTranslator = {
   _paneKey: null,
   _prefWindowLoaded: false,
   _paneRefresh: null,
+  _hotkeyModifiers: null,
 
   _getProfileDir() {
     try {
@@ -68,15 +69,10 @@ var WordTranslator = {
       wfile.append("wordtranslator-debug.log");
       var wout = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
       wout.init(wfile, 0x02 | 0x08 | 0x10, 0o666, 0);
-      var wconv = Components.classes["@mozilla.org/intl/scriptableunicodeconverter;1"].createInstance(Components.interfaces.nsIScriptableUnicodeConverter);
-      wconv.charset = "UTF-8";
-      var winput = wconv.convertToInputStream(line);
-      var wavail = winput.available();
-      var wbytes = winput.readBytes(wavail);
-      var wbin = Components.classes["@mozilla.org/binaryoutputstream;1"].createInstance(Components.interfaces.nsIBinaryOutputStream);
-      wbin.setOutputStream(wout);
-      wbin.writeBytes(wbytes, wavail);
-      wbin.close();
+      var wconv = Components.classes["@mozilla.org/intl/converter-output-stream;1"].createInstance(Components.interfaces.nsIConverterOutputStream);
+      wconv.init(wout, "UTF-8", 4096, 0xFFFD);
+      wconv.writeString(line);
+      wconv.close();
       wout.close();
     } catch (e) {
       try { Zotero.debug("[WordTranslator][logwrite-fail] " + msg + " :: " + (e && e.message || e)); } catch (e2) {}
@@ -355,11 +351,31 @@ _configVersion: 0,
     const text = (params && params.annotation && params.annotation.text || "").trim();
     if (!text) return;
 
-    // 快捷键-划词翻译：缓存当前选中文本，并给该 doc 挂一次 keydown 监听
+        // 快捷键-划词翻译：mousedown 先于 mouseup 发生，先记录修饰键状态
+    try {
+      if (doc && !doc.dataset.wtMousedownBound) {
+        doc.dataset.wtMousedownBound = "1";
+        const self = this;
+        doc.addEventListener("mousedown", function (ev) {
+          try {
+            self._hotkeyModifiers = {
+              ctrl: !!ev.ctrlKey,
+              shift: !!ev.shiftKey,
+              alt: !!ev.altKey,
+              time: Date.now(),
+            };
+            if (self._data && self._data.hotkeyEnabled) {
+              self._debugLog("hotkey mousedown: mods=" + JSON.stringify(self._hotkeyModifiers));
+            }
+          } catch (e) {}
+        }, true);
+      }
+    } catch (e) {}
+    // 快捷键兜底：缓存当前选中文本，并挂一次 keydown 监听（鼠标事件未记录时使用）
     try {
       this._hotkeyPending = { reader: reader, text: text, time: Date.now() };
-      if (doc && !doc.dataset.wtHotkeyBound) {
-        doc.dataset.wtHotkeyBound = "1";
+      if (doc && !doc.dataset.wtHotkeyKeydownBound) {
+        doc.dataset.wtHotkeyKeydownBound = "1";
         const self = this;
         doc.addEventListener("keydown", function (ev) {
           try { self._onHotkeyKeydown(doc, ev); } catch (e) { self._debugLog("hotkey keydown ERROR: " + (e && (e.message || e))); }
@@ -378,6 +394,21 @@ _configVersion: 0,
       this._debugLog("autoTranslate: word=" + JSON.stringify(text) + ", reader.itemID=" + (reader && reader.itemID));
       this._addWordForReader(reader, text).catch((err) => {
         this._debugLog("autoTranslate promise ERROR: " + (err && (err.stack || err.message || String(err))));
+      });
+      return;
+    }
+    // 快捷键-划词翻译：mousedown 记录的修饰键与设置匹配时，直接翻译
+    if (this._data.hotkeyEnabled && this._hotkeyMatches(this._hotkeyModifiers)) {
+      const now = Date.now();
+      if (this._lastHotkeyWord === text && now - (this._lastHotkeyTime || 0) < 2000) {
+        return;
+      }
+      this._lastHotkeyWord = text;
+      this._lastHotkeyTime = now;
+      this._hotkeyPending = null;
+      this._debugLog("hotkey translate (mousedown): mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(text));
+      this._addWordForReader(reader, text).catch((err) => {
+        this._debugLog("hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
       });
       return;
     }
@@ -418,24 +449,36 @@ _configVersion: 0,
 
 
   // 快捷键-划词翻译：组合键按下时触发翻译
+  _hotkeyMatches(mods) {
+    try {
+      if (!mods || !mods.time) return false;
+      if (Date.now() - mods.time > 5000) return false;
+      const mod = (this._data && this._data.hotkeyModifier) || "ctrl";
+      const c = !!mods.ctrl;
+      const s = !!mods.shift;
+      const a = !!mods.alt;
+      return (
+        (mod === "ctrl" && c && !s && !a) ||
+        (mod === "shift" && s && !c && !a) ||
+        (mod === "alt" && a && !c && !s) ||
+        (mod === "ctrl+shift" && c && s && !a) ||
+        (mod === "ctrl+alt" && c && a && !s) ||
+        (mod === "alt+shift" && a && s && !c)
+      );
+    } catch (e) {
+      return false;
+    }
+  },
+
+  // 快捷键-划词翻译：组合键按下时触发翻译（兜底路径）
   _onHotkeyKeydown(doc, ev) {
     try {
       if (!this._data || !this._data.hotkeyEnabled) return;
-      const mod = (this._data.hotkeyModifier) || "ctrl";
-      const match =
-        (mod === "ctrl" && ev.ctrlKey && !ev.shiftKey && !ev.altKey) ||
-        (mod === "shift" && ev.shiftKey && !ev.ctrlKey && !ev.altKey) ||
-        (mod === "alt" && ev.altKey && !ev.ctrlKey && !ev.shiftKey) ||
-        (mod === "ctrl+shift" && ev.ctrlKey && ev.shiftKey && !ev.altKey) ||
-        (mod === "ctrl+alt" && ev.ctrlKey && ev.altKey && !ev.shiftKey) ||
-        (mod === "alt+shift" && ev.altKey && ev.shiftKey && !ev.ctrlKey);
-      if (!match) return;
-      // 只响应修饰键本身或普通键（避免按住 Ctrl 时每个键都触发）
       const k = (ev.key || "").toLowerCase();
       if (k === "control" || k === "shift" || k === "alt" || k === "meta") return;
+      if (!this._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
       const pending = this._hotkeyPending;
       if (!pending || !pending.text) return;
-      // 新鲜度检查：10 秒内有效
       if (Date.now() - (pending.time || 0) > 10000) return;
       const now = Date.now();
       if (this._lastHotkeyWord === pending.text && now - (this._lastHotkeyTime || 0) < 2000) {
@@ -445,7 +488,7 @@ _configVersion: 0,
       this._lastHotkeyTime = now;
       ev.preventDefault();
       ev.stopPropagation();
-      this._debugLog("hotkey translate: mod=" + mod + ", word=" + JSON.stringify(pending.text));
+      this._debugLog("hotkey translate (keydown): mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(pending.text));
       this._addWordForReader(pending.reader, pending.text).catch((err) => {
         this._debugLog("hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
       });
