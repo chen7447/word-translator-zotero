@@ -54,6 +54,20 @@
   }
 
   let data = null;
+
+  function applyPromptModeUI() {
+    try {
+      const mode = data.promptMode || "split";
+      const radioSplit = get("wt-prompt-mode-split");
+      const radioCombined = get("wt-prompt-mode-combined");
+      if (radioSplit) radioSplit.checked = mode === "split";
+      if (radioCombined) radioCombined.checked = mode === "combined";
+      const wrapSplit = get("wt-prompt-split-wrap");
+      const wrapCombined = get("wt-prompt-global-wrap");
+      if (wrapSplit) wrapSplit.style.display = mode === "split" ? "" : "none";
+      if (wrapCombined) wrapCombined.style.display = mode === "combined" ? "" : "none";
+    } catch (e) {}
+  }
   let editingIndex = -1;
 
   function el(tag, attrs, children) {
@@ -76,13 +90,17 @@
     "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。";
   const DEFAULT_PROMPT_USER =
     "请将以下英文单词或短语翻译为专业中文：{{word}}";
+  const DEFAULT_PROMPT_GLOBAL =
+    "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}";
 
   const DEFAULTS = {
     contextMenuLabel: "添加单词并翻译",
     enabled: true,
     autoTranslate: false,
+    promptMode: "split",
     promptSystem: DEFAULT_PROMPT_SYSTEM,
     promptUser: DEFAULT_PROMPT_USER,
+    promptGlobal: DEFAULT_PROMPT_GLOBAL,
     apis: [],
     activeApiIndex: 0,
     fontSize: 13,
@@ -533,17 +551,40 @@
     const sectionPrompt = el("section", { class: "wt-section" }, [
       el("h3", {}, [txt("提示词")]),
       el("p", { class: "wt-hint", style: "margin: -4px 0 8px;" }, [
-        txt("提示词用于告诉翻译模型怎么翻译你划选的单词/短语。你可以自定义，也可以点「恢复默认」回到下面的默认提示词。"),
+        txt("提示词用于告诉翻译模型怎么翻译你划选的单词/短语。可以选择「系统+用户」分开设置，或「全局提示词」一段式设置。"),
       ]),
-      el("div", { class: "wt-row" }, [
-        el("label", { class: "wt-label", for: "wt-prompt-system" }, [txt("系统提示词（System）")]),
-        (() => { const t = el("textarea", { class: "wt-textarea", id: "wt-prompt-system", rows: "5" }); return t; })(),
-        el("p", { class: "wt-hint" }, [txt("默认：定义翻译身份为「专业英文文献翻译助手」，要求只输出译法本身，不带解释。")]),
+      el("div", { class: "wt-row-inline", style: "gap:16px;" }, [
+        (() => {
+          const l1 = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+            (() => { const r = el("input", { type: "radio", name: "wt-prompt-mode", id: "wt-prompt-mode-split", value: "split" }); return r; })(),
+            txt("系统提示词 + 用户提示词"),
+          ]);
+          return l1;
+        })(),
+        (() => {
+          const l2 = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+            (() => { const r = el("input", { type: "radio", name: "wt-prompt-mode", id: "wt-prompt-mode-combined", value: "combined" }); return r; })(),
+            txt("全局提示词"),
+          ]);
+          return l2;
+        })(),
       ]),
-      el("div", { class: "wt-row" }, [
-        el("label", { class: "wt-label", for: "wt-prompt-user" }, [txt("用户提示词（User）")]),
-        (() => { const t = el("textarea", { class: "wt-textarea", id: "wt-prompt-user", rows: "3" }); return t; })(),
-        el("p", { class: "wt-hint" }, [txt("默认：请将 {{word}} 替换为你选中的英文单词或短语（如 Glycolytic/Gluconeogenesis Pathway）。")]),
+      el("div", { id: "wt-prompt-split-wrap" }, [
+        el("div", { class: "wt-row" }, [
+          el("label", { class: "wt-label", for: "wt-prompt-system" }, [txt("系统提示词（System）")]),
+          (() => { const t = el("textarea", { class: "wt-textarea", id: "wt-prompt-system", rows: "5" }); return t; })(),
+          el("p", { class: "wt-hint" }, [txt("默认：定义翻译身份为「专业英文文献翻译助手」，要求只输出译法本身，不带解释。")]),
+        ]),
+        el("div", { class: "wt-row" }, [
+          el("label", { class: "wt-label", for: "wt-prompt-user" }, [txt("用户提示词（User）")]),
+          (() => { const t = el("textarea", { class: "wt-textarea", id: "wt-prompt-user", rows: "3" }); return t; })(),
+          el("p", { class: "wt-hint" }, [txt("默认：请将 {{word}} 替换为你选中的英文单词或短语（如 Glycolytic/Gluconeogenesis Pathway）。")]),
+        ]),
+      ]),
+      el("div", { class: "wt-row", id: "wt-prompt-global-wrap", style: "display:none;" }, [
+        el("label", { class: "wt-label", for: "wt-prompt-global" }, [txt("全局提示词")]),
+        (() => { const t = el("textarea", { class: "wt-textarea", id: "wt-prompt-global", rows: "7" }); return t; })(),
+        el("p", { class: "wt-hint" }, [txt("默认：将系统提示词与用户提示词合并为一段，{{word}} 会替换为你选中的单词/短语。")]),
       ]),
       el("div", { class: "wt-actions" }, [
         (() => {
@@ -553,7 +594,7 @@
       ]),
     ]);
 
-    // —— API 配置 ——
+    // ———— API 配置 ————
     const sectionApis = el("section", { class: "wt-section" }, [
       el("h3", {}, [txt("翻译 API")]),
       el("p", { class: "wt-hint", style: "margin: -4px 0 8px;" }, [
@@ -701,10 +742,18 @@
     bind("wt-api-provider", "change", updateProviderPreset);
 
     bind("wt-reset-prompts", "click", () => {
-      data.promptSystem = DEFAULT_PROMPT_SYSTEM;
-      data.promptUser = DEFAULT_PROMPT_USER;
-      get("wt-prompt-system").value = DEFAULT_PROMPT_SYSTEM;
-      get("wt-prompt-user").value = DEFAULT_PROMPT_USER;
+      if (data.promptMode === "combined") {
+        data.promptGlobal = DEFAULT_PROMPT_GLOBAL;
+        const pg = get("wt-prompt-global");
+        if (pg) pg.value = DEFAULT_PROMPT_GLOBAL;
+      } else {
+        data.promptSystem = DEFAULT_PROMPT_SYSTEM;
+        data.promptUser = DEFAULT_PROMPT_USER;
+        const ps = get("wt-prompt-system");
+        const pu = get("wt-prompt-user");
+        if (ps) ps.value = DEFAULT_PROMPT_SYSTEM;
+        if (pu) pu.value = DEFAULT_PROMPT_USER;
+      }
       save(true);
     });
 
@@ -714,10 +763,17 @@
     if (en) en.addEventListener("change", () => { data.enabled = en.checked; save(false); });
     const at = get("wt-auto-translate");
     if (at) at.addEventListener("change", () => { data.autoTranslate = at.checked; save(false); });
+
+    const rSplit = get("wt-prompt-mode-split");
+    if (rSplit) rSplit.addEventListener("change", () => { data.promptMode = "split"; save(false); applyPromptModeUI(); });
+    const rCombined = get("wt-prompt-mode-combined");
+    if (rCombined) rCombined.addEventListener("change", () => { data.promptMode = "combined"; save(false); applyPromptModeUI(); });
     const ps = get("wt-prompt-system");
     if (ps) ps.addEventListener("input", () => { data.promptSystem = ps.value; save(false); });
     const pu = get("wt-prompt-user");
     if (pu) pu.addEventListener("input", () => { data.promptUser = pu.value; save(false); });
+    const pg = get("wt-prompt-global");
+    if (pg) pg.addEventListener("input", () => { data.promptGlobal = pg.value; save(false); });
 
     bind("wt-reset-font-size", "click", () => {
       data.fontSize = 13;
@@ -752,11 +808,14 @@
     const autoTranslate = get("wt-auto-translate");
     const promptSystem = get("wt-prompt-system");
     const promptUser = get("wt-prompt-user");
+    const promptGlobal = get("wt-prompt-global");
     if (contextLabel) contextLabel.value = data.contextMenuLabel || "";
     if (enabled) enabled.checked = !!data.enabled;
     if (autoTranslate) autoTranslate.checked = !!data.autoTranslate;
     if (promptSystem) promptSystem.value = data.promptSystem || DEFAULT_PROMPT_SYSTEM;
     if (promptUser) promptUser.value = data.promptUser || DEFAULT_PROMPT_USER;
+    if (promptGlobal) promptGlobal.value = data.promptGlobal || DEFAULT_PROMPT_GLOBAL;
+    applyPromptModeUI();
     const fontSize = get("wt-font-size");
     const fontSizeRange = get("wt-font-size-range");
     const fsVal = Number(data.fontSize) || 13;
