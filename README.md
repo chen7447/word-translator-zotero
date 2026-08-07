@@ -578,7 +578,7 @@ locale/
 | 文件 | 作用 |
 |---|---|
 | manifest.json | 插件名称、版本号、兼容范围和更新地址 |
-| ootstrap.js | 插件启动、关闭及 Chrome 资源注册 |
+| bootstrap.js | 插件启动、关闭及 Chrome 资源注册 |
 | content/scripts/addon.js | 核心功能、PDF 划词、快捷键、翻译和单词本 |
 | content/scripts/storage.js | API 配置和单词本的本地文件存储 |
 | content/preferences.js | 偏好面板逻辑 |
