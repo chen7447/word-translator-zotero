@@ -354,6 +354,21 @@ _configVersion: 0,
     if (!this._data || !this._data.enabled) return;
     const text = (params && params.annotation && params.annotation.text || "").trim();
     if (!text) return;
+    // 自动翻译：开启后选中文本即自动加入单词本并翻译（不显示按钮）
+    if (this._data.autoTranslate) {
+      // 防抖去重：相同文本 2 秒内不重复自动添加
+      const now = Date.now();
+      if (this._lastAutoWord === text && now - (this._lastAutoTime || 0) < 2000) {
+        return;
+      }
+      this._lastAutoWord = text;
+      this._lastAutoTime = now;
+      this._debugLog("autoTranslate: word=" + JSON.stringify(text) + ", reader.itemID=" + (reader && reader.itemID));
+      this._addWordForReader(reader, text).catch((err) => {
+        this._debugLog("autoTranslate promise ERROR: " + (err && (err.stack || err.message || String(err))));
+      });
+      return;
+    }
     const label = this._data.contextMenuLabel || "添加单词并翻译";
 
     // 按钮已存在则不再重复添加
@@ -998,6 +1013,9 @@ _configVersion: 0,
       promptSystem:
         "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。",
       promptUser: "请将以下英文单词或短语翻译为专业中文：{{word}}",
+      promptMode: "split",
+      promptGlobal:
+        "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}",
       fontSize: 13,
       apis: [],
       activeApiIndex: 0,
@@ -1148,15 +1166,26 @@ _configVersion: 0,
   async translate(text, apiOverride) {
     const api = apiOverride || this.getActiveApi();
     if (!api) throw new Error("未配置 API（请到设置->单词翻译 中添加 API）");
-    const system = (this._data && this._data.promptSystem) || "";
-    const userTemplate = (this._data && this._data.promptUser) || "请将以下英文单词或短语翻译为专业中文：{{word}}";
-    const user = userTemplate.split("{{word}}").join(text);
-    const body = {
-      model: api.model,
-      messages: [
+    const promptMode = (this._data && this._data.promptMode) || "split";
+    let messages = [];
+    if (promptMode === "combined") {
+      const globalTemplate = (this._data && this._data.promptGlobal) ||
+        "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}";
+      messages = [
+        { role: "user", content: globalTemplate.split("{{word}}").join(text) },
+      ];
+    } else {
+      const system = (this._data && this._data.promptSystem) || "";
+      const userTemplate = (this._data && this._data.promptUser) || "请将以下英文单词或短语翻译为专业中文：{{word}}";
+      const user = userTemplate.split("{{word}}").join(text);
+      messages = [
         { role: "system", content: system },
         { role: "user", content: user },
-      ],
+      ];
+    }
+    const body = {
+      model: api.model,
+      messages,
       temperature: 0.3,
       stream: false,
     };
