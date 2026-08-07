@@ -28,7 +28,8 @@ var WordTranslator = {
   _paneKey: null,
   _prefWindowLoaded: false,
   _paneRefresh: null,
-  _hotkeyModifiers: null,
+  _hotkeyPressed: null,
+  _hotkeyJustReleased: null,
 
   _getProfileDir() {
     try {
@@ -431,28 +432,43 @@ _configVersion: 0,
       if (!this._hotkeyBoundWindows) this._hotkeyBoundWindows = new Set();
       this._hotkeyBoundWindows.add(win);
       const self = this;
-      // 记录修饰键状态（mousedown 先于 mouseup/popup 发生）
-      win.addEventListener("mousedown", function (ev) {
-        try {
-          self._hotkeyModifiers = {
-            ctrl: !!ev.ctrlKey,
-            shift: !!ev.shiftKey,
-            alt: !!ev.altKey,
-            time: Date.now(),
-          };
-          if (self._data && self._data.hotkeyEnabled) {
-            self._debugLog("hotkey mousedown: mods=" + JSON.stringify(self._hotkeyModifiers));
-          }
-        } catch (e) {}
-      }, true);
-      // keydown 兜底：划词后按组合键也能触发
+      // 按下组合键：记录“快捷键按下”状态。
+      // 修饰键本体（Control/Alt）按下也记录，保证“按住修饰键 + 纯鼠标划词”流程可用。
       win.addEventListener("keydown", function (ev) {
         try {
-          if (self._hotkeyPending) {
-            self._hotkeyPending.time = Date.now();
+          if (!self._data || !self._data.hotkeyEnabled) return;
+          if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
+          self._hotkeyPressed = { mod: self._data.hotkeyModifier || "ctrl", time: Date.now() };
+          self._hotkeyJustReleased = null;
+          self._debugLog("hotkey pressed: mod=" + JSON.stringify(self._hotkeyPressed));
+        } catch (e) {}
+      }, true);
+      // 松开组合键：若整个按下期间有选中文本，触发翻译。
+      // 注意：松开修饰键本体（Control/Alt）的 keyup 就是触发点，不能过滤。
+      win.addEventListener("keyup", function (ev) {
+        try {
+          if (!self._data || !self._data.hotkeyEnabled) return;
+          const pressed = self._hotkeyPressed;
+          if (!pressed || !pressed.mod) return;
+          if (Date.now() - (pressed.time || 0) > 30000) return;
+          const k = (ev.key || "").toLowerCase();
+          const isMod = (k === "control" || k === "shift" || k === "alt" || k === "meta");
+          if (!isMod) {
+            // 松开普通键：仅当修饰键仍按住（组合键划词场景）且此刻修饰键状态仍匹配时才可能触发，
+            // 但主触发路径是松开修饰键本体，这里做兜底。
+            const still = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() });
+            if (!still) return;
           }
-          self._onHotkeyKeydown(win, ev);
-        } catch (e) { self._debugLog("hotkey keydown ERROR: " + (e && (e.message || e))); }
+          self._hotkeyPressed = null;
+          const pending = self._hotkeyPending;
+          if (!pending || !pending.text) {
+            self._debugLog("hotkey released without selection: mod=" + pressed.mod);
+            return;
+          }
+          self._hotkeyJustReleased = { mod: pressed.mod, time: Date.now() };
+          self._debugLog("hotkey released: mod=" + pressed.mod + ", word=" + JSON.stringify(pending.text));
+          self._triggerHotkeyTranslate(pending);
+        } catch (e) {}
       }, true);
       this._debugLog("hotkey bound to iframe window");
     } catch (e) {
@@ -481,22 +497,18 @@ _configVersion: 0,
       return;
     }
 
-    // 快捷键-划词翻译：mousedown 先于 mouseup 发生，先记录修饰键状态。
-    // 鼠标/按键事件实际发生在 PDF.js 的 iframe window（reader._internalReader._primaryView._iframeWindow）。
+    // 快捷键-划词翻译：缓存当前选中文本。
+    // 鼠标/按键事件实际发生在 PDF.js 的 iframe window，popup 出现时绑定一次。
     try {
       const hotkeyWin = this._getHotkeyTargetWindow(reader);
-      if (hotkeyWin) {
-        this._debugLog("hotkey target window found; binding");
-        this._bindHotkeyModifierListener(hotkeyWin);
-      } else {
-        this._debugLog("hotkey target window NOT found; internal=" + !!(reader && reader._internalReader));
-      }
+      if (hotkeyWin) this._bindHotkeyModifierListener(hotkeyWin);
     } catch (e) {
       this._debugLog("hotkey bind ERROR: " + (e && (e.stack || e.message || String(e))));
     }
-    // 兜底：缓存当前选中文本（供 keydown 路径使用）
+    // 缓存当前选中文本（供 keyup 路径使用）
     try {
       this._hotkeyPending = { reader: reader, text: text, time: Date.now() };
+      this._debugLog("hotkey pending cached: word=" + JSON.stringify(text.slice(0, 80)));
     } catch (e) {}
     // 自动翻译：开启后选中文本即自动加入单词本并翻译（不显示按钮）
     if (this._data.autoTranslate) {
@@ -513,20 +525,20 @@ _configVersion: 0,
       });
       return;
     }
-    // 快捷键-划词翻译：mousedown 记录的修饰键与设置匹配时，直接翻译
-    if (this._data.hotkeyEnabled && this._hotkeyMatches(this._hotkeyModifiers)) {
-      const now = Date.now();
-      if (this._lastHotkeyWord === text && now - (this._lastHotkeyTime || 0) < 2000) {
+    // 快捷键-划词翻译：组合键已按下时，等 keyup 触发；已松开但刚刚触发过（兜底）则不重复
+    if (this._data.hotkeyEnabled) {
+      if (this._hotkeyPressed && this._hotkeyPressed.mod) {
+        this._debugLog("hotkey held while selecting; waiting for keyup");
         return;
       }
-      this._lastHotkeyWord = text;
-      this._lastHotkeyTime = now;
-      this._hotkeyPending = null;
-      this._debugLog("hotkey translate (mousedown): mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(text));
-      this._addWordForReader(reader, text).catch((err) => {
-        this._debugLog("hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
-      });
-      return;
+      const released = this._hotkeyJustReleased;
+      if (released && released.mod && Date.now() - (released.time || 0) < 2000) {
+        // keyup 路径应已触发；此处兜底防止极少数 keyup 未收到的情况
+        this._hotkeyJustReleased = null;
+        this._debugLog("hotkey translate (release fallback): mod=" + released.mod + ", word=" + JSON.stringify(text));
+        this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
+        return;
+      }
     }
     const label = this._data.contextMenuLabel || "添加单词并翻译";
 
@@ -607,44 +619,47 @@ _configVersion: 0,
       const c = !!mods.ctrl;
       const s = !!mods.shift;
       const a = !!mods.alt;
+      if (mod === "shift" || mod === "ctrl+shift" || mod === "alt+shift") return false;
       return (
         (mod === "ctrl" && c && !s && !a) ||
-        (mod === "shift" && s && !c && !a) ||
         (mod === "alt" && a && !c && !s) ||
-        (mod === "ctrl+shift" && c && s && !a) ||
-        (mod === "ctrl+alt" && c && a && !s) ||
-        (mod === "alt+shift" && a && s && !c)
+        (mod === "ctrl+alt" && c && a && !s)
       );
     } catch (e) {
       return false;
     }
   },
 
-  // 快捷键-划词翻译：组合键按下时触发翻译（兜底路径）
-  _onHotkeyKeydown(doc, ev) {
+  _triggerHotkeyTranslate(pending) {
     try {
-      if (!this._data || !this._data.hotkeyEnabled) return;
-      const k = (ev.key || "").toLowerCase();
-      if (k === "control" || k === "shift" || k === "alt" || k === "meta") return;
-      if (!this._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
-      const pending = this._hotkeyPending;
       if (!pending || !pending.text) return;
-      if (Date.now() - (pending.time || 0) > 10000) return;
       const now = Date.now();
       if (this._lastHotkeyWord === pending.text && now - (this._lastHotkeyTime || 0) < 2000) {
         return;
       }
       this._lastHotkeyWord = pending.text;
       this._lastHotkeyTime = now;
-      ev.preventDefault();
-      ev.stopPropagation();
-      this._debugLog("hotkey translate (keydown): mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(pending.text));
+      this._hotkeyPending = null;
+      this._debugLog("hotkey translate: mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(pending.text));
       this._addWordForReader(pending.reader, pending.text).catch((err) => {
         this._debugLog("hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
       });
     } catch (e) {
-      this._debugLog("_onHotkeyKeydown ERROR: " + (e && (e.stack || e.message || String(e))));
+      this._debugLog("_triggerHotkeyTranslate ERROR: " + (e && (e.message || String(e))));
     }
+  },
+
+  // 快捷键-划词翻译：keydown 记录按下状态（不再在 keydown 时立即翻译，
+  // 改为 keyup 时根据选中文本触发，避免时序抖动）
+  _onHotkeyKeydown(doc, ev) {
+    try {
+      if (!this._data || !this._data.hotkeyEnabled) return;
+      const k = (ev.key || "").toLowerCase();
+      if (k === "control" || k === "shift" || k === "alt" || k === "meta") return;
+      if (!this._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
+      this._hotkeyPressed = { mod: this._data.hotkeyModifier || "ctrl", time: Date.now() };
+      this._hotkeyJustReleased = null;
+    } catch (e) {}
   },
 
   _getReaderItemID(reader) {
@@ -1282,6 +1297,8 @@ _configVersion: 0,
       ...raw,
       apis: Array.isArray(raw.apis) ? raw.apis : [],
       activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
+      hotkeyModifier: (raw.hotkeyModifier === "shift" || raw.hotkeyModifier === "ctrl+shift" || raw.hotkeyModifier === "alt+shift")
+        ? "ctrl" : (raw.hotkeyModifier || "ctrl"),
     };
   },
 
