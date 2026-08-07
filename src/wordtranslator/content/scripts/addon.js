@@ -271,6 +271,14 @@ _configVersion: 0,
       await this.registerPrefsWindow();
       this.registerReaderEvents();
       this.registerItemPaneSection();
+      // Beta：插件更新/加载后延迟强制重渲染当前 Item Pane，
+      // 确保单词本立即显示本地已加载数据（热更新后 Item Pane 不会自动重画）
+      try {
+        const self = this;
+        setTimeout(function () {
+          try { self._rerenderCurrentItemPane("post-init"); } catch (e) {}
+        }, 1500);
+      } catch (e) {}
       this._debugLog("init OK; root=" + this._addonRoot);
     } catch (e) {
       this._debugLog("init ERROR: " + (e && (e.stack || e.message || e)));
