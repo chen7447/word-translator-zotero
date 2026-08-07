@@ -512,8 +512,19 @@ _configVersion: 0,
       this._debugLog("translate ERROR: " + (e && (e.stack || e.message || String(e))));
     } finally {
       card.pending = false;
-      this._persistWords();
+      this._flushAndPersistWords();
       this._refreshItemPane(paneID);
+      // 兜底：若当前激活的 Item Pane 与本卡片归属的 paneID 相同，
+      // 直接重渲染当前 body，确保单词本立即显示新卡片/新翻译
+      try {
+        const win = Zotero.getMainWindow();
+        const doc = win && win.document;
+        const zp = doc && doc.getElementById && doc.getElementById("zotero-item-pane");
+        const curItemId = zp && zp.getAttribute && zp.getAttribute("data-itemid");
+        if (curItemId && Number(curItemId) === Number(paneID)) {
+          await this._rerenderCurrentItemPane("addWord-finish");
+        }
+      } catch (e2) {}
       this._debugLog("_addWordForReader finished: paneID=" + paneID);
     }
   },
@@ -722,24 +733,29 @@ _configVersion: 0,
         try { this._paneRefresh(); refreshed++; } catch (e) { this._debugLog("refresh global ERROR: " + (e && e.message || e)); }
       }
       this._debugLog("_refreshProvidersInAllPanes: refreshed=" + refreshed + ", currentItemID=" + currentItemID);
-      try {
-        const win = Zotero.getMainWindow();
-        const doc = win && win.document;
-        const zp = doc && doc.getElementById && doc.getElementById("zotero-item-pane");
-        const curItemId = zp && zp.getAttribute && zp.getAttribute("data-itemid");
-        if (curItemId && this._renderPaneBody) {
-          const item = await Zotero.Items.getAsync(Number(curItemId));
-          const body = doc.querySelector && doc.querySelector(".wordtranslator-pane-body");
-          if (item && body) {
-            this._renderPaneBody(doc, body, item);
-            this._debugLog("_refreshProvidersInAllPanes: re-rendered current body for itemID=" + item.id);
-          }
-        }
-      } catch (e3) {
-        this._debugLog("_refreshProvidersInAllPanes current-body ERROR: " + (e3 && e3.message || e3));
-      }
+      await this._rerenderCurrentItemPane("refresh-btn");
     } catch (e) {
       this._debugLog("_refreshProvidersInAllPanes ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 强制按当前 Zotero.ItemPane 激活的 item id 重渲染单词本 body
+  async _rerenderCurrentItemPane(reason) {
+    try {
+      const win = Zotero.getMainWindow();
+      const doc = win && win.document;
+      const zp = doc && doc.getElementById && doc.getElementById("zotero-item-pane");
+      const curItemId = zp && zp.getAttribute && zp.getAttribute("data-itemid");
+      if (curItemId && this._renderPaneBody) {
+        const item = await Zotero.Items.getAsync(Number(curItemId));
+        const body = doc.querySelector && doc.querySelector(".wordtranslator-pane-body");
+        if (item && body) {
+          this._renderPaneBody(doc, body, item);
+          this._debugLog("_rerenderCurrentItemPane(" + reason + "): itemID=" + item.id);
+        }
+      }
+    } catch (e3) {
+      this._debugLog("_rerenderCurrentItemPane(" + reason + ") ERROR: " + (e3 && e3.message || e3));
     }
   },
 
