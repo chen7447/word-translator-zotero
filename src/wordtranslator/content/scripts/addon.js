@@ -32,6 +32,8 @@ var WordTranslator = {
   _hotkeyJustReleased: null,
   _hotkeyModifiers: null,
   _hotkeyGlobalBound: false,
+  _addWordHotkeyFired: false,
+  _hotkeyBoundWindows: null,
 
   _getProfileDir() {
     try {
@@ -389,26 +391,38 @@ _configVersion: 0,
       if (!target) return;
       this._hotkeyGlobalBound = true;
       const self = this;
+      // —— 键盘：划词快捷键（预设或自定义）——
       target.addEventListener("keydown", function (ev) {
         try {
-          if (!self._data || !self._data.hotkeyEnabled) return;
-          if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
-          self._hotkeyPressed = { mod: self._data.hotkeyModifier || "ctrl", time: Date.now() };
+          const d = self._data;
+          if (!d || !d.hotkeyEnabled) return;
+          let matched = false;
+          if (self._customHotkeyActive()) {
+            matched = self._matchCustomHotkeyKey(ev, d.customHotkey);
+          } else {
+            matched = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() });
+          }
+          if (!matched) return;
+          self._hotkeyPressed = { mod: d.customHotkeyEnabled ? d.customHotkey : (d.hotkeyModifier || "ctrl"), time: Date.now() };
           self._hotkeyJustReleased = null;
           self._debugLog("hotkey pressed (global): mod=" + JSON.stringify(self._hotkeyPressed));
         } catch (e) {}
       }, true);
       target.addEventListener("keyup", function (ev) {
         try {
-          if (!self._data || !self._data.hotkeyEnabled) return;
+          const d = self._data;
+          if (!d || !d.hotkeyEnabled) return;
           const pressed = self._hotkeyPressed;
           if (!pressed || !pressed.mod) return;
           if (Date.now() - (pressed.time || 0) > 30000) return;
           const k = (ev.key || "").toLowerCase();
           const isMod = (k === "control" || k === "shift" || k === "alt" || k === "meta");
           if (!isMod) {
-            const still = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() });
-            if (!still) return;
+            if (self._customHotkeyActive()) {
+              if (!self._matchCustomHotkeyKey(ev, d.customHotkey)) return;
+            } else {
+              if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
+            }
           }
           self._hotkeyPressed = null;
           const pending = self._hotkeyPending;
@@ -421,17 +435,69 @@ _configVersion: 0,
           self._triggerHotkeyTranslate(pending);
         } catch (e) {}
       }, true);
+      // —— 鼠标：划词快捷键（侧键等） + “添加单词”快捷键 ——
       target.addEventListener("mousedown", function (ev) {
         try {
-          if (!self._data || !self._data.hotkeyEnabled) return;
-          if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
-          self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() };
-          self._debugLog("hotkey mousedown (global): mods=" + JSON.stringify(self._hotkeyModifiers));
+          const d = self._data;
+          if (!d) return;
+          // 1) 划词快捷键：鼠标侧键作为“按住”的划词快捷键
+          if (d.hotkeyEnabled && self._customHotkeyActive() && self._matchCustomHotkeyMouse(ev, d.customHotkey)) {
+            self._hotkeyPressed = { mod: d.customHotkey, time: Date.now() };
+            self._hotkeyJustReleased = null;
+            self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now(), mouseSide: true };
+            self._debugLog("hotkey mousedown (global, side): mod=" + d.customHotkey);
+            return;
+          }
+          // 2) 预设组合键的 mousedown 记录
+          if (d.hotkeyEnabled && !self._customHotkeyActive() && self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) {
+            self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() };
+            self._debugLog("hotkey mousedown (global): mods=" + JSON.stringify(self._hotkeyModifiers));
+            return;
+          }
+          // 3) “添加单词”快捷键：按下后若已有选中文本则执行添加
+          if (self._addWordHotkeyActive() && self._matchCustomHotkeyMouse(ev, d.addWordHotkey)) {
+            self._fireAddWordHotkey();
+          }
+        } catch (e) {}
+      }, true);
+      // —— 键盘：“添加单词”快捷键 ——
+      target.addEventListener("keydown", function (ev) {
+        try {
+          const d = self._data;
+          if (!d || !self._addWordHotkeyActive()) return;
+          if (self._matchCustomHotkeyKey(ev, d.addWordHotkey)) {
+            self._fireAddWordHotkey();
+          }
         } catch (e) {}
       }, true);
       this._debugLog("global hotkey listener bound");
     } catch (e) {
       this._debugLog("_bindGlobalHotkeyListener ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 触发“添加单词并翻译”快捷键：用当前缓存的选中文本
+  _fireAddWordHotkey() {
+    try {
+      if (!this._data || !this._data.addWordHotkeyEnabled) return;
+      const now = Date.now();
+      if (this._addWordHotkeyFired && now - this._addWordHotkeyFired < 1000) return;
+      this._addWordHotkeyFired = now;
+      const pending = this._hotkeyPending;
+      if (!pending || !pending.text) {
+        this._debugLog("addWord hotkey pressed but no selected text cached");
+        return;
+      }
+      if (Date.now() - (pending.time || 0) > 10000) {
+        this._debugLog("addWord hotkey ignored: cached text too old");
+        return;
+      }
+      this._debugLog("addWord hotkey fired: word=" + JSON.stringify(pending.text));
+      this._addWordForReader(pending.reader, pending.text).catch((err) => {
+        this._debugLog("addWord hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
+      });
+    } catch (e) {
+      this._debugLog("_fireAddWordHotkey ERROR: " + (e && (e.stack || e.message || String(e))));
     }
   },
 
@@ -497,9 +563,16 @@ _configVersion: 0,
       // 记录修饰键状态（mousedown 先于 mouseup/popup 发生，对应“按住快捷键 + 双击/划词”路径）
       win.addEventListener("mousedown", function (ev) {
         try {
-          if (!self._data || !self._data.hotkeyEnabled) return;
-          if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
-          self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() };
+          const d = self._data;
+          if (!d || !d.hotkeyEnabled) return;
+          let matched = false;
+          if (self._customHotkeyActive()) {
+            matched = self._matchCustomHotkeyMouse(ev, d.customHotkey) || self._matchCustomHotkeyKey(ev, d.customHotkey);
+          } else {
+            matched = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() });
+          }
+          if (!matched) return;
+          self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now(), mouseSide: !!(ev.button === 4 || ev.button === 5) };
           self._debugLog("hotkey mousedown: mods=" + JSON.stringify(self._hotkeyModifiers));
         } catch (e) {}
       }, true);
@@ -507,9 +580,16 @@ _configVersion: 0,
       // 修饰键本体（Control/Alt）按下也记录，保证“按住修饰键 + 纯鼠标划词”流程可用。
       win.addEventListener("keydown", function (ev) {
         try {
-          if (!self._data || !self._data.hotkeyEnabled) return;
-          if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
-          self._hotkeyPressed = { mod: self._data.hotkeyModifier || "ctrl", time: Date.now() };
+          const d = self._data;
+          if (!d || !d.hotkeyEnabled) return;
+          let matched = false;
+          if (self._customHotkeyActive()) {
+            matched = self._matchCustomHotkeyKey(ev, d.customHotkey);
+          } else {
+            matched = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() });
+          }
+          if (!matched) return;
+          self._hotkeyPressed = { mod: d.customHotkeyEnabled ? d.customHotkey : (d.hotkeyModifier || "ctrl"), time: Date.now() };
           self._hotkeyJustReleased = null;
           self._debugLog("hotkey pressed: mod=" + JSON.stringify(self._hotkeyPressed));
         } catch (e) {}
@@ -518,17 +598,19 @@ _configVersion: 0,
       // 注意：松开修饰键本体（Control/Alt）的 keyup 就是触发点，不能过滤。
       win.addEventListener("keyup", function (ev) {
         try {
-          if (!self._data || !self._data.hotkeyEnabled) return;
+          const d = self._data;
+          if (!d || !d.hotkeyEnabled) return;
           const pressed = self._hotkeyPressed;
           if (!pressed || !pressed.mod) return;
           if (Date.now() - (pressed.time || 0) > 30000) return;
           const k = (ev.key || "").toLowerCase();
           const isMod = (k === "control" || k === "shift" || k === "alt" || k === "meta");
           if (!isMod) {
-            // 松开普通键：仅当修饰键仍按住（组合键划词场景）且此刻修饰键状态仍匹配时才可能触发，
-            // 但主触发路径是松开修饰键本体，这里做兜底。
-            const still = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() });
-            if (!still) return;
+            if (self._customHotkeyActive()) {
+              if (!self._matchCustomHotkeyKey(ev, d.customHotkey)) return;
+            } else {
+              if (!self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
+            }
           }
           self._hotkeyPressed = null;
           const pending = self._hotkeyPending;
@@ -539,6 +621,26 @@ _configVersion: 0,
           self._hotkeyJustReleased = { mod: pressed.mod, time: Date.now() };
           self._debugLog("hotkey released: mod=" + pressed.mod + ", word=" + JSON.stringify(pending.text));
           self._triggerHotkeyTranslate(pending);
+        } catch (e) {}
+      }, true);
+      // “添加单词”快捷键：iframe 内的键盘事件
+      win.addEventListener("keydown", function (ev) {
+        try {
+          const d = self._data;
+          if (!d || !self._addWordHotkeyActive()) return;
+          if (self._matchCustomHotkeyKey(ev, d.addWordHotkey)) {
+            self._fireAddWordHotkey();
+          }
+        } catch (e) {}
+      }, true);
+      // “添加单词”快捷键：iframe 内的鼠标侧键
+      win.addEventListener("mousedown", function (ev) {
+        try {
+          const d = self._data;
+          if (!d || !self._addWordHotkeyActive()) return;
+          if (self._matchCustomHotkeyMouse(ev, d.addWordHotkey)) {
+            self._fireAddWordHotkey();
+          }
         } catch (e) {}
       }, true);
       this._debugLog("hotkey bound to iframe window");
@@ -598,8 +700,14 @@ _configVersion: 0,
     }
     // 快捷键-划词翻译：三条路径
     if (this._data.hotkeyEnabled) {
-      // 路径 A：mousedown 时修饰键已匹配（按住快捷键 + 双击/划词），popup 出现立即触发
-      if (this._hotkeyMatches(this._hotkeyModifiers)) {
+      // 路径 A：mousedown 时已匹配（预设组合键或自定义快捷键/鼠标侧键），popup 出现立即触发
+      if (this._customHotkeyActive()) {
+        if (this._hotkeyModifiers && this._hotkeyModifiers.mouseSide && Date.now() - (this._hotkeyModifiers.time || 0) < 5000) {
+          this._debugLog("hotkey translate (mouse side): mod=" + (this._data.customHotkey) + ", word=" + JSON.stringify(text));
+          this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
+          return;
+        }
+      } else if (this._hotkeyMatches(this._hotkeyModifiers)) {
         this._debugLog("hotkey translate (mousedown): mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(text));
         this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
         return;
@@ -689,6 +797,70 @@ _configVersion: 0,
       if (w && w.document) return w.document;
     } catch (e) {}
     return fallbackDoc || null;
+  },
+
+  // 解析自定义快捷键 spec，如 "ctrl+d"、"alt+1"、"mouse5"、"xbutton2"
+  _parseHotkeySpec(spec) {
+    try {
+      if (!spec) return null;
+      const parts = String(spec).toLowerCase().split("+").map(function (x) { return x.trim(); }).filter(Boolean);
+      if (!parts.length) return null;
+      const last = parts[parts.length - 1];
+      if (last === "mouse4" || last === "xbutton1" || last === "side") {
+        return { mouse: 4 };
+      }
+      if (last === "mouse5" || last === "xbutton2") {
+        return { mouse: 5 };
+      }
+      return {
+        ctrl: parts.indexOf("ctrl") >= 0,
+        alt: parts.indexOf("alt") >= 0,
+        shift: parts.indexOf("shift") >= 0,
+        key: last,
+      };
+    } catch (e) {
+      return null;
+    }
+  },
+
+  // 匹配键盘事件（keydown/keyup）与自定义快捷键 spec
+  _matchCustomHotkeyKey(ev, spec) {
+    try {
+      const p = this._parseHotkeySpec(spec);
+      if (!p) return false;
+      if (p.mouse) return false;
+      const k = (ev.key || "").toLowerCase();
+      if (!k || k === "control" || k === "shift" || k === "alt" || k === "meta") return false;
+      if (k !== p.key) return false;
+      return (
+        (!!ev.ctrlKey) === (!!p.ctrl) &&
+        (!!ev.altKey) === (!!p.alt) &&
+        (!!ev.shiftKey) === (!!p.shift)
+      );
+    } catch (e) {
+      return false;
+    }
+  },
+
+  // 匹配鼠标事件（mousedown，侧键 button=4/5）与自定义快捷键 spec
+  _matchCustomHotkeyMouse(ev, spec) {
+    try {
+      const p = this._parseHotkeySpec(spec);
+      if (!p || !p.mouse) return false;
+      return ev.button === p.mouse;
+    } catch (e) {
+      return false;
+    }
+  },
+
+  // 当前是否启用自定义快捷键（划词翻译）
+  _customHotkeyActive() {
+    return !!(this._data && this._data.customHotkeyEnabled && this._data.customHotkey);
+  },
+
+  // 当前是否启用“添加单词”快捷键
+  _addWordHotkeyActive() {
+    return !!(this._data && this._data.addWordHotkeyEnabled && this._data.addWordHotkey);
   },
 
   _hotkeyMatches(mods) {
@@ -1364,6 +1536,10 @@ _configVersion: 0,
       autoTranslate: false,
       hotkeyEnabled: false,
       hotkeyModifier: "ctrl",
+      customHotkeyEnabled: false,
+      customHotkey: "",
+      addWordHotkeyEnabled: false,
+      addWordHotkey: "",
       promptSystem:
         "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。",
       promptUser: "请将以下英文单词或短语翻译为专业中文：{{word}}",
