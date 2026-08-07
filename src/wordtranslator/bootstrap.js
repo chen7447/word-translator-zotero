@@ -29,15 +29,10 @@ function logError(err) {
       file.append("wordtranslator-debug.log");
       var out = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
       out.init(file, 0x02 | 0x08 | 0x10, 0o666, 0);
-      var conv = Components.classes["@mozilla.org/intl/scriptableunicodeconverter;1"].createInstance(Components.interfaces.nsIScriptableUnicodeConverter);
-      conv.charset = "UTF-8";
-      var stream = conv.convertToInputStream(line);
-      var available = stream.available();
-      var bytes = stream.readBytes(available);
-      var bstream = Components.classes["@mozilla.org/binaryoutputstream;1"].createInstance(Components.interfaces.nsIBinaryOutputStream);
-      bstream.setOutputStream(out);
-      bstream.writeBytes(bytes, available);
-      bstream.close();
+      var conv = Components.classes["@mozilla.org/intl/converter-output-stream;1"].createInstance(Components.interfaces.nsIConverterOutputStream);
+      conv.init(out, "UTF-8", 4096, 0xFFFD);
+      conv.writeString(line);
+      conv.close();
       out.close();
       try { Zotero.debug("[bootstrap] " + msg); } catch (e3) {}
     } catch (e2) {
