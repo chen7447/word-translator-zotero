@@ -33,15 +33,10 @@
       wfile.append("wordtranslator-debug.log");
       var wout = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
       wout.init(wfile, 0x02 | 0x08 | 0x10, 0o666, 0);
-      var wconv = Components.classes["@mozilla.org/intl/scriptableunicodeconverter;1"].createInstance(Components.interfaces.nsIScriptableUnicodeConverter);
-      wconv.charset = "UTF-8";
-      var winput = wconv.convertToInputStream(line);
-      var wavail = winput.available();
-      var wbytes = winput.readBytes(wavail);
-      var wbin = Components.classes["@mozilla.org/binaryoutputstream;1"].createInstance(Components.interfaces.nsIBinaryOutputStream);
-      wbin.setOutputStream(wout);
-      wbin.writeBytes(wbytes, wavail);
-      wbin.close();
+      var wconv = Components.classes["@mozilla.org/intl/converter-output-stream;1"].createInstance(Components.interfaces.nsIConverterOutputStream);
+      wconv.init(wout, "UTF-8", 4096, 0xFFFD);
+      wconv.writeString(line);
+      wconv.close();
       wout.close();
     } catch (e) {
       try { Zotero.debug("[WordTranslator prefs][logwrite-fail] " + msg + " :: " + (e && e.message || e)); } catch (e2) {}
