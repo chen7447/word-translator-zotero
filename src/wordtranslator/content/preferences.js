@@ -54,6 +54,21 @@
     try {
       const en = get("wt-hotkey-enabled");
       const wrap = get("wt-hotkey-mod-wrap");
+      const customWrap = get("wt-hotkey-custom-wrap");
+      if (wrap) wrap.style.display = en && en.checked ? "" : "none";
+      if (customWrap) customWrap.style.display = en && en.checked ? "" : "none";
+      const useCustom = get("wt-hotkey-custom-enabled");
+      if (useCustom && customWrap) {
+        const modWrap = get("wt-hotkey-mod-wrap");
+        if (modWrap) modWrap.style.display = en && en.checked && !useCustom.checked ? "" : "none";
+        customWrap.style.display = en && en.checked ? "" : "none";
+      }
+    } catch (e) {}
+  }
+  function applyAddWordHotkeyUI() {
+    try {
+      const en = get("wt-addword-hotkey-enabled");
+      const wrap = get("wt-addword-hotkey-wrap");
       if (wrap) wrap.style.display = en && en.checked ? "" : "none";
     } catch (e) {}
   }
@@ -89,6 +104,67 @@
   function txt(s) { return document.createTextNode(String(s ?? "")); }
   function get(id) { return document.getElementById(id); }
 
+  // 通用按键录制器：双击输入框进入录制，捕获键盘组合键或鼠标侧键，写入规范字符串
+  function makeHotkeyRecorder(inputId, onRecord) {
+    const inp = get(inputId);
+    if (!inp) return;
+    let recording = false;
+    const cancel = () => { recording = false; inp.value = inp.dataset.prev || ""; inp.blur(); };
+    const keyHandler = (ev) => {
+      if (!recording) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const k = (ev.key || "").toLowerCase();
+      if (k === "escape") { cancel(); return; }
+      if (k === "control" || k === "shift" || k === "alt" || k === "meta") return;
+      const parts = [];
+      if (ev.ctrlKey) parts.push("Ctrl");
+      if (ev.altKey) parts.push("Alt");
+      if (ev.shiftKey) parts.push("Shift");
+      const keyName = (k.length === 1 ? k : k === "enter" ? "Enter" : k === " " ? "Space" : k);
+      if (k.length === 1) parts.push(k.toUpperCase());
+      else parts.push(keyName);
+      const spec = parts.join("+").toLowerCase();
+      recording = false;
+      inp.value = spec;
+      inp.dataset.prev = spec;
+      if (onRecord) onRecord(spec);
+      document.removeEventListener("keydown", keyHandler, true);
+      document.removeEventListener("mousedown", mouseHandler, true);
+      inp.blur();
+    };
+    const mouseHandler = (ev) => {
+      if (!recording) return;
+      // 侧键 button=4/5；左键(0)在输入框外点击不应录制
+      if (ev.button === 4 || ev.button === 5) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const spec = ev.button === 4 ? "mouse4" : "mouse5";
+        recording = false;
+        inp.value = spec;
+        inp.dataset.prev = spec;
+        if (onRecord) onRecord(spec);
+        document.removeEventListener("keydown", keyHandler, true);
+        document.removeEventListener("mousedown", mouseHandler, true);
+        inp.blur();
+      }
+    };
+    inp.addEventListener("dblclick", () => {
+      recording = true;
+      inp.value = "请按键…";
+      document.addEventListener("keydown", keyHandler, true);
+      document.addEventListener("mousedown", mouseHandler, true);
+    });
+    inp.addEventListener("blur", () => {
+      if (recording) {
+        recording = false;
+        document.removeEventListener("keydown", keyHandler, true);
+        document.removeEventListener("mousedown", mouseHandler, true);
+        inp.value = inp.dataset.prev || "";
+      }
+    });
+  }
+
   const DEFAULT_PROMPT_SYSTEM =
     "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。";
   const DEFAULT_PROMPT_USER =
@@ -102,6 +178,10 @@
     autoTranslate: false,
     hotkeyEnabled: false,
     hotkeyModifier: "ctrl",
+    customHotkeyEnabled: false,
+    customHotkey: "",
+    addWordHotkeyEnabled: false,
+    addWordHotkey: "",
     promptMode: "split",
     promptSystem: DEFAULT_PROMPT_SYSTEM,
     promptUser: DEFAULT_PROMPT_USER,
@@ -538,6 +618,18 @@
         el("label", { for: "wt-auto-translate" }, [txt("选中文本后自动翻译并加入单词本")]),
       ]),
       el("div", { class: "wt-row-inline", style: "margin-top:6px;" }, [
+        (() => { const c = el("input", { type: "checkbox", id: "wt-addword-hotkey-enabled" }); return c; })(),
+        el("label", { for: "wt-addword-hotkey-enabled" }, [txt("添加快捷键：选中单词后按下绑定键执行「添加单词并翻译」")]),
+      ]),
+      el("div", { class: "wt-row", id: "wt-addword-hotkey-wrap", style: "margin:4px 0 0 22px;" }, [
+        el("label", { class: "wt-label", for: "wt-addword-hotkey" }, [txt("绑定按键")]),
+        (() => {
+          const inp = el("input", { type: "text", id: "wt-addword-hotkey", class: "wt-input", readonly: "readonly", placeholder: "双击此处设置（如 Mouse5、Ctrl+Enter）" });
+          return inp;
+        })(),
+        el("p", { class: "wt-hint", style: "width:100%;" }, [txt("选中单词后按下绑定按键，立即执行「添加单词并翻译」。支持键盘组合键与鼠标侧键。")]),
+      ]),
+      el("div", { class: "wt-row-inline", style: "margin-top:6px;" }, [
         (() => { const c = el("input", { type: "checkbox", id: "wt-hotkey-enabled" }); return c; })(),
         el("label", { for: "wt-hotkey-enabled" }, [txt("快捷键-划词翻译")]),
       ]),
@@ -551,6 +643,18 @@
           return sel;
         })(),
         el("p", { class: "wt-hint", style: "width:100%;" }, [txt("按下组合键 + 划选文本，即自动翻译并加入单词本。组合键仅可选一种。")]),
+      ]),
+      el("div", { class: "wt-row-inline", style: "margin-top:4px;" }, [
+        (() => { const c = el("input", { type: "checkbox", id: "wt-hotkey-custom-enabled" }); return c; })(),
+        el("label", { for: "wt-hotkey-custom-enabled" }, [txt("自定义快捷键（与上方组合键二选一）")]),
+      ]),
+      el("div", { class: "wt-row", id: "wt-hotkey-custom-wrap", style: "margin:4px 0 0 22px;" }, [
+        el("label", { class: "wt-label", for: "wt-hotkey-custom" }, [txt("自定义快捷键")]),
+        (() => {
+          const inp = el("input", { type: "text", id: "wt-hotkey-custom", class: "wt-input", readonly: "readonly", placeholder: "双击此处设置（如 Ctrl+D、Alt+1、鼠标侧键）" });
+          return inp;
+        })(),
+        el("p", { class: "wt-hint", style: "width:100%;" }, [txt("双击输入框后按组合键或鼠标侧键进行录制。支持 Ctrl/Alt/Shift + 字母或数字，以及鼠标侧键（Mouse4/Mouse5）。")]),
       ]),
     ]);
 
@@ -787,6 +891,12 @@
     if (hkEn) hkEn.addEventListener("change", () => { data.hotkeyEnabled = hkEn.checked; save(false); applyHotkeyUI(); });
     const hkMod = get("wt-hotkey-mod");
     if (hkMod) hkMod.addEventListener("change", () => { data.hotkeyModifier = hkMod.value; save(false); });
+    const hkCustomEn = get("wt-hotkey-custom-enabled");
+    if (hkCustomEn) hkCustomEn.addEventListener("change", () => { data.customHotkeyEnabled = hkCustomEn.checked; save(false); applyHotkeyUI(); });
+    makeHotkeyRecorder("wt-hotkey-custom", (spec) => { data.customHotkey = spec; save(false); });
+    const awEn = get("wt-addword-hotkey-enabled");
+    if (awEn) awEn.addEventListener("change", () => { data.addWordHotkeyEnabled = awEn.checked; save(false); applyAddWordHotkeyUI(); });
+    makeHotkeyRecorder("wt-addword-hotkey", (spec) => { data.addWordHotkey = spec; save(false); });
 
     const rSplit = get("wt-prompt-mode-split");
     if (rSplit) rSplit.addEventListener("change", () => { data.promptMode = "split"; save(false); applyPromptModeUI(); });
@@ -832,6 +942,10 @@
     const autoTranslate = get("wt-auto-translate");
     const hotkeyEnabled = get("wt-hotkey-enabled");
     const hotkeyMod = get("wt-hotkey-mod");
+    const hotkeyCustomEnabled = get("wt-hotkey-custom-enabled");
+    const hotkeyCustom = get("wt-hotkey-custom");
+    const addWordHotkeyEnabled = get("wt-addword-hotkey-enabled");
+    const addWordHotkey = get("wt-addword-hotkey");
     const promptSystem = get("wt-prompt-system");
     const promptUser = get("wt-prompt-user");
     const promptGlobal = get("wt-prompt-global");
@@ -844,11 +958,16 @@
       if (hv === "shift" || hv === "ctrl+shift" || hv === "alt+shift") hv = "ctrl";
       hotkeyMod.value = hv;
     }
+    if (hotkeyCustomEnabled) hotkeyCustomEnabled.checked = !!data.customHotkeyEnabled;
+    if (hotkeyCustom) { hotkeyCustom.value = data.customHotkey || ""; hotkeyCustom.dataset.prev = data.customHotkey || ""; }
+    if (addWordHotkeyEnabled) addWordHotkeyEnabled.checked = !!data.addWordHotkeyEnabled;
+    if (addWordHotkey) { addWordHotkey.value = data.addWordHotkey || ""; addWordHotkey.dataset.prev = data.addWordHotkey || ""; }
     if (promptSystem) promptSystem.value = data.promptSystem || DEFAULT_PROMPT_SYSTEM;
     if (promptUser) promptUser.value = data.promptUser || DEFAULT_PROMPT_USER;
     if (promptGlobal) promptGlobal.value = data.promptGlobal || DEFAULT_PROMPT_GLOBAL;
     applyPromptModeUI();
     applyHotkeyUI();
+    applyAddWordHotkeyUI();
     const fontSize = get("wt-font-size");
     const fontSizeRange = get("wt-font-size-range");
     const fsVal = Number(data.fontSize) || 13;
