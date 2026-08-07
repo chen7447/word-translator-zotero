@@ -199,6 +199,28 @@ var WordTranslatorStorage = {
     }
   },
 
+  // 获取 api-config.json 的最后修改时间（毫秒），用于节流缓存：
+  // 调用方缓存 mtime，若与上次一致则跳过反序列化。
+  getApiConfigMtime() {
+    try {
+      this._ensureDirs();
+      const file = this._root.clone();
+      file.append("api-config.json");
+      if (!file.exists()) return 0;
+      try {
+        return Number(file.lastModifiedTime) || 0;
+      } catch (e1) {}
+      // 兜底：直接读 ms
+      try {
+        const t = file.lastModifiedTime;
+        return typeof t === "number" ? t : 0;
+      } catch (e2) {}
+      return 0;
+    } catch (e) {
+      return 0;
+    }
+  },
+
   // ---------- 单词本（按条目分文件） ----------
   loadWordsMap() {
     const result = new Map();
