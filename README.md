@@ -15,7 +15,7 @@
 - 支持 OpenAI 兼容接口、DeepSeek 和自定义接口。
 - 支持配置多个 API 服务，并在右侧单词本面板中快速切换。
 - 支持自定义系统提示词、用户提示词或全局提示词。
-- 支持 {{word}} 占位符，将自动替换为选中的文本。
+- 支持 `{{word}}` 占位符，将自动替换为选中的文本。
 - 支持选中文本后自动翻译并加入单词本。
 - 支持“先选区后按绑定键”快捷键。
 - 支持“按住快捷键划词翻译”。
@@ -36,22 +36,22 @@
 
 ## 安装
 
-1. 从项目 Release 页面下载最新版 .xpi 文件。
+1. 从项目 Release 页面下载最新版 `.xpi` 文件。
 2. 打开 Zotero。
 3. 进入：
 
-   `	ext
+   ```text
    工具 → 插件
-   `
+   ```
 
-4. 将 .xpi 文件拖入插件管理器，或点击右上角齿轮按钮并选择“从文件安装插件”。
+4. 将 `.xpi` 文件拖入插件管理器，或点击右上角齿轮按钮并选择“从文件安装插件”。
 5. 安装完成后，建议重启 Zotero。
 
 插件文件示例：
 
-`	ext
+```text
 wordtranslator-4.5.0.xpi
-`
+```
 
 ---
 
@@ -59,9 +59,9 @@ wordtranslator-4.5.0.xpi
 
 安装后打开：
 
-`	ext
+```text
 编辑 → 设置 → 单词翻译 Word Translator
-`
+```
 
 不同操作系统中菜单名称可能略有不同。
 
@@ -69,9 +69,9 @@ wordtranslator-4.5.0.xpi
 
 在“翻译 API”区域点击：
 
-`	ext
+```text
 + 添加服务商
-`
+```
 
 填写以下内容：
 
@@ -87,24 +87,24 @@ wordtranslator-4.5.0.xpi
 
 #### OpenAI 官方
 
-`	ext
+```text
 API URL: https://api.openai.com/v1
 模型: gpt-4o-mini
-`
+```
 
 #### DeepSeek 官方
 
-`	ext
+```text
 API URL: https://api.deepseek.com
 模型: deepseek-chat
-`
+```
 
 #### OpenAI 兼容中转站
 
-`	ext
+```text
 API URL: 以服务商提供的基础地址为准
 模型: 以服务商支持的模型名称为准
-`
+```
 
 填写完成后，可以使用：
 
@@ -122,22 +122,22 @@ API URL: 以服务商提供的基础地址为准
 2. 用鼠标选中英文单词或短语。
 3. 在弹出的阅读器工具栏中点击：
 
-   `	ext
+   ```text
    添加单词并翻译
-   `
+   ```
 
 4. 插件会立即在右侧 Item Pane 的单词本中创建卡片。
 5. 卡片首先显示：
 
-   `	ext
+   ```text
    单词 -- 翻译中…
-   `
+   ```
 
 6. API 返回结果后，卡片会自动更新为：
 
-   `	ext
+   ```text
    单词 -- 中文译文
-   `
+   ```
 
 如果当前条目没有打开右侧单词本面板，可以在 Zotero 的 Item Pane 中启用“单词本”面板。
 
@@ -147,9 +147,9 @@ API URL: 以服务商提供的基础地址为准
 
 在偏好面板中开启：
 
-`	ext
+```text
 选中文本后自动翻译并加入单词本
-`
+```
 
 开启后，选中 PDF 文本时会自动：
 
@@ -173,13 +173,13 @@ API URL: 以服务商提供的基础地址为准
 
 ### 使用流程
 
-`	ext
+```text
 先选中单词
     ↓
 按下绑定键
     ↓
 立即添加单词并翻译
-`
+```
 
 触发时不需要等待按键松开。
 
@@ -187,9 +187,9 @@ API URL: 以服务商提供的基础地址为准
 
 在设置中开启：
 
-`	ext
+```text
 绑定「添加单词并翻译」快捷键（先选区后按绑定键触发）
-`
+```
 
 支持以下绑定方式：
 
@@ -200,17 +200,17 @@ API URL: 以服务商提供的基础地址为准
 
 自定义快捷键可以通过双击输入框进行录制，例如：
 
-`	ext
+```text
 Ctrl+Enter
 Alt+Z
 Ctrl+Alt+T
-`
+```
 
 ### 示例
 
 假设绑定键设置为 Ctrl：
 
-1. 在 PDF 中选中 mitochondria；
+1. 在 PDF 中选中 `mitochondria`；
 2. 按下 Ctrl；
 3. 插件立即执行“添加单词并翻译”。
 
@@ -224,7 +224,7 @@ Ctrl+Alt+T
 
 ### 使用流程
 
-`	ext
+```text
 按住快捷键
     ↓
 划选文本
@@ -232,17 +232,17 @@ Ctrl+Alt+T
 弹出工具栏
     ↓
 自动添加单词并翻译
-`
+```
 
-翻译发生在选区弹出工具栏出现时，而不是在快捷键 keydown 的瞬间执行。
+翻译发生在选区弹出工具栏出现时，而不是在快捷键 `keydown` 的瞬间执行。
 
 ### 预设快捷键
 
 在设置中开启：
 
-`	ext
+```text
 快捷键-划词翻译
-`
+```
 
 预设组合键支持：
 
@@ -263,17 +263,17 @@ Ctrl+Alt+T
 
 也可以开启：
 
-`	ext
+```text
 自定义快捷键
-`
+```
 
 然后双击输入框录制快捷键，例如：
 
-`	ext
+```text
 Ctrl+D
 Alt+Z
 Ctrl+Alt+T
-`
+```
 
 “快捷键-划词翻译”和“自定义快捷键”是互斥选项，两者只能启用其中一个。
 
@@ -283,17 +283,17 @@ Ctrl+Alt+T
 
 为了避免触发冲突，两个功能不要使用相同的快捷键。例如：
 
-`	ext
+```text
 快捷键-划词翻译：Alt
 先选区后按绑定键：Ctrl
-`
+```
 
 或者：
 
-`	ext
+```text
 快捷键-划词翻译：Alt
 先选区后按绑定键：Ctrl+Enter
-`
+```
 
 设置面板检测到两个功能使用相同快捷键时，会提示快捷键冲突，并阻止保存。
 
@@ -303,7 +303,7 @@ Ctrl+Alt+T
 
 | 功能 | 操作顺序 | 触发时机 | 适用场景 |
 |---|---|---|---|
-| 添加单词并翻译快捷键 | 先选区 → 按绑定键 | keydown 时立即触发 | 已经选好文本后手动触发 |
+| 添加单词并翻译快捷键 | 先选区 → 按绑定键 | `keydown` 时立即触发 | 已经选好文本后手动触发 |
 | 快捷键-划词翻译 | 按住快捷键 → 划词 | 选区工具栏出现时触发 | 连续划词并自动翻译 |
 | 自动翻译 | 直接划词 | 选区出现后自动触发 | 不需要任何快捷键 |
 
@@ -322,25 +322,25 @@ Ctrl+Alt+T
 
 用户提示词中可以使用：
 
-`	ext
+```text
 {{word}}
-`
+```
 
 例如：
 
-`	ext
+```text
 请将以下英文单词或短语翻译为专业中文：{{word}}
-`
+```
 
-插件会将 {{word}} 自动替换为选中的文本。
+插件会将 `{{word}}` 自动替换为选中的文本。
 
 ### 全局提示词
 
 也可以选择：
 
-`	ext
+```text
 全局提示词
-`
+```
 
 将全部提示内容合并到一个输入框中。
 
@@ -354,9 +354,9 @@ Ctrl+Alt+T
 
 每个单词以卡片形式显示：
 
-`	ext
+```text
 英文单词 -- 中文译文
-`
+```
 
 支持：
 
@@ -377,17 +377,17 @@ Ctrl+Alt+T
 
 支持范围：
 
-`	ext
+```text
 9–24 px
-`
+```
 
 也可以直接在单词本面板顶部使用放大和缩小按钮调整。
 
 默认字体大小：
 
-`	ext
+```text
 13 px
-`
+```
 
 ---
 
@@ -395,19 +395,19 @@ Ctrl+Alt+T
 
 插件会在 Zotero profile 目录下创建：
 
-`	ext
+```text
 wordtranslator/
 ├── api-config.json
 └── words/
     ├── <itemID>.json
     └── ...
-`
+```
 
 其中：
 
-- pi-config.json：保存 API 配置、快捷键、提示词及其他插件设置；
-- words/<itemID>.json：保存对应 Zotero 条目的单词本；
-- wordtranslator-debug.log：保存插件调试日志。
+- `api-config.json`：保存 API 配置、快捷键、提示词及其他插件设置；
+- `words/<itemID>.json`：保存对应 Zotero 条目的单词本；
+- `wordtranslator-debug.log`：保存插件调试日志。
 
 可以在偏好面板的“保存目录”区域查看并打开数据目录。
 
@@ -429,7 +429,7 @@ wordtranslator/
 请检查：
 
 - API URL 是否正确；
-- API URL 是否为基础地址，而不是完整的 /chat/completions 地址；
+- API URL 是否为基础地址，而不是完整的 `/chat/completions` 地址；
 - API Key 是否有效；
 - 模型名称是否正确；
 - 当前网络是否可以访问该服务；
@@ -437,15 +437,15 @@ wordtranslator/
 
 一般情况下，API URL 应填写基础地址，例如：
 
-`	ext
+```text
 https://api.openai.com/v1
-`
+```
 
 插件会自动请求：
 
-`	ext
+```text
 /chat/completions
-`
+```
 
 ---
 
@@ -453,7 +453,7 @@ https://api.openai.com/v1
 
 请确认：
 
-- API URL 是否支持 /models 接口；
+- API URL 是否支持 `/models` 接口；
 - API Key 是否有读取模型列表的权限；
 - 中转站是否兼容 OpenAI 的模型列表接口。
 
@@ -495,31 +495,22 @@ https://api.openai.com/v1
 
 请确保以下两个功能没有使用相同按键：
 
-`	ext
+```text
 快捷键-划词翻译
-`
+```
 
 和：
 
-`	ext
+```text
 绑定“添加单词并翻译”快捷键
-`
+```
 
 推荐为两个功能设置不同的按键，例如：
 
-`	ext
+```text
 快捷键-划词翻译：Alt
 添加单词并翻译：Ctrl
-`
-
-或者：
-
-`	ext
-快捷键-划词翻译：Alt
-添加单词并翻译：Ctrl+Enter
-`
-
-设置面板检测到两个功能使用相同快捷键时，会提示快捷键冲突，并阻止保存。
+```
 
 ---
 
@@ -547,9 +538,9 @@ https://api.openai.com/v1
 
 详细错误信息可以查看 Zotero profile 目录中的：
 
-`	ext
+```text
 wordtranslator-debug.log
-`
+```
 
 ---
 
@@ -557,7 +548,7 @@ wordtranslator-debug.log
 
 主要文件结构：
 
-`	ext
+```text
 manifest.json
 bootstrap.js
 content/
@@ -571,40 +562,40 @@ content/
 locale/
 └── zh-CN/
     └── addon.ftl
-`
+```
 
 主要模块：
 
 | 文件 | 作用 |
 |---|---|
-| manifest.json | 插件名称、版本号、兼容范围和更新地址 |
-| bootstrap.js | 插件启动、关闭及 Chrome 资源注册 |
-| content/scripts/addon.js | 核心功能、PDF 划词、快捷键、翻译和单词本 |
-| content/scripts/storage.js | API 配置和单词本的本地文件存储 |
-| content/preferences.js | 偏好面板逻辑 |
-| content/preferences.xhtml | 偏好面板页面 |
-| locale/zh-CN/addon.ftl | Zotero 界面本地化文本 |
+| `manifest.json` | 插件名称、版本号、兼容范围和更新地址 |
+| `bootstrap.js` | 插件启动、关闭及 Chrome 资源注册 |
+| `content/scripts/addon.js` | 核心功能、PDF 划词、快捷键、翻译和单词本 |
+| `content/scripts/storage.js` | API 配置和单词本的本地文件存储 |
+| `content/preferences.js` | 偏好面板逻辑 |
+| `content/preferences.xhtml` | 偏好面板页面 |
+| `locale/zh-CN/addon.ftl` | Zotero 界面本地化文本 |
 
 ### 重新打包
 
 进入构建目录后执行：
 
-`powershell
+```powershell
 .\package.ps1
-`
+```
 
 或者将插件源码目录直接压缩为 ZIP，再将扩展名改为：
 
-`	ext
+```text
 .xpi
-`
+```
 
 压缩包根目录必须直接包含：
 
-`	ext
+```text
 manifest.json
 bootstrap.js
-`
+```
 
 不能在外层额外嵌套一个源码目录。
 
@@ -613,11 +604,11 @@ bootstrap.js
 ## 版本迭代策略
 
 - 界面美化或小幅优化：增加修订版本
-  例如 4.4.1 → 4.4.2
+  例如 `4.4.1 → 4.4.2`
 - 功能修复或较明显的行为调整：增加次版本
-  例如 4.4.1 → 4.5.0
+  例如 `4.4.1 → 4.5.0`
 - 新增主要功能或较大架构调整：增加主版本
-  例如 4.4.1 → 5.0.0
+  例如 `4.4.1 → 5.0.0`
 
 ---
 
