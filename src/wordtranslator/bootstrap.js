@@ -64,6 +64,8 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
     var manifestURI = Services.io.newURI(rootURI + "manifest.json");
     chromeHandle = aomStartup.registerChrome(manifestURI, [
       ["content", "wordtranslator", rootURI + "content/"],
+      ["locale", "wordtranslator", "en-US", rootURI + "locale/en-US/"],
+      ["locale", "wordtranslator", "zh-CN", rootURI + "locale/zh-CN/"],
     ]);
 
     // 桥接全局变量（Components 是 bootstrap 作用域全局，必须显式注入，否则 addon.js 的日志/文件写会抛 ReferenceError）
