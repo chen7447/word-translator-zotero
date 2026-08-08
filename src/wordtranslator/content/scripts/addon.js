@@ -24,6 +24,7 @@ var WordTranslator = {
   _addonVersion: "",
   _buildTime: "",
   _itemWords: new Map(),      // itemID -> [{word, translation, pending}]
+  _sortMode: "reverse", // 排序模式：forward | reverse | alpha
   _panelUIDs: new Map(),      // itemID -> { paneUID, refresh }
   _paneKey: null,
   _prefWindowLoaded: false,
@@ -36,6 +37,9 @@ var WordTranslator = {
   _hotkeyGlobalBound: false,
   _addWordHotkeyFired: false,
   _hotkeyBoundWindows: null,
+  _tempEditState: null,
+  _tempEditBound: false,
+  _tempEditCloseHandler: null,
 
   _getProfileDir() {
     try {
@@ -247,6 +251,7 @@ _configVersion: 0,
         try { Zotero.WordTranslator.writeApiConfigString = (jsonStr) => { try { const S = Zotero.WordTranslatorStorage; if (S && typeof S.saveApiConfig === "function") { const obj = jsonStr ? JSON.parse(jsonStr) : null; return !!S.saveApiConfig(obj); } } catch (e0) {} return false; }; } catch (e) {}
       await this.loadDataFromDisk();
       this._loadWordsFromDisk();
+      this._sortMode = this._data.sortMode || "reverse";
       // 主动验证存储层：确保数据目录存在并写盘（输出日志便于定位写文件失败）
       try {
         if (Zotero.WordTranslatorStorage) {
@@ -522,10 +527,21 @@ _configVersion: 0,
       this._addWordHotkeyFired = now;
       this._debugLog("addWord hotkey fired: word=" + JSON.stringify(pending.text));
       this._selectionFirstPending = null;
+      // Beta: popup has add-btn, show temp edit area
+      try {
+        const fDoc = this._getHotkeyTargetDoc(pending.reader);
+        if (fDoc) {
+          const fBtn = fDoc.querySelector(".wordtranslator-add-btn");
+          if (fBtn) {
+            this._showTempEditArea(fDoc, fBtn, pending.reader, pending.text, "");
+          }
+        }
+      } catch (e) {
+        this._debugLog("_fireAddWordTempEdit ERROR: " + (e && (e.message || String(e))));
+      }
       this._addWordForReader(pending.reader, pending.text).catch((err) => {
         this._debugLog("addWord hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
-      });
-    } catch (e) {
+      });   } catch (e) {
       this._debugLog("_fireAddWordHotkey ERROR: " + (e && (e.stack || e.message || String(e))));
     }
   },
@@ -808,31 +824,7 @@ _configVersion: 0,
 
     const SVGIcon = '<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 16 16" width="16" height="16" xml:space="preserve"><style type="text/css">.wt0{fill:#64B5F6;}.wt1{fill:#1E88E5;}</style><g><path class="wt0" d="M4.4,11.1h1.4c0.1,0,0.2-0.1,0.1-0.2L5.2,8.7c0-0.1-0.2-0.1-0.3,0l-0.7,2.2C4.2,11,4.3,11.1,4.4,11.1L4.4,11.1z"/><path class="wt0" d="M8.8,5H1.4C0.6,5,0,5.7,0,6.4v8.2C0,15.4,0.6,16,1.4,16h7.4c0.8,0,1.4-0.6,1.4-1.4V6.4C10.2,5.7,9.5,5,8.8,5L8.8,5z M7.9,14.2c-0.1,0.1-0.2,0.2-0.3,0.2c0,0-0.1,0-0.1,0c-0.1,0-0.1,0-0.2,0C7,14.3,7,14.2,7,14.1l-0.6-1.9C6.3,12,6.2,12,6.1,12H4c-0.1,0-0.1,0-0.2,0.1l-0.6,2c-0.1,0.1-0.1,0.2-0.3,0.3c-0.1,0.1-0.3,0.1-0.4,0.1c-0.2,0-0.3-0.1-0.3-0.2c0-0.1-0.1-0.2,0-0.4l2.1-6.4c0.1-0.3,0.4-0.5,0.7-0.5h0c0.3,0,0.6,0.2,0.7,0.5l0,0l2.1,6.5C8,14,8,14.1,7.9,14.2L7.9,14.2z"/><path class="wt1" d="M14.3,0H7.5C6.6,0,5.8,0.8,5.8,1.7v2.1C5.8,4,6,4.1,6.1,4.1H8c0.3,0,0.5,0,0.7,0.1C8.6,3.9,8.6,3.7,8.5,3.4H7.6C7.4,3.4,7.3,3.3,7.3,3c0-0.3,0.1-0.5,0.3-0.5h2.8c-0.1-0.3-0.2-0.5-0.2-0.7c0-0.2,0.1-0.4,0.3-0.5c0.3-0.1,0.4,0,0.6,0.2c0,0.1,0.1,0.3,0.2,0.6c0.1,0.2,0.1,0.4,0.1,0.4h2.4c0.3,0,0.4,0.2,0.4,0.5c0,0.3-0.1,0.5-0.4,0.5h-0.6c-0.1,0-0.1,0-0.1,0C12.8,4.9,12.3,6,11.6,7c0.6,0.5,1.3,0.9,2.3,1.3c0.3,0.1,0.3,0.3,0.3,0.6c-0.1,0.2-0.3,0.3-0.6,0.2c-0.9-0.3-1.8-0.8-2.5-1.3v2.9c0,0.2,0.1,0.3,0.3,0.3h3c0.9,0,1.7-0.8,1.7-1.7V1.7C16,0.8,15.2,0,14.3,0L14.3,0z"/><path class="wt1" d="M12,3.4H9.6c-0.1,0-0.2,0.1-0.1,0.2C9.6,4,9.7,4.4,9.9,4.8c0,0,0,0,0,0.1c0.4,0.3,0.7,0.8,0.9,1.2c0.2,0,0.1,0,0.3,0c0.5-0.8,0.9-1.6,1.1-2.5C12.1,3.5,12.1,3.4,12,3.4L12,3.4z"/></g></svg>';
 
-    const btn = doc.createElement("button");
-    btn.className = "toolbar-button wide-button wordtranslator-add-btn";
-    btn.setAttribute("data-tabstop", "1");
-    btn.innerHTML = SVGIcon + "<span>" + label + "</span>";
-    btn.addEventListener("click", (ev) => {
-      try {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this._debugLog(
-          "selection button clicked: word=" + JSON.stringify(text) +
-          ", reader.itemID=" + (reader && reader.itemID) +
-          ", reader.itemId=" + (reader && reader.itemId) +
-          ", reader.tabID=" + (reader && reader.tabID)
-        );
-
-        this._addWordForReader(reader, text).catch((err) => {
-          this._debugLog(
-            "addWord promise ERROR: " +
-            (err && (err.stack || err.message || String(err)))
-          );
-        });
-      } catch (err) {
-        this._debugLog("btn click ERROR: " + (err && (err.stack || err.message || String(err))));
-      }
-    }, true);
+    const btn = this._createAddWordButton(doc, reader, text, SVGIcon + "<span>" + label + "</span>");
     append(btn);
   },
 
@@ -872,7 +864,162 @@ _configVersion: 0,
     return fallbackDoc || null;
   },
 
-  // 解析自定义快捷键 spec，如 "ctrl+d"、"alt+1"、"ctrl"、"mouse1"~"mouse5"、"xbutton1/2"
+
+  // 创建"添加单词并翻译"按钮（带 SVG 图标）
+  _createAddWordButton(doc, reader, text, btnHTML) {
+    const btn = doc.createElement("button");
+    btn.className = "toolbar-button wide-button wordtranslator-add-btn";
+    btn.setAttribute("data-tabstop", "1");
+    btn.innerHTML = btnHTML || "";
+    btn.addEventListener("click", (ev) => {
+      try {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this._debugLog(
+          "selection button clicked: word=" + JSON.stringify(text) +
+          ", reader.itemID=" + (reader && reader.itemID) +
+          ", reader.itemId=" + (reader && reader.itemId) +
+          ", reader.tabID=" + (reader && reader.tabID)
+        );
+
+        // 按钮原地变成可编辑文本框（显示译文，右下角可缩放）
+        try {
+          this._showTempEditArea(doc, btn, reader, text, "");
+        } catch (e2) {
+          this._debugLog("showTempEditArea ERROR: " + (e2 && (e2.stack || e2.message || String(e2))));
+        }
+
+        this._addWordForReader(reader, text).catch((err) => {
+          this._debugLog(
+            "addWord promise ERROR: " +
+            (err && (err.stack || err.message || String(err)))
+          );
+        });
+      } catch (err) {
+        this._debugLog("btn click ERROR: " + (err && (err.stack || err.message || String(err))));
+      }
+    }, true);
+    return btn;
+  },
+
+  // 把按钮原地替换为可编辑文本框；已有编辑框时先恢复按钮
+  _showTempEditArea(doc, btn, reader, text, translation) {
+    try {
+      if (this._tempEditState) this._restoreButtonFromTempEdit();
+      if (!doc || !btn || !btn.isConnected) return;
+      const textarea = doc.createElement("textarea");
+      textarea.className = "wordtranslator-temp-edit";
+      textarea.rows = 1;
+      textarea.value = translation || "";
+      textarea.placeholder = "正在翻译…";
+      textarea.setAttribute("data-tabstop", "1");
+      textarea.style.resize = "both";
+      textarea.style.height = "1.2em";
+      textarea.style.minHeight = "1.2em";
+      textarea.style.width = "90%";
+      textarea.style.margin = "4px 0";
+      textarea.style.fontSize = "inherit";
+      textarea.style.overflow = "auto";
+      btn.replaceWith(textarea);
+      this._tempEditState = {
+        doc: doc,
+        btn: btn,
+        textarea: textarea,
+        reader: reader || null,
+        text: String(text || "").trim(),
+        innerHTML: btn.innerHTML || "",
+      };
+      try {
+        textarea.focus();
+        textarea.select();
+      } catch (e) {}
+      this._bindTempEditAutoClose();
+    } catch (e) {
+      this._debugLog("_showTempEditArea ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 翻译完成后更新临时编辑框内容
+  _updateTempEditArea(word, translation) {
+    const st = this._tempEditState;
+    if (!st || !st.textarea || !st.textarea.isConnected) return;
+    try {
+      const cur = String(st.text || "").trim().toLowerCase();
+      const tgt = String(word || "").trim().toLowerCase();
+      if (!cur || cur !== tgt) return;
+      st.textarea.value = translation || "";
+      st.textarea.placeholder = translation ? "" : "正在翻译…";
+    } catch (e) {
+      this._debugLog("_updateTempEditArea ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 取消选中/外部点击/下一次翻译时：编辑框恢复为按钮
+  _restoreButtonFromTempEdit() {
+    const st = this._tempEditState;
+    if (!st) return;
+    this._tempEditState = null;
+    this._unbindTempEditAutoClose();
+    try {
+      const { doc, textarea, reader, text, innerHTML } = st;
+      if (!doc || !textarea || !textarea.isConnected) return;
+      const label = (this._data && this._data.contextMenuLabel) || "添加单词并翻译";
+      const btn = this._createAddWordButton(doc, reader, text, innerHTML || ("<span>" + label + "</span>"));
+      textarea.replaceWith(btn);
+    } catch (e) {
+      this._debugLog("_restoreButtonFromTempEdit ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 外部 mousedown（PDF 页面/弹出层）时自动恢复按钮
+  _bindTempEditAutoClose() {
+    try {
+      if (this._tempEditBound) return;
+      const st = this._tempEditState;
+      if (!st) return;
+      const handler = (ev) => {
+        const s = this._tempEditState;
+        if (!s || !s.textarea || !s.textarea.isConnected) {
+          this._restoreButtonFromTempEdit();
+          return;
+        }
+        const t = ev.target;
+        if (t && (t === s.textarea || (s.textarea.contains && s.textarea.contains(t)))) return;
+        this._restoreButtonFromTempEdit();
+      };
+      this._tempEditBound = true;
+      this._tempEditCloseHandler = handler;
+      const win = this._getHotkeyTargetWindow(st.reader);
+      if (win && win.document) {
+        win.document.addEventListener("mousedown", handler, true);
+      }
+      if (st.doc && st.doc.defaultView) {
+        st.doc.defaultView.addEventListener("mousedown", handler, true);
+      }
+    } catch (e) {
+      this._debugLog("_bindTempEditAutoClose ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _unbindTempEditAutoClose() {
+    try {
+      if (!this._tempEditBound) return;
+      this._tempEditBound = false;
+      const handler = this._tempEditCloseHandler;
+      this._tempEditCloseHandler = null;
+      if (!handler) return;
+      const st = this._tempEditState;
+      const win = st ? this._getHotkeyTargetWindow(st.reader) : null;
+      if (win && win.document) {
+        win.document.removeEventListener("mousedown", handler, true);
+      }
+      if (st && st.doc && st.doc.defaultView) {
+        st.doc.defaultView.removeEventListener("mousedown", handler, true);
+      }
+    } catch (e) {
+      this._debugLog("_unbindTempEditAutoClose ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },  // 解析自定义快捷键 spec，如 "ctrl+d"、"alt+1"、"ctrl"、"mouse1"~"mouse5"、"xbutton1/2"
   _parseHotkeySpec(spec) {
     try {
       if (!spec) return null;
@@ -1160,10 +1307,21 @@ _configVersion: 0,
       // 按住快捷键连续划词期间需要持续有效，直到 keyup 才结束 session
       this._hotkeyJustReleased = null;
       this._debugLog("hotkey translate: mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(pending.text));
+      // Beta: popup has add-btn, show temp edit area
+      try {
+        const hkDoc = this._getHotkeyTargetDoc(pending.reader);
+        if (hkDoc) {
+          const hkBtn = hkDoc.querySelector(".wordtranslator-add-btn");
+          if (hkBtn) {
+            this._showTempEditArea(hkDoc, hkBtn, pending.reader, pending.text, "");
+          }
+        }
+      } catch (e) {
+        this._debugLog("_triggerHotkeyTempEdit ERROR: " + (e && (e.message || String(e))));
+      }
       this._addWordForReader(pending.reader, pending.text).catch((err) => {
         this._debugLog("hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
-      });
-    } catch (e) {
+      });   } catch (e) {
       this._debugLog("_triggerHotkeyTranslate ERROR: " + (e && (e.message || String(e))));
     }
   },
@@ -1325,6 +1483,12 @@ _configVersion: 0,
       card.pending = false;
       this._flushAndPersistWords();
       this._refreshItemPane(paneID);
+      // Beta: udpate temp edit area
+      try {
+        this._updateTempEditArea(normWord, card.translation);
+      } catch (e) {
+        this._debugLog("_updateTempEditArea ERROR in finally: " + (e && (e.message || String(e))));
+      }
       // 兜底：若当前激活的 Item Pane 与本卡片归属的 paneID 相同，
       // 直接重渲染当前 body，确保单词本立即显示新卡片/新翻译
       try {
@@ -1584,12 +1748,12 @@ _configVersion: 0,
         paneID: "wordtranslator",
         pluginID: this._addonID,
         header: {
-          l10nID: "wordtranslator-pane-header",
-          icon: this._addonRoot + "content/icons/favicon.png",
+          l10nID: "wordtranslator-itemPaneSection-header",
+          icon: "chrome://wordtranslator/content/icons/favicon.png",
         },
         sidenav: {
-          l10nID: "wordtranslator-pane-sidenav",
-          icon: this._addonRoot + "content/icons/favicon.png",
+          l10nID: "wordtranslator-itemPaneSection-sidenav",
+          icon: "chrome://wordtranslator/content/icons/favicon.png",
           orderable: false,
         },
         bodyXHTML: '<html:div class="wordtranslator-pane-body" style="padding: 8px;"></html:div>',
@@ -1621,6 +1785,7 @@ _configVersion: 0,
           try {
             this._debugLog("pane onRender: itemID=" + (item && item.id) + ", body=" + !!body);
             this._renderPaneBody(doc, body, item);
+            this._applyPaneL10nFallback(doc, body);
           } catch (e) {
             this._debugLog("onRender ERROR: " + (e && (e.stack || e.message || String(e))));
           }
@@ -1630,6 +1795,54 @@ _configVersion: 0,
       this._debugLog("registerItemPaneSection key=" + key);
     } catch (e) {
       this._debugLog("registerItemPaneSection ERROR: " + (e && (e.stack || e.message || e)));
+    }
+  },
+
+  // DOM 兜底：Fluent 未加载时直接设置 header label 和 sidenav tooltiptext
+  _applyPaneL10nFallback(doc, body) {
+    try {
+      if (!doc || !body) return;
+      const isZh = Zotero.locale && Zotero.locale.startsWith("zh");
+      const headerLabel = isZh ? "单词本" : "Word List";
+      const sidenavTooltip = isZh ? "单词翻译" : "Word Translator";
+      // 向上查找 item-pane-section 容器
+      let section = body.closest ? body.closest("item-pane-section") : null;
+      if (!section) {
+        const p = body.parentElement;
+        if (p) section = p.closest ? p.closest("item-pane-section") : null;
+      }
+      if (section) {
+        // header label
+        const labelEl = section.querySelector ? section.querySelector(".head .title, .head .label, .head label") : null;
+        if (labelEl) {
+          if (!labelEl.textContent || labelEl.textContent.trim() === "") {
+            labelEl.textContent = headerLabel;
+          }
+        }
+        // sidenav tooltiptext（在 sidebar 侧）
+        const sidenavBtn = doc.querySelector('[data-pane-id="wordtranslator"]');
+        if (sidenavBtn) {
+          sidenavBtn.setAttribute("tooltiptext", sidenavTooltip);
+          sidenavBtn.setAttribute("title", sidenavTooltip);
+        }
+      }
+      // 另一种结构：直接在 sidenav-toolbar 内查找
+      const sidenavBtns = doc.querySelectorAll('[data-pane-id="wordtranslator"], [data-pane="wordtranslator"]');
+      for (const btn of sidenavBtns) {
+        if (btn.classList && (btn.classList.contains("sidenav-button") || btn.tagName === "toolbarbutton" || btn.getAttribute("data-l10n-id") === "wordtranslator-itemPaneSection-sidenav")) {
+          btn.setAttribute("tooltiptext", sidenavTooltip);
+          btn.setAttribute("title", sidenavTooltip);
+        }
+      }
+      // 最后兜底：部分 Zotero 版本把 l10n 节点放在独立的主窗口文档中，
+      // 通过 data-l10n-id 直接定位并写入原生 tooltip 属性。
+      const l10nBtns = doc.querySelectorAll('[data-l10n-id="wordtranslator-itemPaneSection-sidenav"]');
+      for (const btn of l10nBtns) {
+        btn.setAttribute("tooltiptext", sidenavTooltip);
+        btn.setAttribute("title", sidenavTooltip);
+      }
+    } catch (e) {
+      this._debugLog("_applyPaneL10nFallback ERROR: " + (e && (e.stack || e.message || e)));
     }
   },
 
@@ -1650,6 +1863,52 @@ _configVersion: 0,
     return doc.createTextNode(String(s ?? ""));
   },
 
+  _getSortedIndices(raw, mode) {
+    if (!raw || !raw.length) return [];
+    const indices = raw.map((_, i) => i);
+    switch (mode) {
+      case "forward":
+        return indices;
+      case "reverse":
+        return indices.slice().reverse();
+      case "alpha":
+        return indices.slice().sort((a, b) => {
+          const wa = (raw[a].word || "").toLowerCase();
+          const wb = (raw[b].word || "").toLowerCase();
+          return wa.localeCompare(wb);
+        });
+      default:
+        return indices.slice().reverse();
+    }
+  },
+
+  _setSortMode(mode) {
+    if (mode !== "forward" && mode !== "reverse" && mode !== "alpha") return;
+    this._sortMode = mode;
+    if (this._data) {
+      this._data.sortMode = mode;
+      this._saveData();
+    }
+    // 刷新面板
+    if (this._paneRefresh && typeof this._paneRefresh === "function") {
+      try { this._paneRefresh(); } catch (e) { this._debugLog("_setSortMode refresh ERROR: " + (e && e.message || e)); }
+    }
+  },
+
+  _getSortIconHTML(mode) {
+    const icons = {
+      forward: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/><polyline points="7 10 3 14 7 18"/></svg>',
+      reverse: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/><polyline points="17 10 21 14 17 18"/></svg>',
+      alpha: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><text x="2" y="10" font-size="10" font-family="Arial" font-weight="700" fill="currentColor" stroke="none">A</text><text x="11" y="10" font-size="10" font-family="Arial" font-weight="700" fill="currentColor" stroke="none">Z</text><polyline points="19 18 21 14 19 10 17 14 19 18"/></svg>'
+    };
+    return icons[mode] || icons.reverse;
+  },
+
+  _getSortLabel(mode) {
+    const map = { forward: "顺序", reverse: "倒序", alpha: "字母" };
+    return map[mode] || "倒序";
+  },
+
   _renderPaneBody(doc, body, item) {
     // 使用 HTML 命名空间创建元素（body 是 html:div，doc 是 XUL document）
     const HTML_NS = "http://www.w3.org/1999/xhtml";
@@ -1658,7 +1917,8 @@ _configVersion: 0,
 
     body.replaceChildren();
     const itemID = Number(item.id);
-    const words = this._itemWords.get(itemID) || [];
+    const rawWords = this._itemWords.get(itemID) || [];
+    const sortedIndices = this._getSortedIndices(rawWords, this._sortMode);
 
     // 缓存 panelUID 用于后续刷新
     if (body.dataset.wtPaneUid) {
@@ -1678,7 +1938,8 @@ _configVersion: 0,
     const leftGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex:1;min-width:0;" });
     const rightGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex-shrink:0;" });
 
-    const title = el("strong", {}, [txt("单词本")]);
+    // 保留面板内部的可见标题，避免 Zotero 尚未完成 Fluent 渲染时标题为空。
+    const title = el("strong", { title: "单词本", style: "white-space:nowrap;" }, [txt("单词本")]);
     leftGroup.append(title);
 
     const apiSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换翻译 API" });
@@ -1699,6 +1960,23 @@ _configVersion: 0,
     settingsBtn.addEventListener("click", () => this._openPreferencesPane());
     leftGroup.append(settingsBtn);
 
+    const sortBtn = el("button", { title: this._getSortLabel(this._sortMode), "aria-label": "切换排序方式", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    if (this._sortMode === "reverse") {
+      sortBtn.textContent = "倒";
+    } else if (this._sortMode === "forward") {
+      sortBtn.textContent = "正";
+    } else { // alpha
+      sortBtn.innerHTML = this._getSortIconHTML("alpha");
+    }
+    sortBtn.addEventListener("click", () => {
+      const modes = ["reverse", "forward", "alpha"];
+      const idx = modes.indexOf(this._sortMode);
+      const next = modes[(idx + 1) % modes.length];
+      this._setSortMode(next);
+      // 按钮会因面板刷新而重建，无需手动更新内容
+    });
+    leftGroup.append(sortBtn);
+
     const zoomInBtn = el("button", { title: "放大字体", "aria-label": "放大字体", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
     zoomInBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><text x=\"6\" y=\"17\" font-size=\"14\" font-family=\"Arial, sans-serif\" font-weight=\"700\" stroke=\"none\" fill=\"currentColor\">A</text><polyline points=\"16,4 19,1 22,4\"></polyline><line x1=\"19\" y1=\"1\" x2=\"19\" y2=\"7\"></line></svg>";
     zoomInBtn.addEventListener("click", () => this._onZoomFontSize(itemID, +1));
@@ -1718,11 +1996,14 @@ _configVersion: 0,
 
     // 卡片列表
     const list = el("div", { class: "wordtranslator-pane-list", style: "display:flex;flex-direction:column;gap:6px;" });
-    if (words.length === 0) {
+    if (rawWords.length === 0) {
       const empty = el("div", { style: "color:#888;font-size:12px;padding:6px 4px;" }, [txt("暂无单词。打开 PDF 划词后，点击「" + (this._data?.contextMenuLabel || "添加单词并翻译") + "」即可加入。")]);
       list.append(empty);
     } else {
-      words.forEach((w, i) => list.append(this._renderCard(doc, itemID, i, w)));
+      sortedIndices.forEach((origIdx) => {
+        const w = rawWords[origIdx];
+        list.append(this._renderCard(doc, itemID, origIdx, w));
+      });
     }
     body.append(list);
 
@@ -1815,6 +2096,7 @@ _configVersion: 0,
       fontSize: 13,
       apis: [],
       activeApiIndex: 0,
+      sortMode: "reverse",
     };
     if (!raw || typeof raw !== "object") return base;
     return {
@@ -1822,6 +2104,7 @@ _configVersion: 0,
       ...raw,
       apis: Array.isArray(raw.apis) ? raw.apis : [],
       activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
+      sortMode: typeof raw.sortMode === "string" ? raw.sortMode : "reverse",
       // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）
       addWordHotkeyEnabled: typeof raw.addWordHotkeyEnabled === "boolean" ? raw.addWordHotkeyEnabled : true,
       addWordHotkeyMode: (raw.addWordHotkeyMode === "ctrl" || raw.addWordHotkeyMode === "alt" ||
