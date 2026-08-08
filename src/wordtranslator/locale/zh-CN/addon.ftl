@@ -51,6 +51,3 @@ pref-reset-hint = 将恢复默认提示词与默认 API，此操作会清空当�
 pref-field-required = 请填写必填项
 pref-export-import = 导出 / 导入
 
-
-wordtranslator-pane-header = 单词本
-wordtranslator-pane-sidenav = 单词本
