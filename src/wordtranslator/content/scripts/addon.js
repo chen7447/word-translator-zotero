@@ -40,6 +40,7 @@ var WordTranslator = {
   _tempEditState: null,
   _tempEditBound: false,
   _tempEditCloseHandler: null,
+  _lastSelectionPopup: null,
 
   _getProfileDir() {
     try {
@@ -509,6 +510,20 @@ _configVersion: 0,
   },
 
   // 触发“添加单词并翻译”快捷键：用当前缓存的选中文本
+  _triggerHotkeyTranslate(pending) {
+    try {
+      if (!pending || !pending.reader || !pending.text) return;
+      const popup = this._lastSelectionPopup;
+      if (popup && popup.reader === pending.reader && popup.button && popup.button.isConnected && popup.doc) {
+        this._showTempEditArea(popup.doc, popup.button, pending.reader, pending.text, "");
+      }
+    } catch (e) {
+      this._debugLog("_triggerHotkeyTranslate temp edit ERROR: " + (e && (e.message || String(e))));
+    }
+    this._addWordForReader(pending.reader, pending.text).catch((err) => {
+      this._debugLog("hotkey translate ERROR: " + (err && (err.stack || err.message || String(err))));
+    });
+  },
   _fireAddWordHotkey() {
     try {
       this._refreshPrefsFromStorage();
@@ -527,21 +542,8 @@ _configVersion: 0,
       this._addWordHotkeyFired = now;
       this._debugLog("addWord hotkey fired: word=" + JSON.stringify(pending.text));
       this._selectionFirstPending = null;
-      // Beta: popup has add-btn, show temp edit area
-      try {
-        const fDoc = this._getHotkeyTargetDoc(pending.reader);
-        if (fDoc) {
-          const fBtn = fDoc.querySelector(".wordtranslator-add-btn");
-          if (fBtn) {
-            this._showTempEditArea(fDoc, fBtn, pending.reader, pending.text, "");
-          }
-        }
-      } catch (e) {
-        this._debugLog("_fireAddWordTempEdit ERROR: " + (e && (e.message || String(e))));
-      }
-      this._addWordForReader(pending.reader, pending.text).catch((err) => {
-        this._debugLog("addWord hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
-      });   } catch (e) {
+      this._triggerHotkeyTranslate(pending);
+    } catch (e) {
       this._debugLog("_fireAddWordHotkey ERROR: " + (e && (e.stack || e.message || String(e))));
     }
   },
@@ -818,14 +820,18 @@ _configVersion: 0,
       }
     }
     const label = this._data.contextMenuLabel || "添加单词并翻译";
+    const existingButton = doc.querySelector(".wordtranslator-add-btn");
+    if (existingButton) {
+      existingButton.innerHTML = this._getAddWordButtonHTML(label);
+      this._lastSelectionPopup = { doc, reader, button: existingButton, text, time: Date.now() };
+      return;
+    }
 
-    // 按钮已存在则不再重复添加
-    if (doc.querySelector(".wordtranslator-add-btn")) return;
-
-    const SVGIcon = '<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 16 16" width="16" height="16" xml:space="preserve"><style type="text/css">.wt0{fill:#64B5F6;}.wt1{fill:#1E88E5;}</style><g><path class="wt0" d="M4.4,11.1h1.4c0.1,0,0.2-0.1,0.1-0.2L5.2,8.7c0-0.1-0.2-0.1-0.3,0l-0.7,2.2C4.2,11,4.3,11.1,4.4,11.1L4.4,11.1z"/><path class="wt0" d="M8.8,5H1.4C0.6,5,0,5.7,0,6.4v8.2C0,15.4,0.6,16,1.4,16h7.4c0.8,0,1.4-0.6,1.4-1.4V6.4C10.2,5.7,9.5,5,8.8,5L8.8,5z M7.9,14.2c-0.1,0.1-0.2,0.2-0.3,0.2c0,0-0.1,0-0.1,0c-0.1,0-0.1,0-0.2,0C7,14.3,7,14.2,7,14.1l-0.6-1.9C6.3,12,6.2,12,6.1,12H4c-0.1,0-0.1,0-0.2,0.1l-0.6,2c-0.1,0.1-0.1,0.2-0.3,0.3c-0.1,0.1-0.3,0.1-0.4,0.1c-0.2,0-0.3-0.1-0.3-0.2c0-0.1-0.1-0.2,0-0.4l2.1-6.4c0.1-0.3,0.4-0.5,0.7-0.5h0c0.3,0,0.6,0.2,0.7,0.5l0,0l2.1,6.5C8,14,8,14.1,7.9,14.2L7.9,14.2z"/><path class="wt1" d="M14.3,0H7.5C6.6,0,5.8,0.8,5.8,1.7v2.1C5.8,4,6,4.1,6.1,4.1H8c0.3,0,0.5,0,0.7,0.1C8.6,3.9,8.6,3.7,8.5,3.4H7.6C7.4,3.4,7.3,3.3,7.3,3c0-0.3,0.1-0.5,0.3-0.5h2.8c-0.1-0.3-0.2-0.5-0.2-0.7c0-0.2,0.1-0.4,0.3-0.5c0.3-0.1,0.4,0,0.6,0.2c0,0.1,0.1,0.3,0.2,0.6c0.1,0.2,0.1,0.4,0.1,0.4h2.4c0.3,0,0.4,0.2,0.4,0.5c0,0.3-0.1,0.5-0.4,0.5h-0.6c-0.1,0-0.1,0-0.1,0C12.8,4.9,12.3,6,11.6,7c0.6,0.5,1.3,0.9,2.3,1.3c0.3,0.1,0.3,0.3,0.3,0.6c-0.1,0.2-0.3,0.3-0.6,0.2c-0.9-0.3-1.8-0.8-2.5-1.3v2.9c0,0.2,0.1,0.3,0.3,0.3h3c0.9,0,1.7-0.8,1.7-1.7V1.7C16,0.8,15.2,0,14.3,0L14.3,0z"/><path class="wt1" d="M12,3.4H9.6c-0.1,0-0.2,0.1-0.1,0.2C9.6,4,9.7,4.4,9.9,4.8c0,0,0,0,0,0.1c0.4,0.3,0.7,0.8,0.9,1.2c0.2,0,0.1,0,0.3,0c0.5-0.8,0.9-1.6,1.1-2.5C12.1,3.5,12.1,3.4,12,3.4L12,3.4z"/></g></svg>';
-
-    const btn = this._createAddWordButton(doc, reader, text, SVGIcon + "<span>" + label + "</span>");
+    // PDF 划词弹窗使用与 Item Pane 完全一致的 icon1.4.png；
+    // 用 img 元素而不是旧的内联 SVG，避免与其他翻译插件图标混淆。
+    const btn = this._createAddWordButton(doc, reader, text, this._getAddWordButtonHTML(label));
     append(btn);
+    this._lastSelectionPopup = { doc, reader, button: btn, text, time: Date.now() };
   },
 
 
@@ -902,6 +908,22 @@ _configVersion: 0,
     return btn;
   },
 
+  _formatTempEditText(word, translation) {
+    const w = String(word || "").trim();
+    const t = String(translation || "").trim() || "正在翻译…";
+    return w ? w + " -- " + t : t;
+  },
+
+  _getAddWordButtonHTML(label) {
+    const text = String(label || "添加单词并翻译");
+    const safe = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // 方案 A：使用内联 SVG 图标，不依赖 chrome:// 外部资源加载。
+    // PDF 划词弹窗运行在 PDF.js iframe 沙箱中，无法加载 chrome:// 图片，
+    // 因此改用与参考插件(zotero-pdf-translate)一致的内联 SVG 方式，确保稳定显示。
+    const iconSVG = '<svg class="wordtranslator-add-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" style="vertical-align:middle;flex:0 0 16px;" aria-hidden="true"><rect x="0.5" y="0.5" width="15" height="15" rx="3" fill="#2a5fdb"/><text x="8" y="8" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="7" font-weight="700" fill="#ffffff">word</text><text x="8" y="13" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="3.5" fill="#ffffff">翻译</text></svg>';
+    return iconSVG + "<span>" + safe + "</span>";
+  },
+
   // 把按钮原地替换为可编辑文本框；已有编辑框时先恢复按钮
   _showTempEditArea(doc, btn, reader, text, translation) {
     try {
@@ -910,7 +932,7 @@ _configVersion: 0,
       const textarea = doc.createElement("textarea");
       textarea.className = "wordtranslator-temp-edit";
       textarea.rows = 1;
-      textarea.value = translation || "";
+      textarea.value = this._formatTempEditText(text, translation);
       textarea.placeholder = "正在翻译…";
       textarea.setAttribute("data-tabstop", "1");
       textarea.style.resize = "both";
@@ -927,7 +949,6 @@ _configVersion: 0,
         textarea: textarea,
         reader: reader || null,
         text: String(text || "").trim(),
-        innerHTML: btn.innerHTML || "",
       };
       try {
         textarea.focus();
@@ -947,7 +968,7 @@ _configVersion: 0,
       const cur = String(st.text || "").trim().toLowerCase();
       const tgt = String(word || "").trim().toLowerCase();
       if (!cur || cur !== tgt) return;
-      st.textarea.value = translation || "";
+      st.textarea.value = this._formatTempEditText(st.text, translation);
       st.textarea.placeholder = translation ? "" : "正在翻译…";
     } catch (e) {
       this._debugLog("_updateTempEditArea ERROR: " + (e && (e.stack || e.message || String(e))));
@@ -961,10 +982,10 @@ _configVersion: 0,
     this._tempEditState = null;
     this._unbindTempEditAutoClose();
     try {
-      const { doc, textarea, reader, text, innerHTML } = st;
+      const { doc, textarea, reader, text } = st;
       if (!doc || !textarea || !textarea.isConnected) return;
       const label = (this._data && this._data.contextMenuLabel) || "添加单词并翻译";
-      const btn = this._createAddWordButton(doc, reader, text, innerHTML || ("<span>" + label + "</span>"));
+      const btn = this._createAddWordButton(doc, reader, text, this._getAddWordButtonHTML(label));
       textarea.replaceWith(btn);
     } catch (e) {
       this._debugLog("_restoreButtonFromTempEdit ERROR: " + (e && (e.stack || e.message || String(e))));
@@ -1749,11 +1770,11 @@ _configVersion: 0,
         pluginID: this._addonID,
         header: {
           l10nID: "wordtranslator-itemPaneSection-header",
-          icon: "chrome://wordtranslator/content/icons/favicon.png",
+          icon: "chrome://wordtranslator/content/icons/icon1.4.png",
         },
         sidenav: {
           l10nID: "wordtranslator-itemPaneSection-sidenav",
-          icon: "chrome://wordtranslator/content/icons/favicon.png",
+          icon: "chrome://wordtranslator/content/icons/icon1.4.png",
           orderable: false,
         },
         bodyXHTML: '<html:div class="wordtranslator-pane-body" style="padding: 8px;"></html:div>',
@@ -1933,34 +1954,36 @@ _configVersion: 0,
       );
     }
 
-    // 头部：左组（标题 + API 下拉 + 刷新 + 设置） / 右组（放大 + 缩小 + 清空）
-    const header = el("div", { style: "display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;" });
-    const leftGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex:1;min-width:0;" });
-    const rightGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex-shrink:0;" });
+    // 头部采用两行布局：第一行是“图标 + 单词本 + 菜单 + 清空”，第二行是 API 和常用操作。
+    const header = el("div", { style: "display:flex;flex-direction:column;gap:5px;margin:0 0 8px;width:100%;padding:0 0 6px;border-bottom:1px solid rgba(0,0,0,0.08);box-sizing:border-box;" });
+    const titleRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;" });
+    const controlsRow = el("div", { style: "display:flex;align-items:center;gap:5px;width:100%;min-width:0;min-height:26px;" });
+    const titleGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex:1;min-width:0;" });
+    const titleActions = el("div", { style: "display:flex;align-items:center;gap:6px;flex-shrink:0;" });
 
-    // 保留面板内部的可见标题，避免 Zotero 尚未完成 Fluent 渲染时标题为空。
-    const title = el("strong", { title: "单词本", style: "white-space:nowrap;" }, [txt("单词本")]);
-    leftGroup.append(title);
+    const title = el("strong", { title: "单词本", style: "white-space:nowrap;font-size:14px;line-height:20px;" }, [txt("单词本")]);
+    titleGroup.append(title);
 
-    const apiSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换翻译 API" });
+    const apiSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换翻译 API", "aria-label": "当前翻译 API" });
     this._fillApiSelect(doc, apiSelect);
     apiSelect.addEventListener("change", () => {
       const idx = parseInt(apiSelect.value, 10);
       this._setActiveApiForItem(itemID, idx);
     });
-    leftGroup.append(apiSelect);
+    controlsRow.append(apiSelect);
 
-    const refreshBtn = el("button", { title: "刷新服务商列表", "aria-label": "刷新服务商列表", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    const compactButtonStyle = "width:28px;height:26px;padding:0;border:1px solid rgba(0,0,0,0.16);background:rgba(255,255,255,0.72);border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#555;box-sizing:border-box;flex:0 0 28px;";
+    const refreshBtn = el("button", { title: "刷新服务商列表", "aria-label": "刷新服务商列表", style: compactButtonStyle }, []);
     refreshBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"23 4 23 10 17 10\"></polyline><polyline points=\"1 20 1 14 7 14\"></polyline><path d=\"M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15\"></path></svg>";
     refreshBtn.addEventListener("click", () => this._refreshProvidersInAllPanes(itemID));
-    leftGroup.append(refreshBtn);
+    controlsRow.append(refreshBtn);
 
-    const settingsBtn = el("button", { title: "设置", "aria-label": "设置", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    const settingsBtn = el("button", { title: "设置", "aria-label": "设置", style: compactButtonStyle }, []);
     settingsBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"3\" y1=\"6\" x2=\"21\" y2=\"6\"></line><line x1=\"3\" y1=\"12\" x2=\"21\" y2=\"12\"></line><line x1=\"3\" y1=\"18\" x2=\"21\" y2=\"18\"></line></svg>";
     settingsBtn.addEventListener("click", () => this._openPreferencesPane());
-    leftGroup.append(settingsBtn);
+    titleActions.append(settingsBtn);
 
-    const sortBtn = el("button", { title: this._getSortLabel(this._sortMode), "aria-label": "切换排序方式", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    const sortBtn = el("button", { title: this._getSortLabel(this._sortMode), "aria-label": "切换排序方式", style: compactButtonStyle }, []);
     if (this._sortMode === "reverse") {
       sortBtn.textContent = "倒";
     } else if (this._sortMode === "forward") {
@@ -1975,23 +1998,24 @@ _configVersion: 0,
       this._setSortMode(next);
       // 按钮会因面板刷新而重建，无需手动更新内容
     });
-    leftGroup.append(sortBtn);
+    controlsRow.append(sortBtn);
 
-    const zoomInBtn = el("button", { title: "放大字体", "aria-label": "放大字体", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    const zoomInBtn = el("button", { title: "放大字体", "aria-label": "放大字体", style: compactButtonStyle }, []);
     zoomInBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><text x=\"6\" y=\"17\" font-size=\"14\" font-family=\"Arial, sans-serif\" font-weight=\"700\" stroke=\"none\" fill=\"currentColor\">A</text><polyline points=\"16,4 19,1 22,4\"></polyline><line x1=\"19\" y1=\"1\" x2=\"19\" y2=\"7\"></line></svg>";
     zoomInBtn.addEventListener("click", () => this._onZoomFontSize(itemID, +1));
-    rightGroup.append(zoomInBtn);
+    controlsRow.append(zoomInBtn);
 
-    const zoomOutBtn = el("button", { title: "缩小字体", "aria-label": "缩小字体", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    const zoomOutBtn = el("button", { title: "缩小字体", "aria-label": "缩小字体", style: compactButtonStyle }, []);
     zoomOutBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><text x=\"6\" y=\"17\" font-size=\"11\" font-family=\"Arial, sans-serif\" font-weight=\"700\" stroke=\"none\" fill=\"currentColor\">A</text><polyline points=\"16,7 19,10 22,7\"></polyline><line x1=\"19\" y1=\"10\" x2=\"19\" y2=\"4\"></line></svg>";
     zoomOutBtn.addEventListener("click", () => this._onZoomFontSize(itemID, -1));
-    rightGroup.append(zoomOutBtn);
+    controlsRow.append(zoomOutBtn);
 
-    const clearBtn = el("button", { style: "padding:2px 10px;border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;" }, [txt("清空")]);
+    const clearBtn = el("button", { title: "清空当前条目的全部单词", "aria-label": "清空当前条目的全部单词", style: "height:26px;padding:0 9px;border:1px solid rgba(0,0,0,0.16);background:rgba(255,255,255,0.72);border-radius:6px;cursor:pointer;font-size:12px;line-height:24px;box-sizing:border-box;white-space:nowrap;" }, [txt("清空")]);
     clearBtn.addEventListener("click", () => this._clearAllWordsForItem(itemID));
-    rightGroup.append(clearBtn);
+    titleActions.append(clearBtn);
 
-    header.append(leftGroup, rightGroup);
+    titleRow.append(titleGroup, titleActions);
+    header.append(titleRow, controlsRow);
     body.append(header);
 
     // 卡片列表
