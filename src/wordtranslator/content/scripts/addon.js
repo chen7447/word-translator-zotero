@@ -1478,15 +1478,24 @@ _configVersion: 0,
     });
     if (existingCard) {
       this._debugLog("_addWordForReader skip (duplicate): " + JSON.stringify(normWord));
-      // 临时文本框与单词本数据保持分离；重复选词时只读取已有卡片的翻译用于显示，
-      // 不重复写入单词本，也不重复调用 API。
+      // 重复选中视为一次最近使用：保留同一个 card，不重复调用 API，
+      // 但将其移动到原始数组末尾，交由当前 sortMode 重新计算显示位置。
       try {
         const existingTranslation = String(existingCard.translation || "").trim();
         if (existingTranslation && existingTranslation !== "翻译中…") {
           this._updateTempEditArea(normWord, existingTranslation);
         }
+        const existingIndex = list.indexOf(existingCard);
+        if (existingIndex >= 0 && existingIndex !== list.length - 1) {
+          list.splice(existingIndex, 1);
+          list.push(existingCard);
+          this._itemWords.set(Number(paneID), list);
+          this._persistWords();
+          this._refreshItemPane(paneID);
+          this._debugLog("_addWordForReader duplicate moved to end: paneID=" + paneID);
+        }
       } catch (e) {
-        this._debugLog("duplicate temp edit update ERROR: " + (e && (e.message || String(e))));
+        this._debugLog("duplicate recent-use update ERROR: " + (e && (e.message || String(e))));
       }
       return;
     }
