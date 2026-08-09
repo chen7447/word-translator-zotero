@@ -37,6 +37,8 @@ var WordTranslator = {
   _hotkeyGlobalBound: false,
   _addWordHotkeyFired: false,
   _hotkeyBoundWindows: null,
+  _currentPane: null,
+  _currentPaneContext: null,
   _tempEditState: null,
   _tempEditBound: false,
   _tempEditCloseHandler: null,
@@ -1527,55 +1529,27 @@ _configVersion: 0,
 
   _refreshItemPane(itemID) {
     const id = Number(itemID);
-    const entry = this._panelUIDs && this._panelUIDs.get(id);
-
-    this._debugLog(
-      "_refreshItemPane: id=" + id +
-      ", found=" + !!entry +
-      ", hasRefresh=" + !!(entry && entry.refresh) +
-      ", paneRefresh=" + !!this._paneRefresh
-    );
-
-    // ??1???? refresh?????
-    if (this._paneRefresh && typeof this._paneRefresh === "function") {
-      try {
-        this._paneRefresh();
-        return;
-      } catch (e) {
-        this._debugLog(
-          "paneRefresh ERROR: " +
-          (e && (e.stack || e.message || String(e)))
-        );
-      }
+    if (!Number.isFinite(id) || id <= 0) return;
+    this._debugLog("_refreshItemPane: id=" + id + ", forceRender=true");
+    try {
+      const pane = this._currentPaneContext;
+      const win = Zotero.getMainWindow();
+      const doc = pane && pane.doc && pane.doc.defaultView ? pane.doc : (win && win.document);
+      const body = pane && pane.body && pane.body.isConnected
+        ? pane.body
+        : (doc && doc.querySelector && doc.querySelector(".wordtranslator-pane-body"));
+      if (!body || !this._renderPaneBody) return;
+      this._currentPaneContext = {
+        doc,
+        body,
+        itemID: id,
+        paneUID: body.dataset && body.dataset.wtPaneUid || null,
+      };
+      try { body.dataset.paneItemID = String(id); } catch (e) {}
+      this._renderPaneBody(doc, body, { id });
+    } catch (e) {
+      this._debugLog("_refreshItemPane ERROR: " + (e && (e.message || String(e))));
     }
-
-    // ??2???? entry.refresh
-    if (entry && typeof entry.refresh === "function") {
-      try {
-        entry.refresh();
-        return;
-      } catch (e) {
-        this._debugLog(
-          "refresh ERROR: " +
-          (e && (e.stack || e.message || String(e)))
-        );
-      }
-    }
-
-    // ??3?????
-    setTimeout(() => {
-      const retry = this._panelUIDs && this._panelUIDs.get(id);
-      this._debugLog(
-        "_refreshItemPane retry: id=" + id +
-        ", entry=" + !!retry +
-        ", paneRefresh=" + !!this._paneRefresh
-      );
-      if (this._paneRefresh && typeof this._paneRefresh === "function") {
-        try { this._paneRefresh(); } catch (e) { this._debugLog("paneRefresh retry ERROR: " + (e && e.message || e)); }
-      } else if (retry && typeof retry.refresh === "function") {
-        try { retry.refresh(); } catch (e) { this._debugLog("refresh retry ERROR: " + (e && e.message || e)); }
-      }
-    }, 300);
   },
 
   _deleteWordForItem(itemID, index) {
@@ -1716,28 +1690,29 @@ _configVersion: 0,
     }
   },
 
-  async _refreshProvidersInAllPanes(currentItemID) {
-    try {
-      await this._reloadDataFromDisk();
-      let refreshed = 0;
-      for (const [itemID, entry] of this._panelUIDs) {
-        if (entry && typeof entry.refresh === "function") {
-          try { entry.refresh(); refreshed++; } catch (e) { this._debugLog("refresh pane ERROR itemID=" + itemID + ": " + (e && e.message || e)); }
-        }
+  _refreshProvidersInAllPanes(currentItemID) {
+    return (async () => {
+      try {
+        await this._reloadDataFromDisk();
+        const context = this._currentPaneContext;
+        const id = context && Number(context.itemID) || Number(currentItemID);
+        if (Number.isFinite(id) && id > 0) this._refreshItemPane(id);
+        this._debugLog("_refreshProvidersInAllPanes: direct refresh=" + (Number.isFinite(id) && id > 0) + ", currentItemID=" + currentItemID);
+      } catch (e) {
+        this._debugLog("_refreshProvidersInAllPanes ERROR: " + (e && (e.stack || e.message || String(e))));
       }
-      if (refreshed === 0 && this._paneRefresh && typeof this._paneRefresh === "function") {
-        try { this._paneRefresh(); refreshed++; } catch (e) { this._debugLog("refresh global ERROR: " + (e && e.message || e)); }
-      }
-      this._debugLog("_refreshProvidersInAllPanes: refreshed=" + refreshed + ", currentItemID=" + currentItemID);
-      await this._rerenderCurrentItemPane("refresh-btn");
-    } catch (e) {
-      this._debugLog("_refreshProvidersInAllPanes ERROR: " + (e && (e.stack || e.message || String(e))));
-    }
+    })();
   },
 
   // 强制按当前 Zotero.ItemPane 激活的 item id 重渲染单词本 body
   async _rerenderCurrentItemPane(reason) {
     try {
+      const context = this._currentPaneContext;
+      if (context && context.body && context.body.isConnected && Number.isFinite(Number(context.itemID)) && Number(context.itemID) > 0) {
+        this._renderPaneBody(context.doc, context.body, { id: Number(context.itemID) });
+        this._debugLog("_rerenderCurrentItemPane(" + reason + "): context itemID=" + context.itemID);
+        return;
+      }
       const win = Zotero.getMainWindow();
       const doc = win && win.document;
       const zp = doc && doc.getElementById && doc.getElementById("zotero-item-pane");
@@ -1787,26 +1762,44 @@ _configVersion: 0,
               body._wtRefresh = refresh;
             }
             this._debugLog("pane onInit: uid=" + uid + ", hasRefresh=" + !!refresh);
+            if (!this._currentPaneContext || !this._currentPaneContext.body || !this._currentPaneContext.body.isConnected) {
+              this._currentPaneContext = { doc: body && body.ownerDocument, body, itemID: null, paneUID: uid };
+            }
           } catch (e) {
             this._debugLog("pane onInit ERROR: " + (e && (e.stack || e.message || String(e))));
           }
         },
         onDestroy: ({ body }) => {
           const uid = body.dataset.wtPaneUid;
+          if (this._currentPaneContext && this._currentPaneContext.body === body) {
+            this._currentPaneContext = null;
+          }
           if (uid) {
             for (const [itemID, entry] of this._panelUIDs) {
               if (entry.paneUID === uid) this._panelUIDs.delete(itemID);
             }
           }
         },
-        onItemChange: ({ item, setEnabled }) => {
+        onItemChange: ({ item, body, setEnabled }) => {
           setEnabled(true);
+          try {
+            if (body && item && Number.isFinite(Number(item.id)) && Number(item.id) > 0) {
+              const itemID = Number(item.id);
+              body.dataset.itemID = String(itemID);
+              this._currentPaneContext = {
+                doc: body.ownerDocument,
+                body,
+                itemID,
+                paneUID: body.dataset && body.dataset.wtPaneUid || null,
+              };
+            }
+          } catch (e) {}
         },
         onRender: ({ doc, body, item }) => {
           try {
             this._debugLog("pane onRender: itemID=" + (item && item.id) + ", body=" + !!body);
-            this._renderPaneBody(doc, body, item);
-            this._applyPaneL10nFallback(doc, body);
+            const rendered = this._renderPaneBody(doc, body, item);
+            if (rendered !== false) this._applyPaneL10nFallback(doc, body);
           } catch (e) {
             this._debugLog("onRender ERROR: " + (e && (e.stack || e.message || String(e))));
           }
@@ -1904,16 +1897,14 @@ _configVersion: 0,
   },
 
   _setSortMode(mode) {
-    if (mode !== "forward" && mode !== "reverse" && mode !== "alpha") return;
+    if (mode !== "forward" && mode !== "reverse" && mode !== "alpha") return false;
     this._sortMode = mode;
     if (this._data) {
       this._data.sortMode = mode;
       this._saveData();
     }
-    // 刷新面板
-    if (this._paneRefresh && typeof this._paneRefresh === "function") {
-      try { this._paneRefresh(); } catch (e) { this._debugLog("_setSortMode refresh ERROR: " + (e && e.message || e)); }
-    }
+    this._debugLog("_setSortMode: mode=" + mode + ", saved=true");
+    return true;
   },
 
   _getSortIconHTML(mode) {
@@ -1936,8 +1927,43 @@ _configVersion: 0,
     const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
     const txt = (s) => this._createTxt(doc, s);
 
+    // 优先级：onRender 传入的 item.id → body.dataset.paneItemID（_refreshItemPane 显式标记）
+    // → body.dataset.itemID（onItemChange 保存）→ #zotero-item-pane 的 data-itemid。
+    let itemID = Number(item && item.id);
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const context = this._currentPaneContext;
+        if (context && Number.isFinite(Number(context.itemID)) && Number(context.itemID) > 0) {
+          itemID = Number(context.itemID);
+        }
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const explicit = body && body.dataset && body.dataset.paneItemID;
+        if (explicit) itemID = Number(explicit);
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const stored = body && body.dataset && body.dataset.itemID;
+        if (stored) itemID = Number(stored);
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const win = Zotero.getMainWindow();
+        const zp = win && win.document && win.document.getElementById && win.document.getElementById("zotero-item-pane");
+        const cur = zp && zp.getAttribute && zp.getAttribute("data-itemid");
+        if (cur) itemID = Number(cur);
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      this._debugLog("_renderPaneBody skipped: invalid itemID; item=" + (item && item.id) + ", context=" + (this._currentPaneContext && this._currentPaneContext.itemID));
+      return false;
+    }
     body.replaceChildren();
-    const itemID = Number(item.id);
+
     const rawWords = this._itemWords.get(itemID) || [];
     const sortedIndices = this._getSortedIndices(rawWords, this._sortMode);
 
@@ -1993,10 +2019,20 @@ _configVersion: 0,
     }
     sortBtn.addEventListener("click", () => {
       const modes = ["reverse", "forward", "alpha"];
-      const idx = modes.indexOf(this._sortMode);
+      const current = this._sortMode;
+      const idx = modes.indexOf(current);
       const next = modes[(idx + 1) % modes.length];
-      this._setSortMode(next);
-      // 按钮会因面板刷新而重建，无需手动更新内容
+      this._debugLog("sort click: current=" + current + ", next=" + next);
+      if (!this._setSortMode(next)) return;
+      const context = this._currentPaneContext;
+      const itemID = context && Number(context.itemID);
+      this._debugLog("sort refresh: itemID=" + itemID + ", hasContext=" + !!context);
+      if (Number.isFinite(itemID) && itemID > 0) {
+        this._refreshItemPane(itemID);
+        this._debugLog("sort refresh completed: itemID=" + itemID);
+      } else {
+        this._debugLog("sort refresh skipped: no valid pane context");
+      }
     });
     controlsRow.append(sortBtn);
 
@@ -2040,6 +2076,13 @@ _configVersion: 0,
     }
     // 保存当前 pane 的 doc / body 引用，以便点击放大/缩小按钮后只对卡片文本动态调整
     this._currentPane = { doc: doc, body: body };
+    this._currentPaneContext = {
+      doc,
+      body,
+      itemID,
+      paneUID: body.dataset && body.dataset.wtPaneUid || null,
+    };
+    return true;
   },
 
   _renderCard(doc, itemID, idx, w) {
