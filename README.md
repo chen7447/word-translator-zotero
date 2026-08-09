@@ -12,7 +12,7 @@
 - 偏好面板支持：开关/选项名称/自动翻译、API 增删改、测试、获取模型列表、字体大小调节。
 
 ## 安装
-将 `wordtranslator-5.2.0.xpi` 拖入 Zotero 的 Plugins Manager 即可（兼容 Zotero 7/8/9/10）。
+将 `wordtranslator-5.3.0.xpi` 拖入 Zotero 的 Plugins Manager 即可（兼容 Zotero 7/8/9/10）。
 
 ## 使用
 1. 打开 PDF，划选英文单词。
