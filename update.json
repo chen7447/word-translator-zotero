@@ -3,8 +3,8 @@
     "wordtranslator@example.com": {
       "updates": [
         {
-          "version": "5.4.7",
-          "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v5.4.7/wordtranslator-5.4.7.xpi"
+          "version": "5.5.0",
+          "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v5.5.0/wordtranslator-5.5.0.xpi"
         }
       ]
     }
