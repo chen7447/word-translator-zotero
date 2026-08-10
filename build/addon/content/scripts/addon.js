@@ -24,6 +24,29 @@ var WordTranslator = {
   _addonVersion: "",
   _buildTime: "",
   _itemWords: new Map(),      // itemID -> [{word, translation, pending}]
+  _wordBookViewState: new Map(), // itemID -> { page, search } 分页/搜索临时界面状态（不写盘）
+  _wordBookSearchTimers: new Map(), // itemID -> debounce timer
+  _wordBookSearchStrategies: new Map([
+    // 前缀匹配（默认）：word.startsWith(keyword)
+    ["prefix", function (word, keyword) {
+      return String(word.word || "").toLowerCase().startsWith(keyword);
+    }],
+    // 所有匹配：单词或释义包含 keyword
+    ["all", function (word, keyword) {
+      const w = String(word.word || "").toLowerCase();
+      const t = String(word.translation || "").toLowerCase();
+      return w.includes(keyword) || t.includes(keyword);
+    }],
+    // 只搜单词：仅 word 字段包含 keyword
+    ["wordOnly", function (word, keyword) {
+      return String(word.word || "").toLowerCase().includes(keyword);
+    }],
+    // 精确匹配：word === keyword
+    ["exact", function (word, keyword) {
+      return String(word.word || "").toLowerCase() === keyword;
+    }],
+  ]), // 搜索策略注册表：后续策略只需注册，不改后置处理流程
+  _activeSearchStrategy: "prefix", // 当前生效策略，从 _data.searchStrategy 加载
   _sortMode: "reverse", // 排序模式：forward | reverse | alpha
   _panelUIDs: new Map(),      // itemID -> { paneUID, refresh }
   _paneKey: null,
@@ -33,13 +56,18 @@ var WordTranslator = {
   _hotkeyJustReleased: null,
   _hotkeyModifiers: null,
   _selectionFirstPending: null,
-  _selectionHotkeyPending: null,
+  // 偏好页配置的“快捷键-划词翻译”统一全局按键状态；不为 Alt/Ctrl 等分别注册状态。
+  _selectionTranslateKeyState: null,
+  _selectionTranslateSession: null,
   _hotkeyGlobalBound: false,
   _addWordHotkeyFired: false,
   _hotkeyBoundWindows: null,
+  _currentPane: null,
+  _currentPaneContext: null,
   _tempEditState: null,
   _tempEditBound: false,
   _tempEditCloseHandler: null,
+  _lastSelectionPopup: null,
 
   _getProfileDir() {
     try {
@@ -252,6 +280,7 @@ _configVersion: 0,
       await this.loadDataFromDisk();
       this._loadWordsFromDisk();
       this._sortMode = this._data.sortMode || "reverse";
+      this._activeSearchStrategy = this._getActiveSearchStrategyName();
       // 主动验证存储层：确保数据目录存在并写盘（输出日志便于定位写文件失败）
       try {
         if (Zotero.WordTranslatorStorage) {
@@ -349,7 +378,7 @@ _configVersion: 0,
         id: this._prefsPaneID,
         src: rootURI + "content/preferences.xhtml",
         label: "单词翻译 Word Translator",
-        image: rootURI + "content/icons/favicon.png",
+        image: rootURI + "content/icons/wordtranslator-section-20.svg",
         scripts: [rootURI + "content/preferences.js"],
       });
       this._debugLog("registerPrefsWindow OK: " + rootURI + "content/preferences.xhtml");
@@ -412,82 +441,27 @@ _configVersion: 0,
       const target = win && (win.document || win);
       if (!target) return;
       this._hotkeyGlobalBound = true;
-      this._bindHotkeyResetListener(target);
+      // 主 Zotero 窗口失焦通常意味着应用被 Alt+Tab 切走；与 Reader/PDF
+      // 内部因 popup 夺焦点产生的 blur 分开处理。
+      // reset listener 必须绑定真实的顶层 Window；target 可能是 document，
+      // 而 Alt+Tab 触发的是 Window blur，不能依赖 document 接收该事件。
+      this._bindHotkeyResetListener(win, "main-window");
       const self = this;
-      // —— 键盘：划词快捷键（预设或自定义）——
+      // 偏好页设置什么快捷键，就由同一套全局状态匹配器处理；不按具体按键分别注册。
       target.addEventListener("keydown", function (ev) {
-        try {
-          self._refreshPrefsFromStorage();
-          const d = self._data;
-          if (!d || !self._selectionHotkeyActive()) return;
-          let matched = false;
-          if (self._customHotkeyActive()) {
-            matched = self._matchCustomHotkeyKey(ev, d.customHotkey);
-          } else {
-            matched = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() });
-          }
-          if (!matched) return;
-          // 已有有效选区时，划词快捷键不建立会话，让“先选区后按绑定键”接管
-          if (self._addWordHotkeyActive() && self._matchSelectionFirstKey(ev) && self._getSelectionFirstPending()) {
-            self._debugLog("selection hotkey skipped (global): existing selection belongs to addWord hotkey");
-            return;
-          }
-          self._hotkeyPressed = { mod: d.customHotkeyEnabled ? d.customHotkey : (d.hotkeyModifier || "ctrl"), time: Date.now() };
-          self._hotkeyJustReleased = null;
-          self._debugLog("hotkey pressed (global): mod=" + JSON.stringify(self._hotkeyPressed));
-        } catch (e) {}
+        try { self._handleSelectionTranslateGlobalKeyDown(ev, "main-window"); } catch (e) {}
       }, true);
       target.addEventListener("keyup", function (ev) {
-        try {
-          self._refreshPrefsFromStorage();
-          const d = self._data;
-          if (!d || !self._selectionHotkeyActive()) return;
-          const pressed = self._hotkeyPressed;
-          if (!pressed || !pressed.mod) return;
-          if (Date.now() - (pressed.time || 0) > 30000) return;
-          if (!self._isSelectionHotkeyKeyUp(ev)) return;
-          const releasedMod = pressed.mod;
-          // 必须先清除按下状态，避免残留导致后续误触发
-          self._clearSelectionHotkeyState("keyup");
-          self._hotkeyJustReleased = { mod: releasedMod, time: Date.now() };
-          const pending = self._selectionHotkeyPending || self._selectionFirstPending;
-          if (!pending || !pending.text) {
-            self._debugLog("hotkey released (global) without selection: mod=" + releasedMod);
-            return;
-          }
-          self._debugLog("hotkey released (global): mod=" + releasedMod + ", word=" + JSON.stringify(pending.text));
-          self._triggerHotkeyTranslate(pending);
-        } catch (e) {}
+        try { self._handleSelectionTranslateGlobalKeyUp(ev, "main-window"); } catch (e) {}
       }, true);
-      // —— 鼠标：划词快捷键（侧键等） + “添加单词”快捷键 ——
+      // —— 鼠标：只保留“先选区后按绑定键”的入口；侧键划词已废弃 ——
       target.addEventListener("mousedown", function (ev) {
         try {
           self._refreshPrefsFromStorage();
           const d = self._data;
-          if (!d) return;
-          // 1) 划词快捷键：鼠标侧键作为“按住”的划词快捷键
-          if (self._selectionHotkeyActive() && self._customHotkeyActive()) {
-            const mouseSide = self._matchCustomHotkeyMouse(ev, d.customHotkey);
-            if (mouseSide) {
-              self._hotkeyPressed = { mod: d.customHotkey, time: Date.now() };
-              self._hotkeyJustReleased = null;
-              self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now(), mouseSide: true };
-              self._debugLog("hotkey mousedown (global, side): mod=" + d.customHotkey);
-              return;
-            }
-            // 自定义键盘组合键：按住修饰键 + 划词
-            const p = self._parseHotkeySpec(d.customHotkey);
-            if (p && !p.mouse && self._matchCustomHotkeyMods(p, { ctrl: !!ev.ctrlKey, alt: !!ev.altKey, shift: !!ev.shiftKey })) {
-              self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now(), mouseSide: false };
-              self._debugLog("hotkey mousedown (global, custom key mods): mod=" + d.customHotkey);
-              return;
-            }
-          }
-          // 2) 预设组合键的 mousedown 记录
-          if (self._selectionHotkeyActive() && !self._customHotkeyActive() && self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, mouse: ev.button, time: Date.now() })) {
-            self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, mouse: ev.button, time: Date.now() };
-            self._debugLog("hotkey mousedown (global): mods=" + JSON.stringify(self._hotkeyModifiers));
-            return;
+          if (!d || !self._addWordHotkeyActive()) return;
+          if (self._matchSelectionFirstKey(ev)) {
+            self._fireAddWordHotkey();
           }
         } catch (e) {}
       }, true);
@@ -508,7 +482,182 @@ _configVersion: 0,
     }
   },
 
-  // 触发“添加单词并翻译”快捷键：用当前缓存的选中文本
+  _handleSelectionTranslateGlobalKeyDown(ev, source) {
+    try {
+      this._refreshPrefsFromStorage();
+      const d = this._data;
+      if (!d || !this._selectionHotkeyActive()) return false;
+      if (!this._matchConfiguredSelectionTranslateKeyDown(ev)) return false;
+      // 保持“先选区后按添加单词快捷键”独立；同一按键不启动新的划词会话。
+      if (this._addWordHotkeyActive() && this._matchSelectionFirstKey(ev) && this._getSelectionFirstPending()) {
+        this._debugLog("selection translate global keydown skipped: add-word hotkey owns selection");
+        return false;
+      }
+      const existing = this._selectionTranslateKeyState;
+      if (existing && existing.active) return true;
+      this._selectionTranslateKeyState = {
+        active: true,
+        spec: this._selectionTranslateHotkeySpec(),
+        key: String(ev && ev.key || ""),
+        source: source || "unknown",
+        time: Date.now(),
+      };
+      this._debugLog("selection translate global keydown: spec=" + this._selectionTranslateKeyState.spec + ", source=" + source);
+      return true;
+    } catch (e) {
+      this._debugLog("selection translate global keydown ERROR: " + (e && (e.message || String(e))));
+      return false;
+    }
+  },
+
+  _handleSelectionTranslateGlobalKeyUp(ev, source) {
+    try {
+      const state = this._selectionTranslateKeyState;
+      if (!state || !state.active) return false;
+      if (!this._matchConfiguredSelectionTranslateKeyUp(ev, state.spec)) return false;
+      this._debugLog("selection translate global keyup: spec=" + state.spec + ", source=" + source);
+      this._selectionTranslateKeyState = null;
+      this._clearSelectionTranslateState("global keyup");
+      return true;
+    } catch (e) {
+      this._debugLog("selection translate global keyup ERROR: " + (e && (e.message || String(e))));
+      return false;
+    }
+  },
+
+  _selectionTranslateHotkeySpec() {
+    try {
+      if (this._customHotkeyActive()) return this._normalizeHotkeySpecCase(this._data.customHotkey);
+      const mod = String((this._data && this._data.hotkeyModifier) || "Ctrl");
+      return this._normalizeHotkeySpecCase(mod);
+    } catch (e) {
+      return "Ctrl";
+    }
+  },
+
+  _normalizeHotkeySpecCase(spec) {
+    return String(spec || "").split("+").map((part) => {
+      const p = part.trim();
+      if (!p) return "";
+      if (/^ctrl$/i.test(p) || /^control$/i.test(p)) return "Ctrl";
+      if (/^alt$/i.test(p)) return "Alt";
+      if (/^shift$/i.test(p)) return "Shift";
+      if (/^meta$/i.test(p) || /^command$/i.test(p)) return "Meta";
+      return p.length === 1 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1);
+    }).filter(Boolean).join("+");
+  },
+
+  // 校验当前鼠标事件上配置所需的修饰键是否仍然实际按下。
+  // 用于 Alt+Tab 等丢失 keyup 后，在建立新划词会话前清除残留状态。
+  _isSelectionTranslateModifierDown(ev, spec) {
+    try {
+      const p = this._parseHotkeySpec(spec);
+      if (!p || !ev) return false;
+      // 纯修饰键配置：如 "Alt" / "Ctrl" / "Shift"，要求该键按下且其余修饰键未按下。
+      if (p.key === "ctrl" || p.key === "control") return !!ev.ctrlKey && !ev.altKey && !ev.shiftKey && !ev.metaKey;
+      if (p.key === "alt") return !!ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey;
+      if (p.key === "shift") return !!ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey;
+      // 组合键配置：如 "Alt+Z"，校验声明的修饰键均按下。
+      if (p.ctrl && !ev.ctrlKey) return false;
+      if (p.alt && !ev.altKey) return false;
+      if (p.shift && !ev.shiftKey) return false;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+
+  _matchConfiguredSelectionTranslateKeyDown(ev) {
+    try {
+      const spec = this._selectionTranslateHotkeySpec();
+      const p = this._parseHotkeySpec(spec);
+      if (!p || !ev) return false;
+      const key = String(ev.key || "").toLowerCase();
+      if (p.key === "ctrl" || p.key === "alt" || p.key === "shift") {
+        const requiredCtrl = p.ctrl && p.key !== "ctrl";
+        const requiredAlt = p.alt && p.key !== "alt";
+        const requiredShift = p.shift && p.key !== "shift";
+        const keyMatches =
+          (p.key === "ctrl" && (key === "control" || key === "ctrl")) ||
+          (p.key === "alt" && key === "alt") ||
+          (p.key === "shift" && key === "shift");
+        return keyMatches &&
+          (!requiredCtrl || !!ev.ctrlKey) &&
+          (!requiredAlt || !!ev.altKey) &&
+          (!requiredShift || !!ev.shiftKey);
+      }
+      if (!key || key !== String(p.key || "").toLowerCase()) return false;
+      return (!!ev.ctrlKey) === (!!p.ctrl) && (!!ev.altKey) === (!!p.alt) && (!!ev.shiftKey) === (!!p.shift);
+    } catch (e) {
+      return false;
+    }
+  },
+
+  _matchConfiguredSelectionTranslateKeyUp(ev, spec) {
+    try {
+      const p = this._parseHotkeySpec(spec);
+      const key = String(ev && ev.key || "").toLowerCase();
+      if (!p || !key) return false;
+      if (p.key === "ctrl") return key === "control" || key === "ctrl";
+      if (p.key === "alt") return key === "alt";
+      if (p.key === "shift") return key === "shift";
+      return key === String(p.key || "").toLowerCase();
+    } catch (e) {
+      return false;
+    }
+  },
+
+  _handleAddWordTrigger({ source, doc, btn, append, reader, text }) {
+    try {
+      if (!reader || !text) return;
+      if (this._tempEditState) {
+        this._restoreButtonFromTempEdit();
+      }
+      // 入口传入的 btn 可能是旧节点，也可能是 append 前创建的节点。
+      // 统一入口只接受当前 popup 中仍连接的本插件按钮。
+      if (!btn || !btn.isConnected || !btn.classList || !btn.classList.contains("wordtranslator-add-btn")) {
+        btn = doc && doc.querySelector ? doc.querySelector(".wordtranslator-add-btn") : null;
+      }
+      if (!btn && doc && typeof append === "function") {
+        const created = this._createAddWordButton(doc, reader, text, this._getAddWordButtonHTML((this._data && this._data.contextMenuLabel) || "添加单词并翻译"));
+        append(created);
+        // append() 可能通过 cloneInto 跨文档传递元素；绝不能继续使用 created。
+        btn = doc.querySelector ? doc.querySelector(".wordtranslator-add-btn") : null;
+        if (!btn && created.isConnected) btn = created;
+        this._lastSelectionPopup = { doc, reader, button: btn, text, time: Date.now() };
+        this._debugLog("add trigger button appended: queried=" + !!btn + ", connected=" + !!(btn && btn.isConnected));
+      }
+      this._debugLog("add trigger: source=" + source + ", word=" + JSON.stringify(text));
+      if (doc && btn && btn.isConnected) {
+        this._showTempEditArea(doc, btn, reader, text, "");
+      } else {
+        this._debugLog("temp edit skipped: reason=button-not-connected, source=" + source + ", hasDoc=" + !!doc + ", hasButton=" + !!btn + ", buttonConnected=" + !!(btn && btn.isConnected));
+      }
+      this._addWordForReader(reader, text).catch((err) => {
+        this._debugLog("add trigger ERROR: source=" + source + ", " + (err && (err.stack || err.message || String(err))));
+      });
+    } catch (e) {
+      this._debugLog("_handleAddWordTrigger ERROR: " + (e && (e.message || String(e))));
+    }
+  },
+
+  _triggerHotkeyTranslate(pending) {
+    try {
+      if (!pending || !pending.reader || !pending.text) return;
+      const popup = this._lastSelectionPopup;
+      const popupButton = popup && popup.button && popup.button.classList && popup.button.classList.contains("wordtranslator-add-btn") ? popup.button : null;
+      this._handleAddWordTrigger({
+        source: "hotkey",
+        doc: pending.doc || (popup && popup.doc),
+        btn: pending.btn || popupButton,
+        append: pending.append || null,
+        reader: pending.reader,
+        text: pending.text,
+      });
+    } catch (e) {
+      this._debugLog("_triggerHotkeyTranslate ERROR: " + (e && (e.message || String(e))));
+    }
+  },
   _fireAddWordHotkey() {
     try {
       this._refreshPrefsFromStorage();
@@ -527,21 +676,8 @@ _configVersion: 0,
       this._addWordHotkeyFired = now;
       this._debugLog("addWord hotkey fired: word=" + JSON.stringify(pending.text));
       this._selectionFirstPending = null;
-      // Beta: popup has add-btn, show temp edit area
-      try {
-        const fDoc = this._getHotkeyTargetDoc(pending.reader);
-        if (fDoc) {
-          const fBtn = fDoc.querySelector(".wordtranslator-add-btn");
-          if (fBtn) {
-            this._showTempEditArea(fDoc, fBtn, pending.reader, pending.text, "");
-          }
-        }
-      } catch (e) {
-        this._debugLog("_fireAddWordTempEdit ERROR: " + (e && (e.message || String(e))));
-      }
-      this._addWordForReader(pending.reader, pending.text).catch((err) => {
-        this._debugLog("addWord hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
-      });   } catch (e) {
+      this._triggerHotkeyTranslate(pending);
+    } catch (e) {
       this._debugLog("_fireAddWordHotkey ERROR: " + (e && (e.stack || e.message || String(e))));
     }
   },
@@ -556,7 +692,7 @@ _configVersion: 0,
       this._debugLog("hotkey bind start: itemID=" + (reader && reader.itemID) + ", tabID=" + (reader && reader.tabID));
       // 先绑阅读器主窗口 iframe（稳定存在；PDF iframe 事件会冒泡到这里）
       try {
-        this._bindHotkeyModifierListener(reader._iframeWindow);
+        this._bindHotkeyModifierListener(reader._iframeWindow, reader);
       } catch (e) {}
       // PDF.js 视图 iframe 需要等初始化完成，轮询等待
       this._waitForHotkeyWindow(reader, 0);
@@ -584,7 +720,7 @@ _configVersion: 0,
         } catch (e) {}
       }
       if (win) {
-        this._bindHotkeyModifierListener(win);
+        this._bindHotkeyModifierListener(win, reader);
         return;
       }
       if (attempt < 100) {
@@ -598,110 +734,186 @@ _configVersion: 0,
     }
   },
 
-  _bindHotkeyResetListener(win) {
+  _bindHotkeyResetListener(win, role) {
     try {
       if (!win) return;
       if (win.__wordTranslatorHotkeyResetBound) return;
       win.__wordTranslatorHotkeyResetBound = true;
       const self = this;
-      const clear = () => {
-        self._clearSelectionHotkeyState("window blur");
+      const clear = (reason) => {
+        const session = self._selectionTranslateSession;
+        const isMainWindow = role === "main-window";
+
+        // 主窗口 blur 表示 Zotero 整体失去激活（例如 Alt+Tab）。此时
+        // Windows 可能不会再把匹配的 keyup 发回 Zotero，必须主动清除
+        // 全局快捷键状态，避免回来后普通划词继续被误判为按住快捷键。
+        if (reason === "window blur" && isMainWindow) {
+          self._selectionTranslateKeyState = null;
+          self._clearSelectionHotkeyState("main-window-deactivate");
+          self._clearSelectionTranslateState("main-window-deactivate");
+          self._debugLog("selection translate main window blur: global state cleared");
+          return;
+        }
+
+        // 主窗口 deactivate：它在 Reader/popup/临时编辑区域的内部焦点切换时
+        // 也会频繁触发（日志已证实），不能无条件当作应用被切出。
+        // 当存在进行中的选区/弹窗状态时保留会话，避免破坏连续划词。
+        if (reason === "window deactivate" && isMainWindow) {
+          if (
+            session &&
+            session.active &&
+            (session.mouseDown || session.selectionReady || session.popupContext)
+          ) {
+            self._debugLog(
+              "selection translate deactivate ignored: pending selection state, " +
+              "mouseDown=" + session.mouseDown +
+              ", selectionReady=" + session.selectionReady +
+              ", popupContext=" + !!session.popupContext
+            );
+            return;
+          }
+          self._selectionTranslateKeyState = null;
+          self._clearSelectionHotkeyState("main-window-deactivate");
+          self._clearSelectionTranslateState("main-window-deactivate");
+          self._debugLog("selection translate main window deactivation: global state cleared");
+          return;
+        }
+
+        // 方案 A：部分桌面切换场景可能不向顶层 Window 派发 blur，
+        // 但主文档会进入 hidden；将其作为 Alt+Tab 丢失 keyup 的兜底。
+        if (reason === "document hidden" && isMainWindow) {
+          self._selectionTranslateKeyState = null;
+          self._clearSelectionHotkeyState("main-window-hidden");
+          self._clearSelectionTranslateState("main-window-hidden");
+          self._debugLog("selection translate main document hidden: global state cleared");
+          return;
+        }
+
+        // Reader/PDF 内部 blur 可能只是 popup 或临时编辑区域夺取焦点；
+        // 保留原有保护逻辑，不能把它等同于应用被切出。
+        if (
+          reason === "window blur" &&
+          session &&
+          session.active &&
+          (session.mouseDown || session.selectionReady || session.popupContext)
+        ) {
+          self._debugLog(
+            "selection translate blur ignored: pending selection state, " +
+            "mouseDown=" + session.mouseDown +
+            ", selectionReady=" + session.selectionReady +
+            ", popupContext=" + !!session.popupContext
+          );
+          return;
+        }
+        self._clearSelectionHotkeyState(reason);
+        // 窗口 blur 不等于配置快捷键已经释放；全局 keyup 才是正常结束条件。
+        if (reason !== "window blur" || !self._selectionTranslateKeyState) {
+          self._clearSelectionTranslateState(reason);
+        } else {
+          self._debugLog("selection translate blur ignored: global key state active");
+        }
       };
-      win.addEventListener("blur", clear, true);
-      win.addEventListener("pagehide", clear, true);
+      win.addEventListener("blur", () => clear("window blur"), true);
+      win.addEventListener("pagehide", () => clear("pagehide"), true);
+      // 方案 B：XUL 顶层窗口失活时派发 deactivate；用于捕获 Alt+Tab
+      // 场景中可能丢失的 modifier keyup。
+      if (role === "main-window") {
+        win.addEventListener("deactivate", () => clear("window deactivate"), true);
+      }
     } catch (e) {}
   },
 
-  _bindHotkeyModifierListener(win) {
+  _bindHotkeyModifierListener(win, reader) {
     try {
       if (!win) return;
       if (this._hotkeyBoundWindows && this._hotkeyBoundWindows.has(win)) return;
       if (!this._hotkeyBoundWindows) this._hotkeyBoundWindows = new Set();
       this._hotkeyBoundWindows.add(win);
-      this._bindHotkeyResetListener(win);
+      this._bindHotkeyResetListener(win, "reader-window");
       const self = this;
-      // 记录修饰键状态（mousedown 先于 mouseup/popup 发生，对应“按住快捷键 + 双击/划词”路径）
+      // PDF/Reader 窗口也把按键交给同一个全局状态函数；这里不是为每个按键单独注册。
+      win.addEventListener("keydown", function (ev) {
+        try { self._handleSelectionTranslateGlobalKeyDown(ev, "reader-window"); } catch (e) {}
+      }, true);
+      // 鼠标左键只负责“快捷键-划词翻译”的一次选区边界：
+      // keydown 开始会话 → mousedown 开始选择 → mouseup 检查选区 → popup 触发。
       win.addEventListener("mousedown", function (ev) {
         try {
-          self._refreshPrefsFromStorage();
-          const d = self._data;
-          if (!d || !self._selectionHotkeyActive()) return;
-          let matched = false;
-          let mouseSide = !!(ev.button === 3 || ev.button === 4 || ev.button === 5);
-          if (self._customHotkeyActive()) {
-            // 自定义快捷键：
-            //  - 鼠标侧键：直接匹配 button
-            //  - 键盘组合键：只需当前按住的修饰键与 spec 一致（如按住 Alt + 划词），
-            //    不要求 mousedown 事件携带 key（mousedown 没有 key 属性）
-            if (mouseSide) {
-              matched = self._matchCustomHotkeyMouse(ev, d.customHotkey);
-            } else {
-              const p = self._parseHotkeySpec(d.customHotkey);
-              if (p && !p.mouse) {
-                matched = self._matchCustomHotkeyMods(p, {
-                  ctrl: !!ev.ctrlKey,
-                  alt: !!ev.altKey,
-                  shift: !!ev.shiftKey,
-                });
-              }
+          if (ev.button !== 0) return;
+          const keyState = self._selectionTranslateKeyState;
+          // Alt+Tab 等场景可能丢失 modifier keyup，导致 _selectionTranslateKeyState
+          // 残留为 active（即使 _selectionTranslateSession 也残留 active）。在每次
+          // 左键 mousedown 都用本事件携带的实时修饰键状态实测校验：若配置所需的
+          // modifier 已不再实际按下，则清除残留状态并拒绝本次划词翻译。
+          if (keyState && keyState.active) {
+            const staleSpec = keyState.spec || self._selectionTranslateHotkeySpec();
+            if (!self._isSelectionTranslateModifierDown(ev, staleSpec)) {
+              self._debugLog(
+                "selection translate stale state cleared on mousedown: spec=" +
+                staleSpec +
+                ", altKey=" + !!ev.altKey +
+                ", ctrlKey=" + !!ev.ctrlKey +
+                ", shiftKey=" + !!ev.shiftKey +
+                ", metaKey=" + !!ev.metaKey
+              );
+              self._selectionTranslateKeyState = null;
+              self._clearSelectionTranslateState("stale modifier on mousedown");
+              return;
             }
-          } else {
-            matched = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, mouse: ev.button, time: Date.now() });
           }
-          if (!matched) return;
-          self._hotkeyModifiers = { ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, mouse: ev.button, time: Date.now(), mouseSide: mouseSide };
-          self._debugLog("hotkey mousedown: mods=" + JSON.stringify(self._hotkeyModifiers));
+          let session = self._selectionTranslateSession;
+          // 全局按键状态已经激活且校验通过时，由当前 Reader 的左键 mousedown 建立本 Reader 会话。
+          if ((!session || !session.active) && keyState && keyState.active) {
+            session = self._selectionTranslateSession = {
+              active: true,
+              reader: reader,
+              win: win,
+              doc: win.document || null,
+              mouseDown: false,
+              selectionReady: false,
+              selectionText: "",
+              selectionTime: 0,
+              popupContext: null,
+              sequence: Date.now(),
+            };
+            self._debugLog("selection translate session attached: reader=" + (reader && reader.tabID));
+          }
+          if (!session || !session.active || session.win !== win) return;
+          session.mouseDown = true;
+          session.selectionReady = false;
+          session.selectionText = "";
+          session.selectionTime = Date.now();
+          session.popupContext = null;
+          self._debugLog("selection translate mouse down: reader=" + (session.reader && session.reader.tabID));
         } catch (e) {}
       }, true);
-      // 按下组合键：记录“快捷键按下”状态。
-      // 修饰键本体（Control/Alt）按下也记录，保证“按住修饰键 + 纯鼠标划词”流程可用。
-      win.addEventListener("keydown", function (ev) {
+      win.addEventListener("mouseup", function (ev) {
         try {
-          self._refreshPrefsFromStorage();
-          const d = self._data;
-          if (!d || !self._selectionHotkeyActive()) return;
-          let matched = false;
-          if (self._customHotkeyActive()) {
-            matched = self._matchCustomHotkeyKey(ev, d.customHotkey);
-          } else {
-            matched = self._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() });
-          }
-          if (!matched) return;
-          // 已有有效选区时，划词快捷键不建立会话，让“先选区后按绑定键”接管
-          if (self._addWordHotkeyActive() && self._matchSelectionFirstKey(ev) && self._getSelectionFirstPending()) {
-            self._debugLog("selection hotkey skipped: existing selection belongs to addWord hotkey");
+          const session = self._selectionTranslateSession;
+          if (!session || !session.active || session.win !== win || ev.button !== 0) return;
+          session.mouseDown = false;
+          session.selectionReady = false;
+          session.selectionText = "";
+          let selectedText = "";
+          try {
+            const selection = win.getSelection && win.getSelection();
+            selectedText = self._normalizeSelectionTranslateText(selection && selection.toString());
+          } catch (e) {}
+          if (!selectedText) {
+            self._debugLog("selection translate mouse up: result=no-selection");
             return;
           }
-          self._hotkeyPressed = { mod: d.customHotkeyEnabled ? d.customHotkey : (d.hotkeyModifier || "ctrl"), time: Date.now() };
-          self._hotkeyJustReleased = null;
-          self._debugLog("hotkey pressed: mod=" + JSON.stringify(self._hotkeyPressed));
+          session.selectionReady = true;
+          session.selectionText = selectedText;
+          session.selectionTime = Date.now();
+          self._debugLog("selection translate mouse up: result=selection-ready, text=" + JSON.stringify(selectedText));
+          self._tryTriggerSelectionTranslate(session);
         } catch (e) {}
       }, true);
-      // 松开组合键：若整个按下期间有选中文本，触发翻译。
-      // 注意：松开修饰键本体（Control/Alt）的 keyup 就是触发点，不能过滤。
       win.addEventListener("keyup", function (ev) {
-        try {
-          self._refreshPrefsFromStorage();
-          const d = self._data;
-          if (!d || !self._selectionHotkeyActive()) return;
-          const pressed = self._hotkeyPressed;
-          if (!pressed || !pressed.mod) return;
-          if (Date.now() - (pressed.time || 0) > 30000) return;
-          if (!self._isSelectionHotkeyKeyUp(ev)) return;
-          const releasedMod = pressed.mod;
-          // 必须先清除按下状态，避免残留导致后续误触发
-          self._clearSelectionHotkeyState("keyup");
-          self._hotkeyJustReleased = { mod: releasedMod, time: Date.now() };
-          const pending = self._selectionHotkeyPending || self._selectionFirstPending;
-          if (!pending || !pending.text) {
-            self._debugLog("hotkey released without selection: mod=" + releasedMod);
-            return;
-          }
-          self._debugLog("hotkey released: mod=" + releasedMod + ", word=" + JSON.stringify(pending.text));
-          self._triggerHotkeyTranslate(pending);
-        } catch (e) {}
+        try { self._handleSelectionTranslateGlobalKeyUp(ev, "reader-window"); } catch (e) {}
       }, true);
-      // “先选区后按绑定键”：iframe 内的键盘事件（keydown 触发，无需等待 keyup）
+      // —— 键盘：“先选区后按绑定键” ——
       win.addEventListener("keydown", function (ev) {
         try {
           self._refreshPrefsFromStorage();
@@ -715,6 +927,54 @@ _configVersion: 0,
       this._debugLog("hotkey bound to iframe window");
     } catch (e) {
       this._debugLog("_bindHotkeyModifierListener ERROR: " + (e && (e.message || String(e))));
+    }
+  },
+
+  _tryTriggerSelectionTranslate(session) {
+    try {
+      if (!session || !session.active || session.mouseDown || !session.selectionReady) return false;
+      const popup = session.popupContext;
+      if (!popup) {
+        this._debugLog("selection translate waiting popup: text=" + JSON.stringify(session.selectionText));
+        return false;
+      }
+      if (Date.now() - popup.time > 1500) {
+        this._debugLog("selection translate popup-skip: reason=stale");
+        session.popupContext = null;
+        return false;
+      }
+      const popupText = this._normalizeSelectionTranslateText(popup.text);
+      const selectionText = this._normalizeSelectionTranslateText(session.selectionText);
+      const sameReader = popup.reader === session.reader;
+      const sameText = popupText === selectionText;
+      if (!sameReader || !sameText) {
+        this._debugLog("selection translate popup-skip: reader=" + (!sameReader ? "mismatch" : "ok") + ", doc=not-checked, text=" + (!sameText ? "mismatch" : "ok"));
+        return false;
+      }
+      const triggerText = selectionText;
+      const popupDoc = popup.doc;
+      const popupButton = popup.button && popup.button.isConnected
+        ? popup.button
+        : (popupDoc && popupDoc.querySelector ? popupDoc.querySelector(".wordtranslator-add-btn") : null);
+      session.selectionReady = false;
+      session.selectionText = "";
+      session.selectionTime = 0;
+      session.popupContext = null;
+      this._debugLog("selection translate trigger: text=" + JSON.stringify(triggerText));
+      this._handleAddWordTrigger({
+        source: "hotkey-selection",
+        doc: popupDoc,
+        btn: popupButton,
+        // append 只能在 renderTextSelectionPopup 回调同步执行；
+        // mouseup 阶段绝不能再次调用已失效的 append。
+        append: null,
+        reader: session.reader,
+        text: triggerText,
+      });
+      return true;
+    } catch (e) {
+      this._debugLog("_tryTriggerSelectionTranslate ERROR: " + (e && (e.stack || e.message || String(e))));
+      return false;
     }
   },
 
@@ -744,20 +1004,48 @@ _configVersion: 0,
     // 鼠标/按键事件实际发生在 PDF.js 的 iframe window，popup 出现时绑定一次。
     try {
       const hotkeyWin = this._getHotkeyTargetWindow(reader);
-      if (hotkeyWin) this._bindHotkeyModifierListener(hotkeyWin);
+      if (hotkeyWin) this._bindHotkeyModifierListener(hotkeyWin, reader);
     } catch (e) {
       this._debugLog("hotkey bind ERROR: " + (e && (e.stack || e.message || String(e))));
     }
-    // 缓存当前选中文本（供 keyup 路径使用）
-    try {
-      this._selectionFirstPending = { reader: reader, text: text, time: Date.now() };
-      if (this._inSelectionHotkeySession() || this._hotkeyModifiers) {
-        this._selectionHotkeyPending = { reader: reader, text: text, time: Date.now() };
+    const session = this._selectionTranslateSession;
+    const popupText = this._normalizeSelectionTranslateText(text);
+    if (session && session.active) {
+      const popupWindow = doc && doc.defaultView;
+      const sameReader = session.reader === reader;
+      if (!sameReader) {
+        this._debugLog("selection translate popup-skip: reader=mismatch, doc=not-checked");
+        return;
       }
-      this._debugLog("selection pending cached: word=" + JSON.stringify(text.slice(0, 80)) +
-        ", session=" + this._inSelectionHotkeySession());
-    } catch (e) {}
-    // 自动翻译：开启后选中文本即自动加入单词本并翻译（不显示按钮）
+      // Reader 的 append 只在本次 renderTextSelectionPopup 回调栈内有效。
+      // 因此必须在这里同步创建/挂载本插件按钮，不能把 append 留到 mouseup 再调用。
+      let popupButton = doc && doc.querySelector ? doc.querySelector(".wordtranslator-add-btn") : null;
+      if (!popupButton && typeof append === "function") {
+        try {
+          const label = this._data.contextMenuLabel || "添加单词并翻译";
+          const created = this._createAddWordButton(doc, reader, popupText, this._getAddWordButtonHTML(label));
+          append(created);
+          popupButton = doc.querySelector ? doc.querySelector(".wordtranslator-add-btn") : null;
+          if (!popupButton && created.isConnected) popupButton = created;
+          this._debugLog("selection translate popup button mounted synchronously: connected=" + !!(popupButton && popupButton.isConnected));
+        } catch (e) {
+          this._debugLog("selection translate popup button mount ERROR: " + (e && (e.message || String(e))));
+        }
+      }
+      session.popupContext = {
+        reader,
+        doc,
+        button: popupButton,
+        append: null,
+        text: popupText,
+        time: Date.now(),
+      };
+      this._debugLog("selection translate popup cached: text=" + JSON.stringify(popupText) + ", mouseDown=" + session.mouseDown + ", selectionReady=" + session.selectionReady + ", doc=session-doc? " + (doc === session.doc));
+      this._tryTriggerSelectionTranslate(session);
+      return;
+    }
+    // 为“先选区后按添加单词快捷键”保留最新普通选区上下文。
+    this._selectionFirstPending = { reader: reader, text: text, doc: doc, append: append, time: Date.now() };
     if (this._data.autoTranslate) {
       // 防抖去重：相同文本 2 秒内不重复自动添加
       const now = Date.now();
@@ -767,65 +1055,25 @@ _configVersion: 0,
       this._lastAutoWord = text;
       this._lastAutoTime = now;
       this._debugLog("autoTranslate: word=" + JSON.stringify(text) + ", reader.itemID=" + (reader && reader.itemID));
-      this._addWordForReader(reader, text).catch((err) => {
-        this._debugLog("autoTranslate promise ERROR: " + (err && (err.stack || err.message || String(err))));
-      });
+      const autoButton = doc.querySelector(".wordtranslator-add-btn");
+      this._handleAddWordTrigger({ source: "auto", doc, btn: autoButton, append, reader, text });
       return;
     }
-    // 快捷键-划词翻译：三条路径
-    if (this._selectionHotkeyActive()) {
-      // 已有有效选区且“先选区后按绑定键”开启时，让该功能接管；
-      // 划词快捷键仅在本次划词没有已有选区缓存时触发（避免与选区+按键冲突）
-      const hasSelectionFirstPending = !!(this._data.addWordHotkeyEnabled && this._getSelectionFirstPending());
-      if (!hasSelectionFirstPending) {
-        // 路径 A：mousedown 时已匹配（按住快捷键 + 划词），popup 出现立即触发
-        if (this._customHotkeyActive()) {
-          if (this._hotkeyModifiers) {
-            const fresh = Date.now() - (this._hotkeyModifiers.time || 0) < 5000;
-            if (fresh && this._hotkeyModifiers.mouseSide) {
-              this._debugLog("hotkey translate (mouse side): mod=" + (this._data.customHotkey) + ", word=" + JSON.stringify(text));
-              this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
-              return;
-            }
-            if (fresh && !this._hotkeyModifiers.mouseSide && this._customHotkeyActive()) {
-              const p = this._parseHotkeySpec(this._data.customHotkey);
-              if (p && !p.mouse && this._matchCustomHotkeyMods(p, this._hotkeyModifiers)) {
-                this._debugLog("hotkey translate (custom key): mod=" + (this._data.customHotkey) + ", word=" + JSON.stringify(text));
-                this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
-                return;
-              }
-            }
-          }
-        } else if (this._hotkeyMatches(this._hotkeyModifiers)) {
-          this._debugLog("hotkey translate (mousedown): mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(text));
-          this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
-          return;
-        }
-        // 路径 B：快捷键正按住且已产生选中文本（按下→划词→popup），立即触发
-        if (this._hotkeyPressed && this._hotkeyPressed.mod) {
-          this._debugLog("hotkey held; translating selected text immediately");
-          this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
-          return;
-        }
-        // 路径 C：keyup 已触发过（兜底防止 keyup 未收到）
-        const released = this._hotkeyJustReleased;
-        if (released && released.mod && Date.now() - (released.time || 0) < 2000) {
-          this._hotkeyJustReleased = null;
-          this._debugLog("hotkey translate (release fallback): mod=" + released.mod + ", word=" + JSON.stringify(text));
-          this._triggerHotkeyTranslate({ reader: reader, text: text, time: Date.now() });
-          return;
-        }
-      }
-    }
+    // 先选区后按“添加单词”快捷键，以及普通 popup 按钮创建逻辑保持不变。
     const label = this._data.contextMenuLabel || "添加单词并翻译";
+    const existingButton = doc.querySelector(".wordtranslator-add-btn");
+    if (existingButton) {
+      existingButton.innerHTML = this._getAddWordButtonHTML(label);
+      this._lastSelectionPopup = { doc, reader, button: existingButton, text, time: Date.now() };
+      return;
+    }
 
-    // 按钮已存在则不再重复添加
-    if (doc.querySelector(".wordtranslator-add-btn")) return;
-
-    const SVGIcon = '<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 16 16" width="16" height="16" xml:space="preserve"><style type="text/css">.wt0{fill:#64B5F6;}.wt1{fill:#1E88E5;}</style><g><path class="wt0" d="M4.4,11.1h1.4c0.1,0,0.2-0.1,0.1-0.2L5.2,8.7c0-0.1-0.2-0.1-0.3,0l-0.7,2.2C4.2,11,4.3,11.1,4.4,11.1L4.4,11.1z"/><path class="wt0" d="M8.8,5H1.4C0.6,5,0,5.7,0,6.4v8.2C0,15.4,0.6,16,1.4,16h7.4c0.8,0,1.4-0.6,1.4-1.4V6.4C10.2,5.7,9.5,5,8.8,5L8.8,5z M7.9,14.2c-0.1,0.1-0.2,0.2-0.3,0.2c0,0-0.1,0-0.1,0c-0.1,0-0.1,0-0.2,0C7,14.3,7,14.2,7,14.1l-0.6-1.9C6.3,12,6.2,12,6.1,12H4c-0.1,0-0.1,0-0.2,0.1l-0.6,2c-0.1,0.1-0.1,0.2-0.3,0.3c-0.1,0.1-0.3,0.1-0.4,0.1c-0.2,0-0.3-0.1-0.3-0.2c0-0.1-0.1-0.2,0-0.4l2.1-6.4c0.1-0.3,0.4-0.5,0.7-0.5h0c0.3,0,0.6,0.2,0.7,0.5l0,0l2.1,6.5C8,14,8,14.1,7.9,14.2L7.9,14.2z"/><path class="wt1" d="M14.3,0H7.5C6.6,0,5.8,0.8,5.8,1.7v2.1C5.8,4,6,4.1,6.1,4.1H8c0.3,0,0.5,0,0.7,0.1C8.6,3.9,8.6,3.7,8.5,3.4H7.6C7.4,3.4,7.3,3.3,7.3,3c0-0.3,0.1-0.5,0.3-0.5h2.8c-0.1-0.3-0.2-0.5-0.2-0.7c0-0.2,0.1-0.4,0.3-0.5c0.3-0.1,0.4,0,0.6,0.2c0,0.1,0.1,0.3,0.2,0.6c0.1,0.2,0.1,0.4,0.1,0.4h2.4c0.3,0,0.4,0.2,0.4,0.5c0,0.3-0.1,0.5-0.4,0.5h-0.6c-0.1,0-0.1,0-0.1,0C12.8,4.9,12.3,6,11.6,7c0.6,0.5,1.3,0.9,2.3,1.3c0.3,0.1,0.3,0.3,0.3,0.6c-0.1,0.2-0.3,0.3-0.6,0.2c-0.9-0.3-1.8-0.8-2.5-1.3v2.9c0,0.2,0.1,0.3,0.3,0.3h3c0.9,0,1.7-0.8,1.7-1.7V1.7C16,0.8,15.2,0,14.3,0L14.3,0z"/><path class="wt1" d="M12,3.4H9.6c-0.1,0-0.2,0.1-0.1,0.2C9.6,4,9.7,4.4,9.9,4.8c0,0,0,0,0,0.1c0.4,0.3,0.7,0.8,0.9,1.2c0.2,0,0.1,0,0.3,0c0.5-0.8,0.9-1.6,1.1-2.5C12.1,3.5,12.1,3.4,12,3.4L12,3.4z"/></g></svg>';
-
-    const btn = this._createAddWordButton(doc, reader, text, SVGIcon + "<span>" + label + "</span>");
+    // Item Pane 标题和侧栏导航使用统一的 icon5.ico；
+    const btn = this._createAddWordButton(doc, reader, text, this._getAddWordButtonHTML(label));
     append(btn);
+    // 与统一触发入口一致：缓存 append 后 popup 中真实存在的节点。
+    const mountedButton = doc.querySelector(".wordtranslator-add-btn") || (btn.isConnected ? btn : null);
+    this._lastSelectionPopup = { doc, reader, button: mountedButton, text, time: Date.now() };
   },
 
 
@@ -882,24 +1130,34 @@ _configVersion: 0,
           ", reader.tabID=" + (reader && reader.tabID)
         );
 
-        // 按钮原地变成可编辑文本框（显示译文，右下角可缩放）
-        try {
-          this._showTempEditArea(doc, btn, reader, text, "");
-        } catch (e2) {
-          this._debugLog("showTempEditArea ERROR: " + (e2 && (e2.stack || e2.message || String(e2))));
-        }
-
-        this._addWordForReader(reader, text).catch((err) => {
-          this._debugLog(
-            "addWord promise ERROR: " +
-            (err && (err.stack || err.message || String(err)))
-          );
+        this._handleAddWordTrigger({
+          source: "button",
+          doc,
+          btn,
+          reader,
+          text,
         });
       } catch (err) {
         this._debugLog("btn click ERROR: " + (err && (err.stack || err.message || String(err))));
       }
     }, true);
     return btn;
+  },
+
+  _formatTempEditText(word, translation) {
+    const w = String(word || "").trim();
+    const t = String(translation || "").trim() || "正在翻译…";
+    return w ? w + " -- " + t : t;
+  },
+
+  _getAddWordButtonHTML(label) {
+    const text = String(label || "添加单词并翻译");
+    const safe = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // 方案 A：使用内联 SVG 图标，不依赖 chrome:// 外部资源加载。
+    // PDF 划词弹窗运行在 PDF.js iframe 沙箱中，无法加载 chrome:// 图片，
+    // 因此改用与参考插件(zotero-pdf-translate)一致的内联 SVG 方式，确保稳定显示。
+    const iconSVG = '<svg class="wordtranslator-add-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" style="vertical-align:middle;flex:0 0 16px;" aria-hidden="true"><rect x="0.5" y="0.5" width="15" height="15" rx="3" fill="#2a5fdb"/><text x="8" y="8" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="7" font-weight="700" fill="#ffffff">word</text><text x="8" y="13" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="3.5" fill="#ffffff">翻译</text></svg>';
+    return iconSVG + "<span>" + safe + "</span>";
   },
 
   // 把按钮原地替换为可编辑文本框；已有编辑框时先恢复按钮
@@ -910,16 +1168,24 @@ _configVersion: 0,
       const textarea = doc.createElement("textarea");
       textarea.className = "wordtranslator-temp-edit";
       textarea.rows = 1;
-      textarea.value = translation || "";
+      textarea.value = this._formatTempEditText(text, translation);
       textarea.placeholder = "正在翻译…";
       textarea.setAttribute("data-tabstop", "1");
       textarea.style.resize = "both";
-      textarea.style.height = "1.2em";
-      textarea.style.minHeight = "1.2em";
-      textarea.style.width = "90%";
+      textarea.style.boxSizing = "border-box";
+      textarea.style.width = "100%";
+      textarea.style.maxWidth = "100%";
+      textarea.style.minWidth = "0";
+      textarea.style.minHeight = "1.8em";
+      textarea.style.height = "auto";
+      textarea.style.lineHeight = "1.35";
+      textarea.style.padding = "2px 4px";
       textarea.style.margin = "4px 0";
       textarea.style.fontSize = "inherit";
-      textarea.style.overflow = "auto";
+      textarea.style.whiteSpace = "pre-wrap";
+      textarea.style.overflowWrap = "anywhere";
+      textarea.style.overflowY = "hidden";
+      this._resizeTempEditArea(textarea);
       btn.replaceWith(textarea);
       this._tempEditState = {
         doc: doc,
@@ -927,7 +1193,14 @@ _configVersion: 0,
         textarea: textarea,
         reader: reader || null,
         text: String(text || "").trim(),
-        innerHTML: btn.innerHTML || "",
+      };
+      this._lastSelectionPopup = {
+        doc,
+        reader,
+        button: textarea,
+        textarea,
+        text: String(text || "").trim(),
+        time: Date.now(),
       };
       try {
         textarea.focus();
@@ -939,6 +1212,21 @@ _configVersion: 0,
     }
   },
 
+  _resizeTempEditArea(textarea) {
+    try {
+      if (!textarea) return;
+      textarea.style.height = "auto";
+      const view = textarea.ownerDocument && textarea.ownerDocument.defaultView;
+      const style = view && view.getComputedStyle ? view.getComputedStyle(textarea) : null;
+      const lineHeight = parseFloat(style && style.lineHeight) || 18;
+      const maxHeight = lineHeight * 3.2;
+      const minHeight = lineHeight * 1.35;
+      const next = Math.max(minHeight, Math.min(textarea.scrollHeight || minHeight, maxHeight));
+      textarea.style.height = next + "px";
+      textarea.style.overflowY = (textarea.scrollHeight || 0) > maxHeight ? "auto" : "hidden";
+    } catch (e) {}
+  },
+
   // 翻译完成后更新临时编辑框内容
   _updateTempEditArea(word, translation) {
     const st = this._tempEditState;
@@ -947,8 +1235,9 @@ _configVersion: 0,
       const cur = String(st.text || "").trim().toLowerCase();
       const tgt = String(word || "").trim().toLowerCase();
       if (!cur || cur !== tgt) return;
-      st.textarea.value = translation || "";
+      st.textarea.value = this._formatTempEditText(st.text, translation);
       st.textarea.placeholder = translation ? "" : "正在翻译…";
+      this._resizeTempEditArea(st.textarea);
     } catch (e) {
       this._debugLog("_updateTempEditArea ERROR: " + (e && (e.stack || e.message || String(e))));
     }
@@ -961,11 +1250,18 @@ _configVersion: 0,
     this._tempEditState = null;
     this._unbindTempEditAutoClose();
     try {
-      const { doc, textarea, reader, text, innerHTML } = st;
+      const { doc, textarea, reader, text } = st;
       if (!doc || !textarea || !textarea.isConnected) return;
       const label = (this._data && this._data.contextMenuLabel) || "添加单词并翻译";
-      const btn = this._createAddWordButton(doc, reader, text, innerHTML || ("<span>" + label + "</span>"));
+      const btn = this._createAddWordButton(doc, reader, text, this._getAddWordButtonHTML(label));
       textarea.replaceWith(btn);
+      this._lastSelectionPopup = {
+        doc,
+        reader,
+        button: btn,
+        text,
+        time: Date.now(),
+      };
     } catch (e) {
       this._debugLog("_restoreButtonFromTempEdit ERROR: " + (e && (e.stack || e.message || String(e))));
     }
@@ -1019,30 +1315,22 @@ _configVersion: 0,
     } catch (e) {
       this._debugLog("_unbindTempEditAutoClose ERROR: " + (e && (e.stack || e.message || String(e))));
     }
-  },  // 解析自定义快捷键 spec，如 "ctrl+d"、"alt+1"、"ctrl"、"mouse1"~"mouse5"、"xbutton1/2"
+  },
+
+  // 解析键盘快捷键 spec，如 "ctrl+d"、"alt+1"、"ctrl"、"shift"。
   _parseHotkeySpec(spec) {
     try {
       if (!spec) return null;
       const parts = String(spec).toLowerCase().split("+").map(function (x) { return x.trim(); }).filter(Boolean);
       if (!parts.length) return null;
       const last = parts[parts.length - 1];
-      // 纯修饰键（如 "ctrl"、"alt"、"shift"）：用于“先选区后按绑定键”
       if (parts.length === 1) {
         if (last === "ctrl" || last === "control") return { key: "ctrl" };
         if (last === "alt") return { key: "alt" };
         if (last === "shift") return { key: "shift" };
       }
-      // 鼠标按键：mouse1=左(0) mouse2=右(2) mouse3=中(1) mouse4=侧键1(3) mouse5=侧键2(4)
-      if (last === "mouse1" || last === "left") return { mouse: 0 };
-      if (last === "mouse2" || last === "right") return { mouse: 2 };
-      if (last === "mouse3" || last === "middle") return { mouse: 1 };
-      if (last === "mouse4" || last === "xbutton1" || last === "side") return { mouse: 3 };
-      if (last === "mouse5" || last === "xbutton2") return { mouse: 4 };
-      // 兼容历史记录：以前侧键被记录为 button=4/5，需同步识别
-      if (last === "mouse4old") return { mouse: 4 };
-      if (last === "mouse5old") return { mouse: 4 };
       return {
-        ctrl: parts.indexOf("ctrl") >= 0,
+        ctrl: parts.indexOf("ctrl") >= 0 || parts.indexOf("control") >= 0,
         alt: parts.indexOf("alt") >= 0,
         shift: parts.indexOf("shift") >= 0,
         key: last,
@@ -1056,8 +1344,7 @@ _configVersion: 0,
   _matchCustomHotkeyKey(ev, spec) {
     try {
       const p = this._parseHotkeySpec(spec);
-      if (!p) return false;
-      if (p.mouse) return false;
+      if (!p || p.mouse) return false;
       const k = (ev.key || "").toLowerCase();
       if (!k || k === "control" || k === "shift" || k === "alt" || k === "meta") return false;
       if (k !== p.key) return false;
@@ -1071,22 +1358,10 @@ _configVersion: 0,
     }
   },
 
-  // 匹配鼠标事件（mousedown，侧键 button=4/5）与自定义快捷键 spec
-  _matchCustomHotkeyMouse(ev, spec) {
-    try {
-      const p = this._parseHotkeySpec(spec);
-      if (!p || !p.mouse) return false;
-      return ev.button === p.mouse;
-    } catch (e) {
-      return false;
-    }
-  },
-
   // 匹配"事件时记录的修饰键状态"与自定义键盘 spec（不依赖 ev 对象，供 popup 路径使用）
   _matchCustomHotkeyMods(p, mods) {
     try {
-      if (!p || !mods || p.mouse) return false;
-      // 纯修饰键 spec（如 "ctrl"）：要求对应修饰键按下
+      if (!p || !mods) return false;
       if (p.key === "ctrl") return !!mods.ctrl && !mods.alt && !mods.shift;
       if (p.key === "alt") return !!mods.alt && !mods.ctrl && !mods.shift;
       if (p.key === "shift") return !!mods.shift && !mods.ctrl && !mods.alt;
@@ -1205,6 +1480,8 @@ _configVersion: 0,
       }
       this._data = this._normalize(raw);
       this._lastPrefsMtime = mtime;
+      this._sortMode = this._data.sortMode || "reverse";
+      this._activeSearchStrategy = this._getActiveSearchStrategyName();
       return true;
     } catch (e) {
       this._debugLog("_refreshPrefsFromStorage ERROR: " + (e && (e.message || String(e))));
@@ -1232,7 +1509,7 @@ _configVersion: 0,
       if (mods && (mods.mouse !== undefined && mods.mouse !== null) && !c && !s && !a) {
         return false;
       }
-      // 兼容旧 hotkeyModifier 值 mouse1~mouse5：在此一律当作无效，避免误触发
+      // hotkeyModifier 只接受键盘修饰键；历史鼠标值统一视为无效配置。
       if (mod && mod.indexOf("mouse") === 0) return false;
       return (
         (mod === "ctrl" && c && !s && !a) ||
@@ -1244,11 +1521,37 @@ _configVersion: 0,
     }
   },
 
+  _normalizeSelectionTranslateText(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
+  },
+
+  _matchSelectionTranslateKey(ev) {
+    try {
+      const p = this._parseHotkeySpec(this._data && this._data.customHotkey);
+      if (!p) return false;
+      const key = String(ev && ev.key || "").toLowerCase();
+      if (!key) return false;
+      if (p.key === "ctrl") return key === "control" || key === "ctrl";
+      if (p.key === "alt") return key === "alt";
+      if (p.key === "shift") return key === "shift";
+      if (key !== String(p.key || "").toLowerCase()) return false;
+      return (
+        (!!ev.ctrlKey) === (!!p.ctrl) &&
+        (!!ev.altKey) === (!!p.alt) &&
+        (!!ev.shiftKey) === (!!p.shift)
+      );
+    } catch (e) {
+      return false;
+    }
+  },
+
+  _clearSelectionTranslateState(reason) {
+    this._debugLog("clear selection translate state: " + (reason || "unknown"));
+    this._selectionTranslateSession = null;
+  },
+
   _clearSelectionHotkeyState(reason) {
     this._debugLog("clear selection hotkey state: " + (reason || "unknown"));
-    this._hotkeyPressed = null;
-    this._hotkeyModifiers = null;
-    this._hotkeyJustReleased = null;
   },
 
   _hasFreshPendingSelection() {
@@ -1287,14 +1590,17 @@ _configVersion: 0,
     return pending;
   },
 
-  // 当前是否处于“按住划词快捷键”会话（未被释放/清理）
   _inSelectionHotkeySession() {
-    return !!(this._hotkeyPressed && this._hotkeyPressed.mod);
+    const session = this._selectionTranslateSession;
+    if (!session) return false;
+    const sourceText = this._normalizeSelectionTranslateText(session.selectionText);
+    return !!(session.active && sourceText && session.selectionReady && !session.mouseDown);
   },
 
+  // 先选区后按“添加单词”快捷键的适配器；不属于快捷键-划词翻译会话。
   _triggerHotkeyTranslate(pending) {
     try {
-      if (!pending || !pending.text) return;
+      if (!pending || !pending.reader || !pending.text) return;
       const now = Date.now();
       const key = String((pending.reader && pending.reader.tabID) || "") + "|" + String(pending.text || "");
       if (this._lastHotkeyKey === key && now - (this._lastHotkeyTime || 0) < 500) {
@@ -1302,41 +1608,42 @@ _configVersion: 0,
       }
       this._lastHotkeyKey = key;
       this._lastHotkeyTime = now;
-      this._selectionHotkeyPending = null;
-      // 保持 _hotkeyPressed/_hotkeyModifiers 不在此处清理：
-      // 按住快捷键连续划词期间需要持续有效，直到 keyup 才结束 session
-      this._hotkeyJustReleased = null;
-      this._debugLog("hotkey translate: mod=" + (this._data.hotkeyModifier || "ctrl") + ", word=" + JSON.stringify(pending.text));
-      // Beta: popup has add-btn, show temp edit area
-      try {
-        const hkDoc = this._getHotkeyTargetDoc(pending.reader);
-        if (hkDoc) {
-          const hkBtn = hkDoc.querySelector(".wordtranslator-add-btn");
-          if (hkBtn) {
-            this._showTempEditArea(hkDoc, hkBtn, pending.reader, pending.text, "");
-          }
-        }
-      } catch (e) {
-        this._debugLog("_triggerHotkeyTempEdit ERROR: " + (e && (e.message || String(e))));
+      const popup = this._lastSelectionPopup;
+      const pendingDoc = pending.doc || null;
+      const popupDoc = popup && popup.doc || null;
+      const doc = pendingDoc || popupDoc;
+      let btn = pending.btn || null;
+      if (!btn && doc && doc.querySelector) {
+        btn = doc.querySelector(".wordtranslator-add-btn");
       }
-      this._addWordForReader(pending.reader, pending.text).catch((err) => {
-        this._debugLog("hotkey promise ERROR: " + (err && (err.stack || err.message || String(err))));
-      });   } catch (e) {
-      this._debugLog("_triggerHotkeyTranslate ERROR: " + (e && (e.message || String(e))));
-    }
-  },
+      if (!btn && popup && popup.doc === doc && popup.button &&
+          popup.button.classList && popup.button.classList.contains("wordtranslator-add-btn")) {
+        btn = popup.button;
+      }
 
-  // 快捷键-划词翻译：keydown 记录按下状态（不再在 keydown 时立即翻译，
-  // 改为 keyup 时根据选中文本触发，避免时序抖动）
-  _onHotkeyKeydown(doc, ev) {
-    try {
-      if (!this._data || !this._selectionHotkeyActive()) return;
-      const k = (ev.key || "").toLowerCase();
-      if (k === "control" || k === "shift" || k === "alt" || k === "meta") return;
-      if (!this._hotkeyMatches({ ctrl: !!ev.ctrlKey, shift: !!ev.shiftKey, alt: !!ev.altKey, time: Date.now() })) return;
-      this._hotkeyPressed = { mod: this._data.hotkeyModifier || "ctrl", time: Date.now() };
-      this._hotkeyJustReleased = null;
-    } catch (e) {}
+      this._debugLog(
+        "hotkey adapter: word=" + JSON.stringify(pending.text) +
+        ", hasPendingDoc=" + !!pendingDoc +
+        ", hasPendingAppend=" + (typeof pending.append === "function") +
+        ", hasPopupDoc=" + !!popupDoc +
+        ", hasPopupButton=" + !!(popup && popup.button) +
+        ", hasButton=" + !!btn +
+        ", buttonConnected=" + !!(btn && btn.isConnected)
+      );
+      this._debugLog("hotkey translate: word=" + JSON.stringify(pending.text));
+
+      // 快捷键路径只负责适配选区缓存，UI 生命周期和业务处理统一交给入口函数。
+      this._handleAddWordTrigger({
+        source: "hotkey",
+        doc,
+        btn,
+        append: pending.append || null,
+        reader: pending.reader,
+        text: pending.text,
+      });
+    } catch (e) {
+      this._debugLog("_triggerHotkeyTranslate ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
   },
 
   _getReaderItemID(reader) {
@@ -1450,11 +1757,29 @@ _configVersion: 0,
       return;
     }
     const list = this._itemWords.get(Number(paneID)) || [];
-    const exists = list.some(function (c) {
+    const existingCard = list.find(function (c) {
       return c && String(c.word || "").toLowerCase() === normWord.toLowerCase();
     });
-    if (exists) {
+    if (existingCard) {
       this._debugLog("_addWordForReader skip (duplicate): " + JSON.stringify(normWord));
+      // 重复选中视为一次最近使用：保留同一个 card，不重复调用 API，
+      // 但将其移动到原始数组末尾，交由当前 sortMode 重新计算显示位置。
+      try {
+        const existingTranslation = String(existingCard.translation || "").trim();
+        if (existingTranslation && existingTranslation !== "翻译中…") {
+          this._updateTempEditArea(normWord, existingTranslation);
+        }
+        const existingIndex = list.indexOf(existingCard);
+        if (existingIndex >= 0 && existingIndex !== list.length - 1) {
+          list.splice(existingIndex, 1);
+          list.push(existingCard);
+          this._itemWords.set(Number(paneID), list);
+          this._persistWords();
+          this._applyWordBookView(Number(paneID), { source: "duplicate-reorder" });
+        }
+      } catch (e) {
+        this._debugLog("duplicate recent-use update ERROR: " + (e && (e.message || String(e))));
+      }
       return;
     }
     const card = { word: normWord, translation: "翻译中…", pending: true };
@@ -1463,7 +1788,16 @@ _configVersion: 0,
     this._persistWords();
     this._debugLog("_addWordForReader added: paneID=" + paneID + ", count=" + list.length);
 
-    this._refreshItemPane(paneID);
+    // 新单词加入后回到第 1 页，便于用户确认刚加入的词（保留搜索词）
+    try {
+      const st = this._getWordBookViewState(Number(paneID));
+      if (st && st.page !== 1) {
+        st.page = 1;
+        this._wordBookViewState.set(Number(paneID), st);
+      }
+    } catch (e) {}
+
+    this._applyWordBookView(Number(paneID), { source: "addWord" });
 
     try {
       const api = this.getActiveApi();
@@ -1482,7 +1816,7 @@ _configVersion: 0,
     } finally {
       card.pending = false;
       this._flushAndPersistWords();
-      this._refreshItemPane(paneID);
+      this._applyWordBookView(Number(paneID), { source: "translate-finish" });
       // Beta: udpate temp edit area
       try {
         this._updateTempEditArea(normWord, card.translation);
@@ -1504,57 +1838,29 @@ _configVersion: 0,
     }
   },
 
-  _refreshItemPane(itemID) {
+  _refreshItemPane(itemID, viewInfo) {
     const id = Number(itemID);
-    const entry = this._panelUIDs && this._panelUIDs.get(id);
-
-    this._debugLog(
-      "_refreshItemPane: id=" + id +
-      ", found=" + !!entry +
-      ", hasRefresh=" + !!(entry && entry.refresh) +
-      ", paneRefresh=" + !!this._paneRefresh
-    );
-
-    // ??1???? refresh?????
-    if (this._paneRefresh && typeof this._paneRefresh === "function") {
-      try {
-        this._paneRefresh();
-        return;
-      } catch (e) {
-        this._debugLog(
-          "paneRefresh ERROR: " +
-          (e && (e.stack || e.message || String(e)))
-        );
-      }
+    if (!Number.isFinite(id) || id <= 0) return;
+    this._debugLog("_refreshItemPane: id=" + id + ", hasViewInfo=" + !!viewInfo);
+    try {
+      const pane = this._currentPaneContext;
+      const win = Zotero.getMainWindow();
+      const doc = pane && pane.doc && pane.doc.defaultView ? pane.doc : (win && win.document);
+      const body = pane && pane.body && pane.body.isConnected
+        ? pane.body
+        : (doc && doc.querySelector && doc.querySelector(".wordtranslator-pane-body"));
+      if (!body || !this._renderPaneBody) return;
+      this._currentPaneContext = {
+        doc,
+        body,
+        itemID: id,
+        paneUID: body.dataset && body.dataset.wtPaneUid || null,
+      };
+      try { body.dataset.paneItemID = String(id); } catch (e) {}
+      this._renderPaneBody(doc, body, { id, viewInfo: viewInfo || null });
+    } catch (e) {
+      this._debugLog("_refreshItemPane ERROR: " + (e && (e.message || String(e))));
     }
-
-    // ??2???? entry.refresh
-    if (entry && typeof entry.refresh === "function") {
-      try {
-        entry.refresh();
-        return;
-      } catch (e) {
-        this._debugLog(
-          "refresh ERROR: " +
-          (e && (e.stack || e.message || String(e)))
-        );
-      }
-    }
-
-    // ??3?????
-    setTimeout(() => {
-      const retry = this._panelUIDs && this._panelUIDs.get(id);
-      this._debugLog(
-        "_refreshItemPane retry: id=" + id +
-        ", entry=" + !!retry +
-        ", paneRefresh=" + !!this._paneRefresh
-      );
-      if (this._paneRefresh && typeof this._paneRefresh === "function") {
-        try { this._paneRefresh(); } catch (e) { this._debugLog("paneRefresh retry ERROR: " + (e && e.message || e)); }
-      } else if (retry && typeof retry.refresh === "function") {
-        try { retry.refresh(); } catch (e) { this._debugLog("refresh retry ERROR: " + (e && e.message || e)); }
-      }
-    }, 300);
   },
 
   _deleteWordForItem(itemID, index) {
@@ -1564,7 +1870,7 @@ _configVersion: 0,
     list.splice(index, 1);
     this._itemWords.set(id, list);
     this._persistWords();
-    this._refreshItemPane(id);
+    this._applyWordBookView(id, { source: "delete" });
   },
 
   _setActiveApiForItem(itemID, idx) {
@@ -1695,28 +2001,29 @@ _configVersion: 0,
     }
   },
 
-  async _refreshProvidersInAllPanes(currentItemID) {
-    try {
-      await this._reloadDataFromDisk();
-      let refreshed = 0;
-      for (const [itemID, entry] of this._panelUIDs) {
-        if (entry && typeof entry.refresh === "function") {
-          try { entry.refresh(); refreshed++; } catch (e) { this._debugLog("refresh pane ERROR itemID=" + itemID + ": " + (e && e.message || e)); }
-        }
+  _refreshProvidersInAllPanes(currentItemID) {
+    return (async () => {
+      try {
+        await this._reloadDataFromDisk();
+        const context = this._currentPaneContext;
+        const id = context && Number(context.itemID) || Number(currentItemID);
+        if (Number.isFinite(id) && id > 0) this._refreshItemPane(id);
+        this._debugLog("_refreshProvidersInAllPanes: direct refresh=" + (Number.isFinite(id) && id > 0) + ", currentItemID=" + currentItemID);
+      } catch (e) {
+        this._debugLog("_refreshProvidersInAllPanes ERROR: " + (e && (e.stack || e.message || String(e))));
       }
-      if (refreshed === 0 && this._paneRefresh && typeof this._paneRefresh === "function") {
-        try { this._paneRefresh(); refreshed++; } catch (e) { this._debugLog("refresh global ERROR: " + (e && e.message || e)); }
-      }
-      this._debugLog("_refreshProvidersInAllPanes: refreshed=" + refreshed + ", currentItemID=" + currentItemID);
-      await this._rerenderCurrentItemPane("refresh-btn");
-    } catch (e) {
-      this._debugLog("_refreshProvidersInAllPanes ERROR: " + (e && (e.stack || e.message || String(e))));
-    }
+    })();
   },
 
   // 强制按当前 Zotero.ItemPane 激活的 item id 重渲染单词本 body
   async _rerenderCurrentItemPane(reason) {
     try {
+      const context = this._currentPaneContext;
+      if (context && context.body && context.body.isConnected && Number.isFinite(Number(context.itemID)) && Number(context.itemID) > 0) {
+        this._renderPaneBody(context.doc, context.body, { id: Number(context.itemID) });
+        this._debugLog("_rerenderCurrentItemPane(" + reason + "): context itemID=" + context.itemID);
+        return;
+      }
       const win = Zotero.getMainWindow();
       const doc = win && win.document;
       const zp = doc && doc.getElementById && doc.getElementById("zotero-item-pane");
@@ -1737,8 +2044,9 @@ _configVersion: 0,
   _clearAllWordsForItem(itemID) {
     const id = Number(itemID);
     this._itemWords.set(id, []);
+    this._wordBookViewState.set(id, { page: 1, search: "" }); // 清空后回到第 1 页并清空搜索
     this._persistWords();
-    this._refreshItemPane(id);
+    this._applyWordBookView(id, { source: "clear" });
   },
 
   // ---------- 注册 Item Pane 面板 ----------
@@ -1748,13 +2056,13 @@ _configVersion: 0,
         paneID: "wordtranslator",
         pluginID: this._addonID,
         header: {
-          l10nID: "wordtranslator-pane-header",
-          icon: this._addonRoot + "content/icons/favicon.png",
+          l10nID: "wordtranslator-itemPaneSection-header",
+          icon: "chrome://wordtranslator/content/icons/wordtranslator-section-16.svg",
         },
         sidenav: {
-          l10nID: "wordtranslator-pane-sidenav",
-          icon: this._addonRoot + "content/icons/favicon.png",
-          orderable: false,
+          l10nID: "wordtranslator-itemPaneSection-sidenav",
+          icon: "chrome://wordtranslator/content/icons/wordtranslator-section-20.svg",
+          orderable: true,
         },
         bodyXHTML: '<html:div class="wordtranslator-pane-body" style="padding: 8px;"></html:div>',
         onInit: ({ body, refresh }) => {
@@ -1766,25 +2074,44 @@ _configVersion: 0,
               body._wtRefresh = refresh;
             }
             this._debugLog("pane onInit: uid=" + uid + ", hasRefresh=" + !!refresh);
+            if (!this._currentPaneContext || !this._currentPaneContext.body || !this._currentPaneContext.body.isConnected) {
+              this._currentPaneContext = { doc: body && body.ownerDocument, body, itemID: null, paneUID: uid };
+            }
           } catch (e) {
             this._debugLog("pane onInit ERROR: " + (e && (e.stack || e.message || String(e))));
           }
         },
         onDestroy: ({ body }) => {
           const uid = body.dataset.wtPaneUid;
+          if (this._currentPaneContext && this._currentPaneContext.body === body) {
+            this._currentPaneContext = null;
+          }
           if (uid) {
             for (const [itemID, entry] of this._panelUIDs) {
               if (entry.paneUID === uid) this._panelUIDs.delete(itemID);
             }
           }
         },
-        onItemChange: ({ item, setEnabled }) => {
+        onItemChange: ({ item, body, setEnabled }) => {
           setEnabled(true);
+          try {
+            if (body && item && Number.isFinite(Number(item.id)) && Number(item.id) > 0) {
+              const itemID = Number(item.id);
+              body.dataset.itemID = String(itemID);
+              this._currentPaneContext = {
+                doc: body.ownerDocument,
+                body,
+                itemID,
+                paneUID: body.dataset && body.dataset.wtPaneUid || null,
+              };
+            }
+          } catch (e) {}
         },
         onRender: ({ doc, body, item }) => {
           try {
             this._debugLog("pane onRender: itemID=" + (item && item.id) + ", body=" + !!body);
-            this._renderPaneBody(doc, body, item);
+            const rendered = this._renderPaneBody(doc, body, item);
+            if (rendered !== false) this._applyPaneL10nFallback(doc, body);
           } catch (e) {
             this._debugLog("onRender ERROR: " + (e && (e.stack || e.message || String(e))));
           }
@@ -1797,11 +2124,61 @@ _configVersion: 0,
     }
   },
 
+  // DOM 兜底：Fluent 未加载时直接设置 header label 和 sidenav tooltiptext
+  _applyPaneL10nFallback(doc, body) {
+    try {
+      if (!doc || !body) return;
+      const isZh = Zotero.locale && Zotero.locale.startsWith("zh");
+      const headerLabel = isZh ? "单词本" : "Word List";
+      const sidenavTooltip = isZh ? "单词翻译" : "Word Translator";
+      // 向上查找 item-pane-section 容器
+      let section = body.closest ? body.closest("item-pane-section") : null;
+      if (!section) {
+        const p = body.parentElement;
+        if (p) section = p.closest ? p.closest("item-pane-section") : null;
+      }
+      if (section) {
+        // header label
+        const labelEl = section.querySelector ? section.querySelector(".head .title, .head .label, .head label") : null;
+        if (labelEl) {
+          if (!labelEl.textContent || labelEl.textContent.trim() === "") {
+            labelEl.textContent = headerLabel;
+          }
+        }
+        // sidenav tooltiptext（在 sidebar 侧）
+        const sidenavBtn = doc.querySelector('[data-pane-id="wordtranslator"]');
+        if (sidenavBtn) {
+          sidenavBtn.setAttribute("tooltiptext", sidenavTooltip);
+          sidenavBtn.setAttribute("title", sidenavTooltip);
+        }
+      }
+      // 另一种结构：直接在 sidenav-toolbar 内查找
+      const sidenavBtns = doc.querySelectorAll('[data-pane-id="wordtranslator"], [data-pane="wordtranslator"]');
+      for (const btn of sidenavBtns) {
+        if (btn.classList && (btn.classList.contains("sidenav-button") || btn.tagName === "toolbarbutton" || btn.getAttribute("data-l10n-id") === "wordtranslator-itemPaneSection-sidenav")) {
+          btn.setAttribute("tooltiptext", sidenavTooltip);
+          btn.setAttribute("title", sidenavTooltip);
+        }
+      }
+      // 最后兜底：部分 Zotero 版本把 l10n 节点放在独立的主窗口文档中，
+      // 通过 data-l10n-id 直接定位并写入原生 tooltip 属性。
+      const l10nBtns = doc.querySelectorAll('[data-l10n-id="wordtranslator-itemPaneSection-sidenav"]');
+      for (const btn of l10nBtns) {
+        btn.setAttribute("tooltiptext", sidenavTooltip);
+        btn.setAttribute("title", sidenavTooltip);
+      }
+    } catch (e) {
+      this._debugLog("_applyPaneL10nFallback ERROR: " + (e && (e.stack || e.message || e)));
+    }
+  },
+
   _createEl(doc, tag, attrs, children) {
     const HTML_NS = "http://www.w3.org/1999/xhtml";
     const e = doc.createElementNS(HTML_NS, tag);
     if (attrs) {
       for (const [k, v] of Object.entries(attrs)) {
+        // null/undefined/false 表示不设置该属性；尤其避免 disabled=null 仍让按钮进入禁用态。
+        if (v === null || v === undefined || v === false) continue;
         if (k === "class") e.className = v;
         else if (k === "style") e.style.cssText = v;
         else e.setAttribute(k, v);
@@ -1833,17 +2210,159 @@ _configVersion: 0,
     }
   },
 
+  _registerWordBookSearchStrategy(name, matcher) {
+    const key = String(name || "").trim();
+    if (!key || typeof matcher !== "function") return false;
+    this._wordBookSearchStrategies.set(key, matcher);
+    return true;
+  },
+
+  _getWordBookSearchStrategy(name) {
+    const key = String(name || "").trim();
+    if (this._wordBookSearchStrategies.has(key)) return this._wordBookSearchStrategies.get(key);
+    return this._wordBookSearchStrategies.get("prefix");
+  },
+
+  _getActiveSearchStrategyName() {
+    const cfg = this._data && this._data.searchStrategy;
+    const key = String(cfg || "prefix").trim();
+    return this._wordBookSearchStrategies.has(key) ? key : "prefix";
+  },
+
+  _getWordBookSearchMatches(rawWords, search, strategyName) {
+    const kw = String(search || "").trim().toLowerCase();
+    if (!kw) return rawWords.map((_, index) => index);
+    const matcher = this._getWordBookSearchStrategy(strategyName);
+    return rawWords.reduce((matches, word, index) => {
+      try {
+        if (matcher && matcher(word, kw)) matches.push(index);
+      } catch (e) {
+        this._debugLog("search strategy ERROR: " + (e && (e.message || String(e))));
+      }
+      return matches;
+    }, []);
+  },
+
+  // ---------- 单词本分页与搜索（临时界面状态，不写盘） ----------
+  _getWordBookViewState(itemID) {
+    let st = this._wordBookViewState.get(Number(itemID));
+    if (!st) {
+      st = { page: 1, search: "" };
+      this._wordBookViewState.set(Number(itemID), st);
+    }
+    return st;
+  },
+
+  // 搜索匹配 → 排序 → 分页。返回 { indices, page, pageCount, total }
+  _computePagedIndices(rawWords, sortMode, search, page, pageSize, strategyName) {
+    const matched = new Set(this._getWordBookSearchMatches(rawWords, search, strategyName));
+    const filtered = this._getSortedIndices(rawWords, sortMode)
+      .filter((origIdx) => matched.has(origIdx));
+    const total = filtered.length;
+    const size = Math.max(1, Number(pageSize) || 10);
+    const pageCount = Math.max(1, Math.ceil(total / size));
+    let cur = Math.max(1, Math.floor(Number(page) || 1));
+    if (cur > pageCount) cur = pageCount;
+    const start = (cur - 1) * size;
+    const indices = filtered.slice(start, start + size);
+    return { indices, page: cur, pageCount, total };
+  },
+
+  _setWordBookPage(itemID, page) {
+    const id = Number(itemID);
+    const st = this._getWordBookViewState(id);
+    this._debugLog("pagination request: itemID=" + id + ", requestedPage=" + page + ", currentPage=" + st.page);
+    this._applyWordBookView(id, { source: "pagination", page: page });
+  },
+
+  // 触发层：一次 input 只产生一个搜索事件，防抖后交给统一后置处理器。
+  _onWordBookSearchTrigger(itemID, keyword) {
+    const id = Number(itemID);
+    const value = String(keyword || "");
+    this._debugLog("search trigger: itemID=" + id + ", keyword=" + JSON.stringify(value));
+
+    const oldTimer = this._wordBookSearchTimers.get(id);
+    if (oldTimer) {
+      try { clearTimeout(oldTimer); } catch (e) {}
+    }
+    const timer = setTimeout(() => {
+      this._wordBookSearchTimers.delete(id);
+      this._handleWordBookSearchEvent({ type: "input", itemID: id, keyword: value });
+      // _refreshItemPane 会重建 input；重建后恢复焦点和光标位置，保证可连续输入。
+      try {
+        const pane = this._currentPaneContext;
+        const input = pane && pane.body && pane.body.isConnected
+          ? pane.body.querySelector('input[type="search"]') : null;
+        if (input) {
+          input.focus();
+          const end = String(input.value || "").length;
+          if (typeof input.setSelectionRange === "function") input.setSelectionRange(end, end);
+        }
+      } catch (e) {
+        this._debugLog("search focus restore ERROR: " + (e && (e.message || String(e))));
+      }
+    }, 250);
+    this._wordBookSearchTimers.set(id, timer);
+  },
+
+  // 搜索事件触发后逻辑：更新视图状态，并统一执行检索、排序、分页和重渲染。
+  _handleWordBookSearchEvent(event) {
+    const e = event || {};
+    const id = Number(e.itemID);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const st = this._getWordBookViewState(id);
+    st.search = String(e.keyword || "");
+    st.page = 1;
+    this._wordBookViewState.set(id, st);
+    this._debugLog("search post-trigger: itemID=" + id + ", strategy=" + (this._getActiveSearchStrategyName()) + ", keyword=" + JSON.stringify(st.search));
+    this._applyWordBookView(id, { source: e.type || "search" });
+  },
+
+  // 统一的单词本视图更新调度：检索 → 排序 → 分页 → 重渲染。所有业务触发点汇聚于此。
+  _applyWordBookView(itemID, options) {
+    const id = Number(itemID);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const opts = options || {};
+    const st = this._getWordBookViewState(id);
+    const rawWords = this._itemWords.get(id) || [];
+    const pageSize = Math.max(1, Number(this._data && this._data.pageSize) || 10);
+    const strategyName = this._getActiveSearchStrategyName();
+    const info = this._computePagedIndices(rawWords, this._sortMode, st.search, opts.page || st.page, pageSize, strategyName);
+    st.page = info.page;
+    this._wordBookViewState.set(id, st);
+    this._debugLog("word-book post-trigger: source=" + (opts.source || "unknown") + ", itemID=" + id + ", strategy=" + strategyName + ", total=" + info.total + ", page=" + info.page + "/" + info.pageCount);
+    this._refreshItemPane(id, info);
+  },
+
+  // 返回需要显示的"空态/搜索无结果"提示节点；有结果时返回 null
+  _getEmptyHint(doc, rawWords, search, pageInfo) {
+    const HTML_NS = "http://www.w3.org/1999/xhtml";
+    const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
+    const txt = (s) => this._createTxt(doc, s);
+    const kw = String(search || "").trim();
+    if (rawWords.length === 0) {
+      return el("div", { style: "color:#888;font-size:12px;padding:6px 4px;" }, [
+        txt("暂无单词。打开 PDF 划词后，点击「" + (this._data && this._data.contextMenuLabel || "添加单词并翻译") + "」即可加入。")
+      ]);
+    }
+    // 只在过滤后的结果确实为空时才显示"未找到"提示
+    if (kw && pageInfo && pageInfo.indices && pageInfo.indices.length === 0) {
+      return el("div", { style: "color:#888;font-size:12px;padding:6px 4px;" }, [
+        txt("未找到与" + kw + "匹配的单词。")
+      ]);
+    }
+    return null;
+  },
+
   _setSortMode(mode) {
-    if (mode !== "forward" && mode !== "reverse" && mode !== "alpha") return;
+    if (mode !== "forward" && mode !== "reverse" && mode !== "alpha") return false;
     this._sortMode = mode;
     if (this._data) {
       this._data.sortMode = mode;
       this._saveData();
     }
-    // 刷新面板
-    if (this._paneRefresh && typeof this._paneRefresh === "function") {
-      try { this._paneRefresh(); } catch (e) { this._debugLog("_setSortMode refresh ERROR: " + (e && e.message || e)); }
-    }
+    this._debugLog("_setSortMode: mode=" + mode + ", saved=true");
+    return true;
   },
 
   _getSortIconHTML(mode) {
@@ -1866,10 +2385,44 @@ _configVersion: 0,
     const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
     const txt = (s) => this._createTxt(doc, s);
 
+    // 优先级：onRender 传入的 item.id → body.dataset.paneItemID（_refreshItemPane 显式标记）
+    // → body.dataset.itemID（onItemChange 保存）→ #zotero-item-pane 的 data-itemid。
+    let itemID = Number(item && item.id);
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const context = this._currentPaneContext;
+        if (context && Number.isFinite(Number(context.itemID)) && Number(context.itemID) > 0) {
+          itemID = Number(context.itemID);
+        }
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const explicit = body && body.dataset && body.dataset.paneItemID;
+        if (explicit) itemID = Number(explicit);
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const stored = body && body.dataset && body.dataset.itemID;
+        if (stored) itemID = Number(stored);
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const win = Zotero.getMainWindow();
+        const zp = win && win.document && win.document.getElementById && win.document.getElementById("zotero-item-pane");
+        const cur = zp && zp.getAttribute && zp.getAttribute("data-itemid");
+        if (cur) itemID = Number(cur);
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      this._debugLog("_renderPaneBody skipped: invalid itemID; item=" + (item && item.id) + ", context=" + (this._currentPaneContext && this._currentPaneContext.itemID));
+      return false;
+    }
     body.replaceChildren();
-    const itemID = Number(item.id);
+
     const rawWords = this._itemWords.get(itemID) || [];
-    const sortedIndices = this._getSortedIndices(rawWords, this._sortMode);
 
     // 缓存 panelUID 用于后续刷新
     if (body.dataset.wtPaneUid) {
@@ -1884,68 +2437,171 @@ _configVersion: 0,
       );
     }
 
-    // 头部：左组（标题 + API 下拉 + 刷新 + 设置） / 右组（放大 + 缩小 + 清空）
-    const header = el("div", { style: "display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;" });
-    const leftGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex:1;min-width:0;" });
-    const rightGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex-shrink:0;" });
+    // 头部采用两行布局：第一行是“图标 + 单词本 + 菜单 + 清空”，第二行是 API 和常用操作。
+    const header = el("div", { style: "display:flex;flex-direction:column;gap:5px;margin:0 0 8px;width:100%;padding:0 0 6px;border-bottom:1px solid rgba(0,0,0,0.08);box-sizing:border-box;" });
+    const titleRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;" });
+    const controlsRow = el("div", { style: "display:flex;align-items:center;gap:5px;width:100%;min-width:0;min-height:26px;" });
+    const titleGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex:1;min-width:0;" });
+    const titleActions = el("div", { style: "display:flex;align-items:center;gap:6px;flex-shrink:0;" });
 
-    const title = el("strong", {}, [txt("单词本")]);
-    leftGroup.append(title);
+    const title = el("strong", { title: "单词本", style: "white-space:nowrap;font-size:14px;line-height:20px;" }, [txt("单词本")]);
+    titleGroup.append(title);
 
-    const apiSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换翻译 API" });
+    const apiSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换翻译 API", "aria-label": "当前翻译 API" });
     this._fillApiSelect(doc, apiSelect);
     apiSelect.addEventListener("change", () => {
       const idx = parseInt(apiSelect.value, 10);
       this._setActiveApiForItem(itemID, idx);
     });
-    leftGroup.append(apiSelect);
+    controlsRow.append(apiSelect);
 
-    const refreshBtn = el("button", { title: "刷新服务商列表", "aria-label": "刷新服务商列表", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    const compactButtonStyle = "width:28px;height:26px;padding:0;border:1px solid rgba(0,0,0,0.16);background:rgba(255,255,255,0.72);border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#555;box-sizing:border-box;flex:0 0 28px;";
+    const refreshBtn = el("button", { title: "刷新服务商列表", "aria-label": "刷新服务商列表", style: compactButtonStyle }, []);
     refreshBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"23 4 23 10 17 10\"></polyline><polyline points=\"1 20 1 14 7 14\"></polyline><path d=\"M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15\"></path></svg>";
     refreshBtn.addEventListener("click", () => this._refreshProvidersInAllPanes(itemID));
-    leftGroup.append(refreshBtn);
+    controlsRow.append(refreshBtn);
 
-    const settingsBtn = el("button", { title: "设置", "aria-label": "设置", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    const settingsBtn = el("button", { title: "设置", "aria-label": "设置", style: compactButtonStyle }, []);
     settingsBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"3\" y1=\"6\" x2=\"21\" y2=\"6\"></line><line x1=\"3\" y1=\"12\" x2=\"21\" y2=\"12\"></line><line x1=\"3\" y1=\"18\" x2=\"21\" y2=\"18\"></line></svg>";
     settingsBtn.addEventListener("click", () => this._openPreferencesPane());
-    leftGroup.append(settingsBtn);
+    titleActions.append(settingsBtn);
 
-    const sortBtn = el("button", { title: this._getSortLabel(this._sortMode), "aria-label": "切换排序方式", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
-    sortBtn.innerHTML = this._getSortIconHTML(this._sortMode);
+    const sortBtn = el("button", { title: this._getSortLabel(this._sortMode), "aria-label": "切换排序方式", style: compactButtonStyle }, []);
+    if (this._sortMode === "reverse") {
+      sortBtn.textContent = "倒";
+    } else if (this._sortMode === "forward") {
+      sortBtn.textContent = "正";
+    } else { // alpha
+      sortBtn.innerHTML = this._getSortIconHTML("alpha");
+    }
     sortBtn.addEventListener("click", () => {
       const modes = ["reverse", "forward", "alpha"];
-      const idx = modes.indexOf(this._sortMode);
+      const current = this._sortMode;
+      const idx = modes.indexOf(current);
       const next = modes[(idx + 1) % modes.length];
-      this._setSortMode(next);
-      sortBtn.innerHTML = this._getSortIconHTML(this._sortMode);
-      sortBtn.title = this._getSortLabel(this._sortMode);
+      this._debugLog("sort click: current=" + current + ", next=" + next);
+      if (!this._setSortMode(next)) return;
+      // 排序改变后回到第 1 页（保留搜索词），统一走 _applyWordBookView。
+      this._applyWordBookView(itemID, { source: "sort", page: 1 });
     });
-    leftGroup.append(sortBtn);
+    controlsRow.append(sortBtn);
 
-    const zoomInBtn = el("button", { title: "放大字体", "aria-label": "放大字体", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    const zoomInBtn = el("button", { title: "放大字体", "aria-label": "放大字体", style: compactButtonStyle }, []);
     zoomInBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><text x=\"6\" y=\"17\" font-size=\"14\" font-family=\"Arial, sans-serif\" font-weight=\"700\" stroke=\"none\" fill=\"currentColor\">A</text><polyline points=\"16,4 19,1 22,4\"></polyline><line x1=\"19\" y1=\"1\" x2=\"19\" y2=\"7\"></line></svg>";
     zoomInBtn.addEventListener("click", () => this._onZoomFontSize(itemID, +1));
-    rightGroup.append(zoomInBtn);
+    controlsRow.append(zoomInBtn);
 
-    const zoomOutBtn = el("button", { title: "缩小字体", "aria-label": "缩小字体", style: "border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center;color:#555;" }, []);
+    const zoomOutBtn = el("button", { title: "缩小字体", "aria-label": "缩小字体", style: compactButtonStyle }, []);
     zoomOutBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><text x=\"6\" y=\"17\" font-size=\"11\" font-family=\"Arial, sans-serif\" font-weight=\"700\" stroke=\"none\" fill=\"currentColor\">A</text><polyline points=\"16,7 19,10 22,7\"></polyline><line x1=\"19\" y1=\"10\" x2=\"19\" y2=\"4\"></line></svg>";
     zoomOutBtn.addEventListener("click", () => this._onZoomFontSize(itemID, -1));
-    rightGroup.append(zoomOutBtn);
+    controlsRow.append(zoomOutBtn);
 
-    const clearBtn = el("button", { style: "padding:2px 10px;border:1px solid #ccc;background:transparent;border-radius:6px;cursor:pointer;" }, [txt("清空")]);
+    const clearBtn = el("button", { title: "清空当前条目的全部单词", "aria-label": "清空当前条目的全部单词", style: "height:26px;padding:0 9px;border:1px solid rgba(0,0,0,0.16);background:rgba(255,255,255,0.72);border-radius:6px;cursor:pointer;font-size:12px;line-height:24px;box-sizing:border-box;white-space:nowrap;" }, [txt("清空")]);
     clearBtn.addEventListener("click", () => this._clearAllWordsForItem(itemID));
-    rightGroup.append(clearBtn);
+    titleActions.append(clearBtn);
 
-    header.append(leftGroup, rightGroup);
+    titleRow.append(titleGroup, titleActions);
+
+    // 第三行：搜索 + 翻页（新增，不影响上面两行排版）
+    const pageSize = Math.max(1, Number(this._data && this._data.pageSize) || 10);
+    const view = this._getWordBookViewState(itemID);
+    const pageInfo = item && item.viewInfo
+      ? item.viewInfo
+      : this._computePagedIndices(rawWords, this._sortMode, view.search, view.page, pageSize, this._getActiveSearchStrategyName());
+    // 若当前页超出范围则自动收拢到最后一页（例如清空/删除后）
+    if (view.page !== pageInfo.page) {
+      this._wordBookViewState.set(itemID, { page: pageInfo.page, search: view.search });
+      view.page = pageInfo.page;
+    }
+    const navRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;margin-top:2px;" });
+    const searchInput = el("input", {
+      type: "search",
+      placeholder: "搜索单词或释义…",
+      title: "搜索单词或中文释义（同时匹配单词与翻译）",
+      style: "flex:1;min-width:0;font-size:12px;padding:3px 8px;border:1px solid rgba(0,0,0,0.16);border-radius:6px;background:rgba(255,255,255,0.72);color:#222;box-sizing:border-box;",
+    });
+    searchInput.value = view.search;
+    searchInput.addEventListener("input", (ev) => {
+      // 中文输入法合成中不触发搜索（拼音→选字过程），合成完成后的 input 事件 isComposing=false 正常触发
+      if (ev.isComposing) return;
+      this._onWordBookSearchTrigger(itemID, searchInput.value);
+    });
+    searchInput.addEventListener("compositionend", () => {
+      // 兼容：部分浏览器 compositionend 后可能不触发 isComposing=false 的 input
+      this._onWordBookSearchTrigger(itemID, searchInput.value);
+    });
+    navRow.append(searchInput);
+
+    const prevBtn = el("button", { title: "上一页", "aria-label": "上一页", disabled: pageInfo.page <= 1 ? "disabled" : null, style: "height:26px;min-width:28px;padding:0 8px;border:1px solid rgba(0,0,0,0.16);background:rgba(255,255,255,0.72);border-radius:6px;cursor:pointer;font-size:13px;line-height:24px;color:#555;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;" }, [txt("‹")]);
+    prevBtn.addEventListener("click", () => this._setWordBookPage(itemID, pageInfo.page - 1));
+    navRow.append(prevBtn);
+
+    const pageInput = el("input", {
+      type: "text",
+      inputmode: "numeric",
+      pattern: "[0-9]*",
+      min: "1",
+      max: String(Math.max(1, pageInfo.pageCount)),
+      title: "输入页码后按回车或点击“跳”",
+      "aria-label": "当前页",
+      style: "width:44px;font-size:12px;padding:3px 4px;text-align:center;border:1px solid rgba(0,0,0,0.16);border-radius:6px;background:rgba(255,255,255,0.72);color:#222;box-sizing:border-box;flex:0 0 auto;",
+    });
+    pageInput.value = String(pageInfo.page);
+
+    // 页码框只允许输入 ASCII 数字；粘贴或输入中文/英文时立即过滤。
+    pageInput.addEventListener("input", () => {
+      const digitsOnly = String(pageInput.value || "").replace(/[^0-9]/g, "");
+      if (pageInput.value !== digitsOnly) pageInput.value = digitsOnly;
+    });
+
+    // Enter 与“跳”按钮共用同一个跳转函数，避免两套逻辑产生差异。
+    const jumpToInputPage = () => {
+      const raw = parseInt(String(pageInput.value || "").trim(), 10);
+      this._debugLog("pagination jump request: itemID=" + itemID + ", input=" + JSON.stringify(pageInput.value) + ", parsed=" + raw);
+      if (!Number.isFinite(raw) || raw < 1 || raw > pageInfo.pageCount) {
+        pageInput.value = String(pageInfo.page);
+        this._debugLog("pagination jump ignored: itemID=" + itemID + ", page=" + raw + ", pageCount=" + pageInfo.pageCount);
+        return;
+      }
+      this._setWordBookPage(itemID, raw);
+    };
+
+    pageInput.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      jumpToInputPage();
+    });
+    navRow.append(pageInput);
+
+    const jumpBtn = el("button", {
+      type: "button",
+      title: "跳转到输入的页码",
+      "aria-label": "跳转到输入的页码",
+      style: "height:26px;padding:0 7px;border:1px solid rgba(0,0,0,0.16);background:rgba(255,255,255,0.72);border-radius:6px;cursor:pointer;font-size:12px;line-height:24px;color:#555;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;",
+    }, [txt("跳")]);
+    jumpBtn.addEventListener("click", () => {
+      this._debugLog("pagination jump button click: itemID=" + itemID);
+      jumpToInputPage();
+    });
+    navRow.append(jumpBtn);
+
+    const totalLabel = el("span", { style: "font-size:12px;color:#666;white-space:nowrap;flex:0 0 auto;" }, [txt(" / " + pageInfo.pageCount)]);
+    navRow.append(totalLabel);
+
+    const nextBtn = el("button", { title: "下一页", "aria-label": "下一页", disabled: pageInfo.page >= pageInfo.pageCount ? "disabled" : null, style: "height:26px;min-width:28px;padding:0 8px;border:1px solid rgba(0,0,0,0.16);background:rgba(255,255,255,0.72);border-radius:6px;cursor:pointer;font-size:13px;line-height:24px;color:#555;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;" }, [txt("›")]);
+    nextBtn.addEventListener("click", () => this._setWordBookPage(itemID, pageInfo.page + 1));
+    navRow.append(nextBtn);
+
+    header.append(titleRow, controlsRow, navRow);
     body.append(header);
 
     // 卡片列表
     const list = el("div", { class: "wordtranslator-pane-list", style: "display:flex;flex-direction:column;gap:6px;" });
-    if (rawWords.length === 0) {
-      const empty = el("div", { style: "color:#888;font-size:12px;padding:6px 4px;" }, [txt("暂无单词。打开 PDF 划词后，点击「" + (this._data?.contextMenuLabel || "添加单词并翻译") + "」即可加入。")]);
-      list.append(empty);
+    const emptyHint = this._getEmptyHint(doc, rawWords, view.search, pageInfo);
+    if (emptyHint) {
+      list.append(emptyHint);
     } else {
-      sortedIndices.forEach((origIdx) => {
+      pageInfo.indices.forEach((origIdx) => {
         const w = rawWords[origIdx];
         list.append(this._renderCard(doc, itemID, origIdx, w));
       });
@@ -1961,6 +2617,13 @@ _configVersion: 0,
     }
     // 保存当前 pane 的 doc / body 引用，以便点击放大/缩小按钮后只对卡片文本动态调整
     this._currentPane = { doc: doc, body: body };
+    this._currentPaneContext = {
+      doc,
+      body,
+      itemID,
+      paneUID: body.dataset && body.dataset.wtPaneUid || null,
+    };
+    return true;
   },
 
   _renderCard(doc, itemID, idx, w) {
@@ -2039,9 +2702,11 @@ _configVersion: 0,
       promptGlobal:
         "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}",
       fontSize: 13,
+      pageSize: 10, // 单词本每页显示单词数
       apis: [],
       activeApiIndex: 0,
       sortMode: "reverse",
+      searchStrategy: "prefix",
     };
     if (!raw || typeof raw !== "object") return base;
     return {
@@ -2050,6 +2715,8 @@ _configVersion: 0,
       apis: Array.isArray(raw.apis) ? raw.apis : [],
       activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
       sortMode: typeof raw.sortMode === "string" ? raw.sortMode : "reverse",
+      searchStrategy: typeof raw.searchStrategy === "string" ? raw.searchStrategy : "prefix",
+      pageSize: Number.isFinite(Number(raw.pageSize)) && Number(raw.pageSize) >= 1 ? Math.floor(Number(raw.pageSize)) : 10,
       // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）
       addWordHotkeyEnabled: typeof raw.addWordHotkeyEnabled === "boolean" ? raw.addWordHotkeyEnabled : true,
       addWordHotkeyMode: (raw.addWordHotkeyMode === "ctrl" || raw.addWordHotkeyMode === "alt" ||
