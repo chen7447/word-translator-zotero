@@ -260,10 +260,90 @@
   const DEFAULT_PROMPT_GLOBAL =
     "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}";
 
+  // Provider 注册表：先统一偏好页的服务分类和命名，后续逐个接入协议。
+  // 已实现的 provider 保持可选；尚未接入请求层的 provider 暂时禁用，避免保存后误走 OpenAI 逻辑。
+  const PROVIDER_CATALOG = [
+    {
+      group: "AI / 大模型",
+      options: [
+        { value: "openai", label: "OpenAI 兼容", enabled: true, baseUrl: "https://api.openai.com/v1" },
+        { value: "deepseek", label: "DeepSeek 官方", enabled: true, baseUrl: "https://api.deepseek.com" },
+        { value: "gemini", label: "Gemini（OpenAI 兼容端点）", enabled: true, baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" },
+        { value: "claude", label: "Claude", enabled: true, managedConfig: true, baseUrl: "https://api.anthropic.com/v1", requiresModel: true },
+        { value: "qwen-mt", label: "Qwen-MT", enabled: true, baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+      ],
+    },
+    {
+      group: "国内翻译平台",
+      options: [
+        { value: "baidu", label: "百度翻译", enabled: true, managedConfig: true, baseUrl: "https://api.fanyi.baidu.com/api/trans/vip/translate", requiresModel: false, credentialFormat: "appid#key" },
+        { value: "baidu-field", label: "百度垂直领域", enabled: true, managedConfig: true, baseUrl: "https://api.fanyi.baidu.com/api/trans/vip/fieldtranslate", requiresModel: false, credentialFormat: "appid#key#domain" },
+        { value: "tencent", label: "腾讯云机器翻译", enabled: true, managedConfig: true, baseUrl: "https://tmt.tencentcloudapi.com", requiresModel: false, credentialFormat: "SecretId#SecretKey#Region#ProjectId" },
+        { value: "aliyun", label: "阿里云机器翻译", enabled: true, managedConfig: true, baseUrl: "https://mt.cn-hangzhou.aliyuncs.com/", requiresModel: false, credentialFormat: "AccessKeyId#AccessKeySecret" },
+        { value: "volcengine", label: "火山引擎机器翻译", enabled: true, managedConfig: true, baseUrl: "https://translate.volcengineapi.com", requiresModel: false, credentialFormat: "AccessKeyId#AccessKeySecret" },
+        { value: "caiyun", label: "彩云小译", enabled: true, managedConfig: true, baseUrl: "http://api.interpreter.caiyunai.com/v1/translator", requiresModel: false },
+        { value: "niutrans", label: "小牛翻译", enabled: true, managedConfig: true, baseUrl: "https://api.niutrans.com/NiuTransServer/translation", requiresModel: false },
+        { value: "youdaozhiyun", label: "有道智云", enabled: true, managedConfig: true, baseUrl: "https://openapi.youdao.com/api", requiresModel: false, credentialFormat: "AppKey#AppSecret" },
+        { value: "xfyun", label: "讯飞机器翻译", enabled: true, managedConfig: true, requiresModel: false, credentialFormat: "AppID#APIKey#APISecret" },
+      ],
+    },
+    {
+      group: "国际翻译平台",
+      options: [
+        { value: "deepl", label: "DeepL", enabled: true, managedConfig: true, baseUrl: "https://api-free.deepl.com/v2", requiresModel: false },
+        { value: "microsoft", label: "微软翻译", enabled: true, managedConfig: true, baseUrl: "https://api.cognitive.microsofttranslator.com/translate", requiresModel: false },
+      ],
+    },
+    {
+      group: "免费翻译",
+      options: [
+        { value: "google", label: "Google 翻译", enabled: true, managedConfig: true, baseUrl: "https://translate.googleapis.com/translate_a/single", noCredentials: true, requiresModel: false },
+        { value: "deeplx", label: "DeepL 免费", enabled: true, managedConfig: true, baseUrl: "https://www2.deepl.com/jsonrpc", noCredentials: true, requiresModel: false },
+      ],
+    },
+    {
+      group: "自建服务",
+      options: [
+        { value: "custom", label: "自定义 OpenAI 兼容接口", enabled: true },
+        { value: "libretranslate", label: "LibreTranslate", enabled: true, baseUrl: "", requiresModel: false, apiKeyOptional: true },
+        { value: "mtranserver", label: "MTranServer（需适配器：自建 JSON）", enabled: false },
+      ],
+    },
+  ];
+
+  function getProviderMeta(provider) {
+    for (const group of PROVIDER_CATALOG) {
+      const found = group.options.find((item) => item.value === provider);
+      if (found) return { ...found, group: group.group };
+    }
+    return { value: provider || "custom", label: "自定义 OpenAI 兼容接口", enabled: true, group: "自建服务" };
+  }
+
+  function renderProviderOptions(select, selectedValue) {
+    if (!select) return;
+    select.replaceChildren();
+    const selected = selectedValue || "openai";
+    for (const group of PROVIDER_CATALOG) {
+      const optgroup = el("optgroup", { label: group.group });
+      for (const item of group.options) {
+        const option = el("option", { value: item.value }, [txt(item.label)]);
+        option.disabled = !item.enabled;
+        optgroup.append(option);
+      }
+      select.append(optgroup);
+    }
+    // 兼容旧配置或未来插件版本新增的 provider，避免编辑时丢失原值。
+    if (selected && !PROVIDER_CATALOG.some((group) => group.options.some((item) => item.value === selected))) {
+      select.append(el("option", { value: selected }, [txt(selected)]));
+    }
+    select.value = selected;
+  }
+
   const DEFAULTS = {
     contextMenuLabel: "添加单词并翻译",
     enabled: true,
     autoTranslate: false,
+    selectionMode: "word",
     hotkeyEnabled: false,
     hotkeyModifier: "ctrl",
     customHotkeyEnabled: false,
@@ -278,6 +358,8 @@
     apis: [],
     activeApiIndex: 0,
     fontSize: 13,
+    pageSize: 10, // 单词本每页显示单词数（默认 10）
+    searchStrategy: "prefix", // 搜索匹配策略（默认前缀匹配）
   };
 
   function normalize(raw) {
@@ -288,6 +370,9 @@
       ...raw,
       apis: Array.isArray(raw.apis) ? raw.apis : [],
       activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
+      pageSize: Number.isFinite(Number(raw.pageSize)) && Number(raw.pageSize) >= 1 ? Math.floor(Number(raw.pageSize)) : 10,
+      searchStrategy: typeof raw.searchStrategy === "string" ? raw.searchStrategy : "prefix",
+      selectionMode: raw.selectionMode === "sentence" ? "sentence" : "word",
       // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）
       addWordHotkeyEnabled: typeof raw.addWordHotkeyEnabled === "boolean" ? raw.addWordHotkeyEnabled : true,
       addWordHotkeyMode: (raw.addWordHotkeyMode === "ctrl" || raw.addWordHotkeyMode === "alt" ||
@@ -375,7 +460,7 @@
     if (!tbody) return;
     tbody.replaceChildren();
     if (!data.apis.length) {
-      const tr = el("tr", {}, [el("td", { colspan: "5", style: "color:#888;font-size:12px;padding:8px;" }, [txt("还没有配置 API，点击下方“+ 添加服务商”开始配置。")])]);
+      const tr = el("tr", {}, [el("td", { colspan: "7", style: "color:#888;font-size:12px;padding:8px;" }, [txt("还没有配置翻译服务，点击下方“+ 添加服务商”开始配置。")])]);
       tbody.append(tr);
       return;
     }
@@ -391,8 +476,11 @@
       });
       tdDefault.append(radio);
       const tdName = el("td", {}, [txt(api.name || "(未命名)")]);
+      const meta = getProviderMeta(api.provider);
       const tdProvider = el("td", {}, [txt(providerLabel(api))]);
+      const tdGroup = el("td", {}, [txt(meta.group)]);
       const tdModel = el("td", {}, [txt(api.model || "")]);
+      const tdStatus = el("td", { class: "wt-api-status" }, [txt(providerStatus(api))]);
       const tdOp = el("td");
       const editBtn = el("button", { type: "button", class: "pref-mini-btn" }, [txt("编辑")]);
       editBtn.addEventListener("click", () => openEditor(i));
@@ -407,16 +495,32 @@
         renderApis();
       });
       tdOp.append(editBtn, txt(" "), delBtn);
-      tr.append(tdDefault, tdName, tdProvider, tdModel, tdOp);
+      tr.append(tdDefault, tdName, tdProvider, tdGroup, tdModel, tdStatus, tdOp);
       tr.addEventListener("dblclick", () => openEditor(i));
       tbody.append(tr);
     });
   }
 
   function providerLabel(api) {
-    if (api.provider === "deepseek") return "DeepSeek";
-    if (api.provider === "openai") return "OpenAI";
-    return "自定义";
+    return getProviderMeta(api.provider).label.replace(/（后续接入）$/, "");
+  }
+
+  function providerStatus(api) {
+    const meta = getProviderMeta(api.provider);
+    if (!meta.enabled) return "未接入";
+    const noCred = meta.noCredentials === true;
+    const apiKeyRequired = !noCred && meta.apiKeyOptional !== true;
+    const requiresModel = meta.requiresModel !== false;
+    if (apiKeyRequired && !(api.apiKey || "").trim()) return "待配置";
+    if (requiresModel && !noCred && !(api.model || "").trim()) return "待配置";
+    return "已配置";
+  }
+
+  function setRowVisible(id, visible) {
+    const field = get(id);
+    const row = field && field.closest && field.closest(".wt-row");
+    // 不能依赖 hidden 属性：.wt-row 的 display:flex CSS 特异性更高会覆盖 UA 的 [hidden] 规则
+    if (row) row.style.display = visible ? "" : "none";
   }
 
   // ----- 编辑面板 -----
@@ -437,7 +541,8 @@
     get("wt-api-baseurl").value = api.baseUrl || "";
     get("wt-api-key").value = api.apiKey || "";
     get("wt-api-model").value = api.model || "";
-    updateProviderPreset();
+    renderProviderOptions(get("wt-api-provider"), api.provider || "openai");
+    updateProviderPreset(editingIndex < 0);
     get("wt-api-editor-title").textContent = (index >= 0 ? "编辑" : "添加") + "服务商";
     renderApis();
   }
@@ -449,31 +554,54 @@
     renderApis();
   }
 
-  function updateProviderPreset() {
+  function updateProviderPreset(forceBaseUrl) {
     const prov = get("wt-api-provider").value;
     const preset = get("wt-api-baseurl");
-    preset.readOnly = false;
-    preset.style.background = "";
-    if (prov === "openai") {
-      if (!preset.value) preset.value = "https://api.openai.com/v1";
-      preset.placeholder = "https://api.openai.com/v1";
-    } else if (prov === "deepseek") {
-      if (!preset.value) preset.value = "https://api.deepseek.com";
-      preset.placeholder = "https://api.deepseek.com";
-    } else {
-      preset.placeholder = "例如 https://api.example.com/v1";
+    const meta = getProviderMeta(prov);
+    const managed = meta.managedConfig === true;
+    const noCredentials = meta.noCredentials === true;
+    const requiresModel = meta.requiresModel !== false;
+    const nameField = get("wt-api-name");
+    const keyField = get("wt-api-key");
+    const modelField = get("wt-api-model");
+    const fetchModelsButton = get("wt-api-fetch-models");
+    if (managed || (forceBaseUrl && meta.baseUrl)) {
+      // managed 服务商必须强制写入预设 URL；无 URL（如讯飞）则清空，避免残留上一服务商的地址
+      preset.value = meta.baseUrl || "";
+      if (managed && nameField) nameField.value = meta.label;
+      if (managed && modelField) modelField.value = "";
     }
+    preset.readOnly = managed;
+    preset.placeholder = meta.baseUrl || "例如 https://api.example.com/v1";
+    setRowVisible("wt-api-name", !managed);
+    setRowVisible("wt-api-baseurl", !managed);
+    setRowVisible("wt-api-key", !noCredentials);
+    setRowVisible("wt-api-model", requiresModel);
+    if (fetchModelsButton) fetchModelsButton.hidden = !requiresModel;
+    if (keyField) keyField.placeholder = meta.credentialFormat || "";
+    const hint = preset.parentElement && preset.parentElement.querySelector(".wt-hint");
+    if (hint) hint.textContent = managed
+      ? "官方翻译服务已固定 API 地址，填写所需凭证后即可保存。"
+      : meta.enabled
+        ? "可填写或修改基础 URL，用于官方大模型、兼容接口或自建服务。"
+        : "该服务已加入目录，协议适配将在后续阶段接入，当前不可保存使用。";
   }
 
   function saveApi() {
-    const name = (get("wt-api-name").value || "").trim();
     const provider = get("wt-api-provider").value;
-    const baseUrl = (get("wt-api-baseurl").value || "").trim().replace(/\/+$/, "");
+    const meta = getProviderMeta(provider);
+    if (!meta.enabled) { setStatus("该服务尚未接入，请先选择已启用的服务"); return; }
+    const managed = meta.managedConfig === true;
+    const name = managed ? meta.label : (get("wt-api-name").value || "").trim();
+    const baseUrl = ((managed ? meta.baseUrl : (get("wt-api-baseurl").value || "")) || "").trim().replace(/\/+$/, "");
     const apiKey = (get("wt-api-key").value || "").trim();
-    const model = (get("wt-api-model").value || "").trim();
+    const model = meta.requiresModel === false ? "" : (get("wt-api-model").value || "").trim();
     if (!name) { setStatus("请填写名称"); return; }
-    if (!apiKey) { setStatus("请填写 API Key"); return; }
-    if (!model) { setStatus("请选择或填写模型"); return; }
+    const noCred = meta.noCredentials === true;
+    const apiKeyRequired = !noCred && meta.apiKeyOptional !== true;
+    const requiresModel = meta.requiresModel !== false;
+    if (apiKeyRequired && !apiKey) { setStatus("请填写 API Key"); return; }
+    if (requiresModel && !noCred && !model) { setStatus("请选择或填写模型"); return; }
     const api = { name, provider, baseUrl, apiKey, model };
     if (editingIndex >= 0) {
       data.apis[editingIndex] = api;
@@ -497,21 +625,21 @@
       overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;z-index:9999;";
 
       const dlg = document.createElementNS(HTML_NS, "div");
-      dlg.style.cssText = "background:#fff;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.25);width:480px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column;padding:16px;";
+      dlg.style.cssText = "background:Canvas;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.25);width:480px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column;padding:16px;";
 
       const title = document.createElementNS(HTML_NS, "div");
-      title.style.cssText = "font-weight:600;font-size:14px;margin-bottom:8px;color:#222;";
+      title.style.cssText = "font-weight:600;font-size:14px;margin-bottom:8px;color:CanvasText;";
       title.textContent = "Found " + ids.length + " models. Click to select. Use the search box to filter.";
       dlg.appendChild(title);
 
       const search = document.createElementNS(HTML_NS, "input");
       search.type = "text";
       search.placeholder = "Search model id...";
-      search.style.cssText = "width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid #ccc;border-radius:6px;margin-bottom:8px;font-size:13px;";
+      search.style.cssText = "width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid ThreeDShadow;border-radius:6px;margin-bottom:8px;font-size:13px;background:Field;color:FieldText;";
       dlg.appendChild(search);
 
       const listBox = document.createElementNS(HTML_NS, "div");
-      listBox.style.cssText = "flex:1;min-height:240px;max-height:50vh;overflow-y:auto;border:1px solid #e0e0e0;border-radius:6px;background:#fafafa;";
+      listBox.style.cssText = "flex:1;min-height:240px;max-height:50vh;overflow-y:auto;border:1px solid ThreeDShadow;border-radius:6px;background:ButtonFace;";
       dlg.appendChild(listBox);
 
       function renderList(filter) {
@@ -520,22 +648,22 @@
         const matched = f ? ids.filter((x) => String(x).toLowerCase().includes(f)) : ids;
         if (matched.length === 0) {
           const empty = document.createElementNS(HTML_NS, "div");
-          empty.style.cssText = "padding:20px;color:#999;text-align:center;font-size:13px;";
+          empty.style.cssText = "padding:20px;color:GrayText;text-align:center;font-size:13px;";
           empty.textContent = "No matches";
           listBox.appendChild(empty);
           return;
         }
         matched.forEach((mid) => {
           const row = document.createElementNS(HTML_NS, "div");
-          row.style.cssText = "padding:6px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0;word-break:break-all;";
+          row.style.cssText = "padding:6px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid ThreeDShadow;word-break:break-all;color:CanvasText;";
           row.textContent = mid;
-          row.addEventListener("mouseenter", () => { row.style.background = "#e3f2fd"; });
+          row.addEventListener("mouseenter", () => { row.style.background = "color-mix(in srgb, Highlight 20%, Canvas)"; });
           row.addEventListener("mouseleave", () => { row.style.background = ""; });
           row.addEventListener("click", () => { cleanup(mid); });
           listBox.appendChild(row);
         });
         const note = document.createElementNS(HTML_NS, "div");
-        note.style.cssText = "padding:6px 12px;color:#888;font-size:12px;text-align:right;";
+        note.style.cssText = "padding:6px 12px;color:GrayText;font-size:12px;text-align:right;";
         note.textContent = "Showing " + matched.length + " / " + ids.length;
         listBox.appendChild(note);
       }
@@ -568,7 +696,7 @@
       btnBar.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:10px;";
       const cancel = document.createElementNS(HTML_NS, "button");
       cancel.textContent = "Cancel";
-      cancel.style.cssText = "padding:5px 16px;border:1px solid #ccc;background:#f5f5f5;border-radius:6px;cursor:pointer;";
+      cancel.style.cssText = "padding:5px 16px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;color:ButtonText;";
       cancel.addEventListener("click", () => cleanup(null));
       btnBar.appendChild(cancel);
       dlg.appendChild(btnBar);
@@ -619,12 +747,16 @@
 
   async function testApi() {
     setStatus("正在测试…");
-    const name = (get("wt-api-name").value || "").trim();
     const provider = get("wt-api-provider").value;
-    const baseUrl = (get("wt-api-baseurl").value || "").trim().replace(/\/+$/, "");
+    const meta = getProviderMeta(provider);
+    const managed = meta.managedConfig === true;
+    const name = managed ? meta.label : (get("wt-api-name").value || "").trim();
+    const baseUrl = ((managed ? meta.baseUrl : (get("wt-api-baseurl").value || "")) || "").trim().replace(/\/+$/, "");
     const apiKey = (get("wt-api-key").value || "").trim();
-    const model = (get("wt-api-model").value || "").trim();
-    if (!apiKey || !model) { setStatus("请先填写 API Key 与模型"); return; }
+    const model = meta.requiresModel === false ? "" : (get("wt-api-model").value || "").trim();
+    const requiresApiKey = meta.noCredentials !== true && meta.apiKeyOptional !== true;
+    const requiresModel = meta.requiresModel !== false;
+    if ((requiresApiKey && !apiKey) || (requiresModel && !model)) { setStatus("请先填写必填配置项"); return; }
     const api = { provider, baseUrl, apiKey, model, name };
     try {
       const ok = await Zotero.WordTranslator.testApi(api);
@@ -677,7 +809,7 @@
     root.replaceChildren();
 
     const style = el("style", {}, [txt(`
-      #wordtranslator-pref-root { font-family: system-ui, "Segoe UI", sans-serif; font-size: 13px; line-height: 1.5; color: #222; }
+      #wordtranslator-pref-root { font-family: system-ui, "Segoe UI", sans-serif; font-size: 13px; line-height: 1.5; color: CanvasText; color-scheme: light dark; }
       #wordtranslator-pref-root h2 { font-size: 16px; margin: 0 0 16px; }
       #wordtranslator-pref-root h3 { font-size: 14px; margin: 18px 0 8px; }
       #wordtranslator-pref-root .wt-section { margin-bottom: 18px; }
@@ -687,38 +819,47 @@
       #wordtranslator-pref-root .wt-input,
       #wordtranslator-pref-root .wt-textarea,
       #wordtranslator-pref-root .wt-select {
-        padding: 6px 10px; border: 1px solid #ccc; border-radius: 6px; background: #fff; color: #222; font: inherit;
+        padding: 6px 10px; border: 1px solid ThreeDShadow; border-radius: 6px; background: Field; color: FieldText; font: inherit;
         box-sizing: border-box;
       }
       #wordtranslator-pref-root .wt-input { width: 360px; max-width: 100%; }
       #wordtranslator-pref-root .wt-textarea { width: 100%; resize: vertical; }
       #wordtranslator-pref-root .wt-select { width: 220px; max-width: 100%; }
-      #wordtranslator-pref-root .wt-hint { color: #888; font-size: 12px; margin: 2px 0 0; }
+      /* 服务商下拉：大类名(optgroup)最左不加粗突出，小类(option)首行缩进，形成层级 */
+      #wordtranslator-pref-root .wt-select optgroup { font-weight: 700; }
+      #wordtranslator-pref-root .wt-select optgroup option { font-weight: 400; padding-left: 14px; }
+      #wordtranslator-pref-root .wt-hint { color: GrayText; font-size: 12px; margin: 2px 0 0; }
       #wordtranslator-pref-root .wt-actions { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
       #wordtranslator-pref-root .wt-btn {
-        padding: 6px 16px; border: 1px solid #aaa; border-radius: 6px; background: #f0f0f0; cursor: pointer; font-size: 13px;
+        padding: 6px 16px; border: 1px solid ThreeDShadow; border-radius: 6px; background: ButtonFace; cursor: pointer; font-size: 13px;
+        color: ButtonText;
       }
-      #wordtranslator-pref-root .wt-btn:hover { background: #e4e4e4; }
+      #wordtranslator-pref-root .wt-btn:hover { background: color-mix(in srgb, ButtonFace 90%, ButtonText); }
       #wordtranslator-pref-root .wt-btn-primary {
-        background: #2c7be5; color: #fff; border-color: #2c7be5;
+        background: Highlight; color: HighlightText; border-color: Highlight;
       }
-      #wordtranslator-pref-root .wt-btn-primary:hover { background: #1a68d1; }
+      #wordtranslator-pref-root .wt-btn-primary:hover { background: color-mix(in srgb, Highlight 80%, black); }
       #wordtranslator-pref-root .wt-btn-mini { padding: 2px 10px; font-size: 12px; }
-      #wordtranslator-pref-root .wt-btn-danger { border-color: #c66; color: #a33; }
+      #wordtranslator-pref-root .wt-btn-danger { border-color: #c66; color: #e4717a; }
       #wordtranslator-pref-root .wt-table { border-collapse: collapse; width: 100%; margin: 8px 0; }
       #wordtranslator-pref-root .wt-table th, #wordtranslator-pref-root .wt-table td {
-        border-bottom: 1px solid #e6e6e6; padding: 6px 8px; text-align: left; vertical-align: middle;
+        border-bottom: 1px solid ThreeDShadow; padding: 6px 8px; text-align: left; vertical-align: middle;
       }
-      #wordtranslator-pref-root .wt-table th { background: #f6f8fa; font-weight: 600; font-size: 12px; }
-      #wordtranslator-pref-root .wt-table tr.selected td { background: #eef4fb; }
+      #wordtranslator-pref-root .wt-table th { background: color-mix(in srgb, Canvas 96%, CanvasText); font-weight: 600; font-size: 12px; }
+      #wordtranslator-pref-root .wt-table tr.selected td { background: color-mix(in srgb, Highlight 20%, Canvas); }
       #wordtranslator-pref-root .wt-api-editor {
-        border: 1px solid #d0d0d0; border-radius: 8px; padding: 14px 16px; margin-top: 12px;
-        background: #fafbfc; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+        border: 1px solid ThreeDShadow; border-radius: 8px; padding: 14px 16px; margin-top: 12px;
+        background: color-mix(in srgb, Canvas 98%, CanvasText); box-shadow: 0 1px 4px rgba(0,0,0,0.04);
       }
-      #wordtranslator-pref-root .wt-status { color: #2c7be5; font-weight: 500; }
-      #wordtranslator-pref-root .wt-divider { border: none; border-top: 1px solid #eee; margin: 18px 0 0; }
+      #wordtranslator-pref-root .wt-status { color: Highlight; font-weight: 500; }
+      #wordtranslator-pref-root .wt-api-status { font-size: 12px; color: GrayText; white-space: nowrap; }
+      #wordtranslator-pref-root .wt-provider-placeholder { display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap; padding:10px 12px; border:1px dashed ThreeDShadow; border-radius:8px; background:color-mix(in srgb, Canvas 98%, CanvasText); }
+      #wordtranslator-pref-root .wt-provider-placeholder-title { font-weight:600; color:CanvasText; }
+      #wordtranslator-pref-root .wt-provider-placeholder-items { color:GrayText; }
+      #wordtranslator-pref-root .wt-divider { border: none; border-top: 1px solid ThreeDShadow; margin: 18px 0 0; }
       #wordtranslator-pref-root .wt-fetch-btn { padding: 6px 12px; }
-      #wordtranslator-pref-root .wt-test-btn { padding: 6px 12px; color: #2c7be5; border-color: #2c7be5; background: #fff; }
+      #wordtranslator-pref-root .wt-test-btn { padding: 6px 12px; color: Highlight; border-color: Highlight; background: Field; }
+      #wordtranslator-pref-root input[type="checkbox"], #wordtranslator-pref-root input[type="radio"] { accent-color: Highlight; }
     `)]);
 
     const title = el("h2", {}, [txt("说明")]);
@@ -759,7 +900,7 @@
             title: "这个菜单项名称可以修改",
             tabindex: "0",
             role: "link",
-            style: "color:#0d6efd;text-decoration:underline;cursor:pointer;outline:none;",
+            style: "color:LinkText;text-decoration:underline;cursor:pointer;outline:none;",
           }, [txt("「添加单词并翻译」")]);
           const lbl = el("label", { for: "wt-addword-hotkey-enabled" }, [
             txt("绑定"),
@@ -847,6 +988,17 @@
         })(),
         el("p", { class: "wt-hint", style: "width:100%;" }, [txt("双击输入框后按组合键进行录制。支持 Ctrl/Alt/Shift + 字母或数字。")]),
       ]),
+      el("div", { class: "wt-row-inline", style: "align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;" }, [
+        el("label", { class: "wt-label", for: "wt-selection-mode", style: "min-width:auto;" }, [txt("选区翻译模式")]),
+        (() => {
+          const sel = el("select", { class: "wt-select", id: "wt-selection-mode" });
+          const word = el("option", { value: "word", title: "本插件默认模式，即对选中的单词数有要求。" }, [txt("单词模式")]);
+          const sentence = el("option", { value: "sentence", title: "本插件扩展模式，即对选中的单词数无要求。" }, [txt("句子模式")]);
+          sel.append(word, sentence);
+          return sel;
+        })(),
+        el("p", { class: "wt-hint", id: "wt-selection-mode-hint", style: "width:100%;margin:0 0 0 0;" }, [txt("")]),
+      ]),
     ]);
 
     // —— 外观 ——
@@ -860,6 +1012,39 @@
         (() => { const b = el("button", { type: "button", class: "wt-btn wt-btn-mini", id: "wt-reset-font-size" }, [txt("恢复默认")]); return b; })(),
       ]),
       el("p", { class: "wt-hint" }, [txt("范围 9–24，默认 13。也可在字本面板头部点击“放大/缩小”按钮调整。")]),
+      el("div", { class: "wt-row-inline", style: "align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;" }, [
+        el("label", { class: "wt-label", for: "wt-page-size", style: "min-width:auto;" }, [txt("每页显示单词数")]),
+        (() => { const n = el("input", { type: "number", id: "wt-page-size", min: "1", max: "100", step: "1" }); n.style.width = "64px"; return n; })(),
+        el("span", { style: "color:#888;font-size:12px;" }, [txt("个")]),
+        (() => { const b = el("button", { type: "button", class: "wt-btn wt-btn-mini", id: "wt-reset-page-size" }, [txt("恢复默认")]); return b; })(),
+      ]),
+      el("p", { class: "wt-hint" }, [txt("范围 1–100，默认 10。单词本底部会出现上一页/下一页按钮。")]),
+    ]);
+
+    // —— 搜索-匹配层设置 ——
+    const STRATEGY_LABELS = {
+      prefix: "前缀匹配：按单词开头匹配",
+      all: "所有匹配：匹配单词或释义",
+      wordOnly: "只搜单词：仅匹配英文单词",
+      exact: "精确匹配：完全匹配单词",
+    };
+    const sectionSearch = el("section", { class: "wt-section", id: "wt-search-strategy-section" }, [
+      el("h3", {}, [txt("搜索-匹配层设置")]),
+      el("p", { class: "wt-hint", style: "margin: -4px 0 8px;" }, [
+        txt("选择搜索单词本时使用的匹配策略。更改后立即生效。"),
+      ]),
+      el("div", { class: "wt-row-inline", style: "align-items:center;gap:8px;flex-wrap:wrap;" }, [
+        el("label", { class: "wt-label", for: "wt-search-strategy", style: "min-width:auto;" }, [txt("搜索策略")]),
+        (() => {
+          const sel = el("select", { id: "wt-search-strategy", style: "flex:1;min-width:200px;font-size:12px;padding:2px 6px;" });
+          const keys = ["prefix", "all", "wordOnly", "exact"];
+          keys.forEach((k) => {
+            const opt = el("option", { value: k }, [txt(STRATEGY_LABELS[k] || k)]);
+            sel.append(opt);
+          });
+          return sel;
+        })(),
+      ]),
     ]);
 
     // —— 提示词 ——
@@ -921,7 +1106,9 @@
             el("th", { style: "width: 60px;" }, [txt("默认")]),
             el("th", {}, [txt("名称")]),
             el("th", { style: "width: 110px;" }, [txt("服务商")]),
+            el("th", { style: "width: 110px;" }, [txt("分类")]),
             el("th", {}, [txt("模型")]),
+            el("th", { style: "width: 75px;" }, [txt("状态")]),
             el("th", { style: "width: 130px;" }, [txt("操作")]),
           ]),
         ]),
@@ -938,42 +1125,51 @@
       el("div", { id: "wt-api-editor", class: "wt-api-editor", hidden: "hidden" }, [
         el("h3", { id: "wt-api-editor-title", style: "margin-top: 0;" }, [txt("添加服务商")]),
         el("div", { class: "wt-row" }, [
-          el("label", { class: "wt-label", for: "wt-api-name" }, [txt("名称（仅用于区分不同中转站）")]),
-          (() => { const i = el("input", { type: "text", class: "wt-input", id: "wt-api-name", placeholder: "如：中转站 A / OpenAI 官方 / DeepSeek" }); return i; })(),
-        ]),
-        el("div", { class: "wt-row" }, [
           el("label", { class: "wt-label", for: "wt-api-provider" }, [txt("服务商")]),
           (() => {
             const s = el("select", { class: "wt-select", id: "wt-api-provider" });
-            s.append(el("option", { value: "openai" }, [txt("OpenAI 兼容（中转站）")]));
-            s.append(el("option", { value: "deepseek" }, [txt("DeepSeek 官方")]));
-            s.append(el("option", { value: "custom" }, [txt("自定义")]));
+            renderProviderOptions(s, "openai");
             return s;
           })(),
         ]),
-        el("div", { class: "wt-row" }, [
+        el("div", { class: "wt-row", id: "wt-api-name-row" }, [
+          el("label", { class: "wt-label", for: "wt-api-name" }, [txt("名称（仅用于区分不同中转站）")]),
+          (() => { const i = el("input", { type: "text", class: "wt-input", id: "wt-api-name", placeholder: "如：中转站 A / OpenAI 官方 / DeepSeek" }); return i; })(),
+        ]),
+        el("div", { class: "wt-row", id: "wt-api-baseurl-row" }, [
           el("label", { class: "wt-label", for: "wt-api-baseurl" }, [txt("API URL")]),
           (() => { const i = el("input", { type: "text", class: "wt-input", id: "wt-api-baseurl", placeholder: "https://api.openai.com/v1" }); return i; })(),
           el("p", { class: "wt-hint" }, [txt("选择 OpenAI / DeepSeek 时会自动填默认值；选「自定义」可填任意中转站完整基础 URL。")]),
         ]),
-        el("div", { class: "wt-row" }, [
+        el("div", { class: "wt-row", id: "wt-api-key-row" }, [
           el("label", { class: "wt-label", for: "wt-api-key" }, [txt("API 密钥")]),
           (() => { const i = el("input", { type: "password", class: "wt-input", id: "wt-api-key" }); return i; })(),
         ]),
-        el("div", { class: "wt-row" }, [
+        el("div", { class: "wt-row", id: "wt-api-model-row" }, [
           el("label", { class: "wt-label", for: "wt-api-model" }, [txt("模型名称")]),
           el("div", { class: "wt-row-inline", style: "width: 100%;" }, [
             (() => { const i = el("input", { type: "text", class: "wt-input", id: "wt-api-model", placeholder: "如 gpt-4o-mini", style: "flex: 1; min-width: 0;" }); return i; })(),
             (() => { const b = el("button", { type: "button", class: "wt-btn wt-fetch-btn", id: "wt-api-fetch-models", title: "从 API 获取可用模型" }, [txt("+ 获取模型")]); return b; })(),
-            (() => { const b = el("button", { type: "button", class: "wt-btn wt-test-btn", id: "wt-api-test" }, [txt("测试")]); return b; })(),
           ]),
         ]),
         el("div", { class: "wt-actions" }, [
+          (() => { const b = el("button", { type: "button", class: "wt-btn wt-test-btn", id: "wt-api-test" }, [txt("测试")]); return b; })(),
           (() => { const b = el("button", { type: "button", class: "wt-btn wt-btn-primary", id: "wt-api-save" }, [txt("保存")]); return b; })(),
           (() => { const b = el("button", { type: "button", class: "wt-btn", id: "wt-api-cancel" }, [txt("取消")]); return b; })(),
         ]),
       ]),
     ]);
+
+    const sectionDictionary = el("section", { class: "wt-section", id: "wt-dictionary-services" }, [
+    el("h3", {}, [txt("字典服务")]),
+    el("p", { class: "wt-hint", style: "margin: -4px 0 8px;" }, [
+      txt("字典服务用于补充音标、词性、释义、例句和发音；将在翻译服务框架稳定后逐步接入。"),
+    ]),
+    el("div", { class: "wt-provider-placeholder" }, [
+      el("span", { class: "wt-provider-placeholder-title" }, [txt("计划支持")]),
+      el("span", { class: "wt-provider-placeholder-items" }, [txt("有道词典 · 必应词典 · FreeDictionary API · 剑桥词典")]),
+    ]),
+  ]);
 
     // —— 状态 ——
         // —— 保存目录 ——
@@ -984,14 +1180,14 @@
       el("div", { class: "wt-row" }, [
         el("label", { class: "wt-label" }, [txt("单词本保存在")]),
         el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
-          (() => { const inp = el("input", { type: "text", readonly: "readonly", class: "wt-input", id: "wt-prefs-path", style: "flex:1;min-width:0;background:#f5f5f5;color:#666;font-size:12px;" }); inp.value = wordsDirPath; return inp; })(),
+          (() => { const inp = el("input", { type: "text", readonly: "readonly", class: "wt-input", id: "wt-prefs-path", style: "flex:1;min-width:0;color:GrayText;font-size:12px;background:ButtonFace;" }); inp.value = wordsDirPath; return inp; })(),
           (() => { const b = el("button", { type: "button", class: "wt-btn wt-btn-mini", id: "wt-open-prefs-dir" }, [txt("浏览")]); return b; })(),
         ]),
       ]),
       el("div", { class: "wt-row" }, [
         el("label", { class: "wt-label" }, [txt("接口配置保存在")]),
         el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
-          (() => { const inp = el("input", { type: "text", readonly: "readonly", class: "wt-input", id: "wt-prefs-path2", style: "flex:1;min-width:0;background:#f5f5f5;color:#666;font-size:12px;" }); inp.value = apiConfigPath; return inp; })(),
+          (() => { const inp = el("input", { type: "text", readonly: "readonly", class: "wt-input", id: "wt-prefs-path2", style: "flex:1;min-width:0;color:GrayText;font-size:12px;background:ButtonFace;" }); inp.value = apiConfigPath; return inp; })(),
           (() => { const b = el("button", { type: "button", class: "wt-btn wt-btn-mini", id: "wt-open-prefs-dir2" }, [txt("浏览")]); return b; })(),
         ]),
       ]),
@@ -1008,11 +1204,11 @@
       el("h3", {}, [txt("关于")]),
       el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
         el("span", { class: "wt-label" }, [txt("Word Translator 版本 " + aboutVer)]),
-        (aboutBuild ? el("span", { style: "color:#888;font-size:12px;" }, [txt("修改时间 " + aboutBuild)]) : null),
+        (aboutBuild ? el("span", { style: "color:GrayText;font-size:12px;" }, [txt("修改时间 " + aboutBuild)]) : null),
       ]),
       el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
         (() => {
-          const a = el("a", { id: "wt-github-link", href: "https://github.com/chen7447/word-translator-zotero", target: "_blank", rel: "noopener noreferrer", style: "color:#1e88e5;text-decoration:underline;cursor:pointer;" }, [txt("Github")]);
+          const a = el("a", { id: "wt-github-link", href: "https://github.com/chen7447/word-translator-zotero", target: "_blank", rel: "noopener noreferrer", style: "color:LinkText;text-decoration:underline;cursor:pointer;" }, [txt("Github")]);
           return a;
         })(),
       ]),
@@ -1023,7 +1219,7 @@
     ]);
     const statusBar = el("p", { id: "wt-status", class: "wt-status", style: "margin: 8px 0 0;" }, [txt("就绪")]);
 
-    root.append(style, title, intro, sectionGeneral, sectionAppearance, sectionPrompt, sectionApis, statusBar, sectionSaveDir, sectionAbout, footer);
+    root.append(style, title, intro, sectionGeneral, sectionAppearance, sectionSearch, sectionPrompt, sectionApis, sectionDictionary, statusBar, sectionSaveDir, sectionAbout, footer);
     return true;
   }
 
@@ -1054,7 +1250,7 @@
     bind("wt-api-cancel", "click", closeEditor);
     bind("wt-api-test", "click", testApi);
     bind("wt-api-fetch-models", "click", fetchModels);
-    bind("wt-api-provider", "change", updateProviderPreset);
+    bind("wt-api-provider", "change", () => updateProviderPreset(true));
 
     bind("wt-reset-prompts", "click", () => {
       if (data.promptMode === "combined") {
@@ -1199,6 +1395,40 @@
       if (fnum) fnum.value = String(v);
       save(false);
     });
+
+    bind("wt-reset-page-size", "click", () => {
+      data.pageSize = 10;
+      const num = get("wt-page-size"); if (num) num.value = "10";
+      save(true);
+    });
+    const pageSizeInput = get("wt-page-size");
+    if (pageSizeInput) pageSizeInput.addEventListener("input", () => {
+      let v = parseInt(pageSizeInput.value, 10);
+      if (!Number.isFinite(v)) v = 10;
+      if (v < 1) v = 1; if (v > 100) v = 100;
+      data.pageSize = v;
+      if (String(pageSizeInput.value) !== String(v)) pageSizeInput.value = String(v);
+      save(false);
+    });
+
+    const searchStrategySelect = get("wt-search-strategy");
+    if (searchStrategySelect) searchStrategySelect.addEventListener("change", () => {
+      data.searchStrategy = searchStrategySelect.value;
+      save(false);
+    });
+    const selectionModeSelect = get("wt-selection-mode");
+    const applySelectionModeUI = () => {
+      const mode = selectionModeSelect && selectionModeSelect.value === "sentence" ? "sentence" : "word";
+      const hint = get("wt-selection-mode-hint");
+      if (hint) hint.textContent = mode === "sentence"
+        ? "本插件扩展模式，即对选中的单词数无要求。"
+        : "本插件默认模式，即对选中的单词数有要求。";
+    };
+    if (selectionModeSelect) selectionModeSelect.addEventListener("change", () => {
+      data.selectionMode = selectionModeSelect.value === "sentence" ? "sentence" : "word";
+      applySelectionModeUI();
+      save(false);
+    });
   }
 
   function renderForm() {
@@ -1245,6 +1475,16 @@
     const fsVal = Number(data.fontSize) || 13;
     if (fontSize) fontSize.value = String(fsVal);
     if (fontSizeRange) fontSizeRange.value = String(fsVal);
+    const pageSize = get("wt-page-size");
+    if (pageSize) pageSize.value = String(Number(data.pageSize) || 10);
+    const searchStrategy = get("wt-search-strategy");
+    if (searchStrategy) searchStrategy.value = String(data.searchStrategy || "prefix");
+    const selectionMode = get("wt-selection-mode");
+    if (selectionMode) selectionMode.value = data.selectionMode === "sentence" ? "sentence" : "word";
+    const selectionModeHint = get("wt-selection-mode-hint");
+    if (selectionModeHint) selectionModeHint.textContent = data.selectionMode === "sentence"
+      ? "本插件扩展模式，即对选中的单词数无要求。"
+      : "本插件默认模式，即对选中的单词数有要求。";
   }
 
   function init() {
