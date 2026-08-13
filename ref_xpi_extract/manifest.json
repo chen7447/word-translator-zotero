@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "Translate for Zotero",
+  "version": "2.4.6",
+  "description": "Translate PDF, EPub, webpage, metadata, annotations, notes to the target language. Support 20+ translate services.",
+  "author": "windingwind",
+  "homepage_url": "https://github.com/windingwind/zotero-pdf-translate#readme",
+  "icons": {
+    "48": "chrome/content/icons/favicon.png",
+    "96": "chrome/content/icons/favicon@2x.png"
+  },
+  "applications": {
+    "zotero": {
+      "id": "zoteropdftranslate@euclpts.com",
+      "update_url": "https://github.com/windingwind/zotero-pdf-translate/releases/download/release/update.json",
+      "strict_min_version": "7.9.9",
+      "strict_max_version": "10.9.9"
+    }
+  }
+}

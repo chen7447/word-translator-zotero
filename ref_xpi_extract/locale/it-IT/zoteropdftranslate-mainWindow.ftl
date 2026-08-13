@@ -1,0 +1,14 @@
+zoteropdftranslate-itemPaneSection-header =
+    .label = Translate
+zoteropdftranslate-itemPaneSection-sidenav =
+    .tooltiptext = Translate
+zoteropdftranslate-itemPaneSection-fullHeight =
+    .tooltiptext = Full height
+zoteropdftranslate-itemPaneSection-openStandalone =
+    .tooltiptext = Open in standalone window
+zoteropdftranslate-field-titleTranslation = Title Translation
+zoteropdftranslate-field-abstractTranslation = Abstract Translation
+zoteropdftranslate-itemmenu-translateTitle =
+    .label = Traduci Titolo
+zoteropdftranslate-itemmenu-translateAbstract =
+    .label = Traduci Abstract

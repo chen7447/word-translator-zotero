@@ -1,0 +1,20 @@
+{
+  "provider": "tencent",
+  "status": "protocol_shape_reached_api_auth_failed",
+  "confidence": "high",
+  "proxy_test": {"used": true, "address": "127.0.0.1:7897", "restored_after_test": true},
+  "probes": [
+    {"name": "valid_shape_placeholder_credentials", "http_status": 200, "response_code": "AuthFailure.SecretIdNotFound", "classification": "authentication_failed"},
+    {"name": "wrong_path_suffix", "http_status": 200, "response_code": "AuthFailure.SecretIdNotFound", "note": "host ignores path suffix"},
+    {"name": "missing_source_text", "http_status": 200, "response_code": "AuthFailure.SecretIdNotFound", "note": "auth before field validation"}
+  ],
+  "request": {
+    "endpoint": "https://tmt.tencentcloudapi.com",
+    "method": "POST",
+    "content_type": "application/x-www-form-urlencoded",
+    "params": ["Action=TextTranslate", "Version=2018-03-21", "Region", "ProjectId", "Source", "SourceText", "Target", "SecretId", "Timestamp", "Nonce", "Signature"],
+    "response_success_path": "Response.TargetText",
+    "response_error_paths": ["Response.Error.Code", "Response.Error.Message"]
+  },
+  "plugin_ready": false
+}

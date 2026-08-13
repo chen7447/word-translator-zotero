@@ -1,0 +1,21 @@
+{
+  "provider": "aliyun",
+  "status": "protocol_shape_partially_validated_auth_timestamp_blocked",
+  "confidence": "high",
+  "probes": [
+    {"name": "valid_shape_placeholder_credentials", "http_status": 400, "response_code": "InvalidTimeStamp.Expired", "classification": "request_shape_rejected"},
+    {"name": "wrong_path_suffix", "http_status": 400, "response_code": "InvalidTimeStamp.Expired", "classification": "request_shape_rejected", "note": "Aliyun RPC host ignores path suffix"},
+    {"name": "missing_source_text", "http_status": 400, "response_code": "InvalidTimeStamp.Expired", "classification": "request_shape_rejected", "note": "timestamp checked before field validation"},
+    {"name": "bad_action", "http_status": 404, "response_code": "InvalidAction.NotFound", "classification": "endpoint_not_found", "note": "RPC Action validation effective"}
+  ],
+  "request": {
+    "endpoint": "https://mt.cn-hangzhou.aliyuncs.com/",
+    "method": "POST",
+    "content_type": "application/x-www-form-urlencoded",
+    "rpc_params": ["Action=TranslateGeneral", "Version=2018-10-12", "Format=JSON", "FormatType=text", "Scene=general", "SignatureMethod=HMAC-SHA1", "SignatureVersion=1.0", "SourceLanguage=en", "TargetLanguage=zh", "SourceText", "Timestamp", "SignatureNonce", "Signature"],
+    "response_success_path": "Data.Translated",
+    "response_error_paths": ["Code", "Message"]
+  },
+  "plugin_ready": false,
+  "note": "Fixed placeholder timestamp blocked signature validation; real timestamp needed for full signature check."
+}

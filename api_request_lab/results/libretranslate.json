@@ -1,0 +1,20 @@
+{
+  "provider": "libretranslate",
+  "status": "endpoint_reachable_requires_api_key",
+  "confidence": "medium",
+  "proxy_test": {"used": true, "address": "127.0.0.1:7897", "restored_after_test": true},
+  "probes": [
+    {"name": "valid_path_no_key", "http_status": 400, "classification": "request_shape_rejected"},
+    {"name": "wrong_endpoint", "http_status": 404, "classification": "endpoint_not_found"},
+    {"name": "missing_q", "http_status": 400, "classification": "request_shape_rejected"}
+  ],
+  "request": {
+    "endpoint": "https://libretranslate.com/translate",
+    "method": "POST",
+    "content_type": "application/json",
+    "body_keys": ["q", "source", "target", "format"],
+    "response_success_path": "translatedText"
+  },
+  "plugin_ready": false,
+  "note": "Official instance requires API key; self-hosted LibreTranslate works without one."
+}

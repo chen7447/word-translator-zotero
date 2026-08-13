@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "classification_rules": {
+    "network_failed": "DNS、连接、TLS 或超时，未能获得 HTTP 响应",
+    "endpoint_not_found": "HTTP 404，路径、版本或部署名可能错误",
+    "method_not_allowed": "HTTP 405，路径可能存在但方法错误",
+    "content_type_rejected": "HTTP 415 或明确提示 Content-Type 不支持",
+    "request_shape_rejected": "HTTP 400/422，错误结构明确指出字段、参数或签名问题",
+    "authentication_failed": "HTTP 401 或官方错误结构明确指出凭证无效/缺失",
+    "permission_denied": "HTTP 403 或官方错误结构明确指出权限不足",
+    "rate_limited": "HTTP 429 或官方错误结构明确指出限流",
+    "quota_exceeded": "官方错误结构明确指出余额、配额或额度不足",
+    "valid_translation_response": "成功状态且可解析出翻译文本",
+    "unknown_error": "无法根据响应可靠分类"
+  },
+  "confidence_rules": {
+    "high": "官方错误结构与预期协议一致，且对照探测结果能区分路径/方法/凭证问题",
+    "medium": "HTTP 状态或错误信息支持判断，但缺少完整对照或服务存在网关",
+    "low": "只有通用 500、HTML 网页或无法确认是否到达官方服务"
+  },
+  "providers": {
+    "baidu": {
+      "endpoint": "https://api.fanyi.baidu.com/api/trans/vip/translate",
+      "method": "GET",
+      "content_type": "query-string",
+      "required_parameters": ["q", "from", "to", "appid", "salt", "sign"],
+      "optional_parameters": ["action", "needIntervene"],
+      "authentication": "MD5(appid + q + salt + key)",
+      "response_success_path": "trans_result[].dst",
+      "response_error_paths": ["error_code", "error_msg"]
+    },
+    "baidu-field": {
+      "endpoint": "https://api.fanyi.baidu.com/api/trans/vip/fieldtranslate",
+      "method": "GET",
+      "content_type": "query-string",
+      "required_parameters": ["q", "from", "to", "appid", "domain", "salt", "sign"],
+      "authentication": "MD5(appid + q + salt + domain + key)",
+      "response_success_path": "trans_result[].dst",
+      "response_error_paths": ["error_code", "error_msg"]
+    },
+    "deepl": {
+      "endpoint": "https://api-free.deepl.com/v2/translate",
+      "method": "POST",
+      "content_type": "application/json",
+      "required_headers": ["Authorization: DeepL-Auth-Key <key>", "Content-Type: application/json"],
+      "required_body": ["text", "target_lang"],
+      "optional_body": ["source_lang"],
+      "response_success_path": "translations[].text",
+      "response_error_paths": ["message"]
+    },
+    "gemini": {
+      "endpoint_template": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+      "method": "POST",
+      "content_type": "application/json",
+      "authentication": "query key or documented header",
+      "required_body": ["contents[].parts[].text"],
+      "response_success_path": "candidates[].content.parts[].text",
+      "response_error_paths": ["error.code", "error.message", "error.status"]
+    },
+    "aliyun": {
+      "endpoint": "https://mt.cn-hangzhou.aliyuncs.com/",
+      "method": "POST",
+      "content_type": "application/x-www-form-urlencoded",
+      "authentication": "Aliyun RPC HMAC-SHA1 signature",
+      "response_success_path": "Data.Translated",
+      "response_error_paths": ["Code", "Message"]
+    },
+    "tencent": {
+      "endpoint": "https://tmt.tencentcloudapi.com",
+      "method": "POST",
+      "content_type": "application/x-www-form-urlencoded",
+      "authentication": "Tencent Cloud TC3-HMAC-SHA256 signature",
+      "response_success_path": "Response.TargetText",
+      "response_error_paths": ["Response.Error.Code", "Response.Error.Message"]
+    }
+  }
+}

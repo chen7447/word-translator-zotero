@@ -1,0 +1,3544 @@
+"use strict";
+
+// Word Translator for Zotero 核心模块（适配 Zotero 7/8/9/10）
+// 依赖：Zotero.Prefs（Zotero 7+ 标准偏好）
+// 功能：
+//   1. PDF 阅读器划词菜单注入"添加单词并翻译"按钮（带 SVG 图标）
+//   2. 调 OpenAI/DeepSeek 兼容接口翻译专业英文单词
+//   3. 在右侧 Item Pane 面板以卡片形式展示 [单词 -- 译文]，可逐条删除
+//   4. Item Pane 头部下拉切换当前 API；多 API 配置在偏好面板完成
+
+var WordTranslator = {
+  hooks: {
+    onPrefsLoad(event) {
+      WordTranslator.onPrefsLoad(event);
+    },
+    onPrefsUnload(event) {
+      WordTranslator.onPrefsUnload(event);
+    },
+  },
+  _data: null,
+  _initialized: false,
+  _addonRoot: "",
+  _addonID: "",
+  _addonVersion: "",
+  _buildTime: "",
+  _itemWords: new Map(),      // itemID -> [{word, translation, pending}]
+  _wordBookViewState: new Map(), // itemID -> { page, search } 分页/搜索临时界面状态（不写盘）
+  _wordBookSearchTimers: new Map(), // itemID -> debounce timer
+  _wordBookSearchStrategies: new Map([
+    // 前缀匹配（默认）：word.startsWith(keyword)
+    ["prefix", function (word, keyword) {
+      return String(word.word || "").toLowerCase().startsWith(keyword);
+    }],
+    // 所有匹配：单词或释义包含 keyword
+    ["all", function (word, keyword) {
+      const w = String(word.word || "").toLowerCase();
+      const t = String(word.translation || "").toLowerCase();
+      return w.includes(keyword) || t.includes(keyword);
+    }],
+    // 只搜单词：仅 word 字段包含 keyword
+    ["wordOnly", function (word, keyword) {
+      return String(word.word || "").toLowerCase().includes(keyword);
+    }],
+    // 精确匹配：word === keyword
+    ["exact", function (word, keyword) {
+      return String(word.word || "").toLowerCase() === keyword;
+    }],
+  ]), // 搜索策略注册表：后续策略只需注册，不改后置处理流程
+  _activeSearchStrategy: "prefix", // 当前生效策略，从 _data.searchStrategy 加载
+  _sortMode: "reverse", // 排序模式：forward | reverse | alpha
+  _panelUIDs: new Map(),      // itemID -> { paneUID, refresh }
+  _paneKey: null,
+  _prefWindowLoaded: false,
+  _paneRefresh: null,
+  _hotkeyPressed: null,
+  _hotkeyJustReleased: null,
+  _hotkeyModifiers: null,
+  _selectionFirstPending: null,
+  // 偏好页配置的“快捷键-划词翻译”统一全局按键状态；不为 Alt/Ctrl 等分别注册状态。
+  _selectionTranslateKeyState: null,
+  _selectionTranslateSession: null,
+  _hotkeyGlobalBound: false,
+  _addWordHotkeyFired: false,
+  _hotkeyBoundWindows: null,
+  _currentPane: null,
+  _currentPaneContext: null,
+  _tempEditState: null,
+  _tempEditBound: false,
+  _tempEditCloseHandler: null,
+  _lastSelectionPopup: null,
+
+  _getProfileDir() {
+    try {
+      if (Zotero && Zotero.Profile && Zotero.Profile.dir) {
+        return String(Zotero.Profile.dir);
+      }
+    } catch (e) {}
+    try {
+      if (Zotero && typeof Zotero.getProfileDirectory === "function") {
+        const d = Zotero.getProfileDirectory();
+        if (d) return d;
+      }
+    } catch (e) {}
+    try {
+      if (Zotero && Zotero.ProfileDir) return Zotero.ProfileDir;
+    } catch (e) {}
+    try {
+      if (Zotero && Zotero.profileDirectory) return Zotero.profileDirectory;
+    } catch (e) {}
+    try {
+      if (typeof Services !== "undefined" && Services.dirsvc && typeof Components !== "undefined") {
+        const d = Services.dirsvc.get("ProfD", Components.interfaces.nsIFile);
+        if (d) return d;
+      }
+    } catch (e) {}
+    return null;
+  },
+
+  _debugWriteToFile(msg) {
+    try {
+      if (typeof Components === "undefined") return;
+      var profileDir = null;
+      try { profileDir = this._getProfileDir(); } catch (e0) {}
+      if (!profileDir) return;
+      var line = "[" + new Date().toISOString() + "] [WordTranslator] " + String(msg) + "\n";
+      var wfile = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+      try { wfile.initWithFile(profileDir); } catch (e1) { wfile.initWithPath(profileDir.path || String(profileDir)); }
+      wfile.append("wordtranslator-debug.log");
+      var wout = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
+      wout.init(wfile, 0x02 | 0x08 | 0x10, 0o666, 0);
+      var wconv = Components.classes["@mozilla.org/intl/converter-output-stream;1"].createInstance(Components.interfaces.nsIConverterOutputStream);
+      wconv.init(wout, "UTF-8", 4096, 0xFFFD);
+      wconv.writeString(line);
+      wconv.close();
+      wout.close();
+    } catch (e) {
+      try { Zotero.debug("[WordTranslator][logwrite-fail] " + msg + " :: " + (e && e.message || e)); } catch (e2) {}
+    }
+  },
+
+  _debugLog(msg) {
+    try { Zotero.debug("[WordTranslator] " + msg); } catch (e) {}
+    this._debugWriteToFile(msg);
+  },
+
+  _openExternalURL(url) {
+    try {
+      if (!url) return false;
+      this._debugLog("_openExternalURL: " + url);
+      // 优先：Zotero.Utilities.Internal.openInShell。Zotero 9 常定义为外部资源打开
+      try {
+        if (Zotero.Utilities && Zotero.Utilities.Internal && typeof Zotero.Utilities.Internal.openInShell === "function") {
+          Zotero.Utilities.Internal.openInShell(url);
+          return true;
+        }
+      } catch (e) { this._debugLog("_openExternalURL openInShell ERROR: " + (e && e.message || e)); }
+      // 回退：nsIExternalProtocolService
+      try {
+        const io = Services.io;
+        const eps = Components.classes["@mozilla.org/uriloader/external-protocol-service;1"].getService(Components.interfaces.nsIExternalProtocolService);
+        eps.loadURI(io.newURI(url, null, null), null);
+        return true;
+      } catch (e) { this._debugLog("_openExternalURL ext-protocol ERROR: " + (e && e.message || e)); }
+      // 最后退耀：复制到剪贴板
+      try {
+        const clipboardHelper = Components.classes["@mozilla.org/widget/clipboardhelper;1"].getService(Components.interfaces.nsIClipboardHelper);
+        clipboardHelper.copyString(url);
+        return false;
+      } catch (e) {}
+      return false;
+    } catch (e) {
+      this._debugLog("_openExternalURL ERROR: " + (e && (e.stack || e.message || String(e))));
+      return false;
+    }
+  },
+
+  _openInOS(path) {
+    try {
+      if (!path) return false;
+      this._debugLog("_openInOS: " + path);
+      // 1) nsIFile.launch()
+      try {
+        const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+        f.initWithPath(path);
+        if (f.exists()) {
+          f.launch();
+          return true;
+        }
+      } catch (e) { this._debugLog("_openInOS nsIFile ERROR: " + (e && e.message || e)); }
+      // 2) Zotero.Utilities.Internal.openInShell
+      try {
+        if (Zotero.Utilities && Zotero.Utilities.Internal && typeof Zotero.Utilities.Internal.openInShell === "function") {
+          Zotero.Utilities.Internal.openInShell(path);
+          return true;
+        }
+      } catch (e) { this._debugLog("_openInOS openInShell ERROR: " + (e && e.message || e)); }
+      // 3) 复制到剪贴板
+      try {
+        const clipboardHelper = Components.classes["@mozilla.org/widget/clipboardhelper;1"].getService(Components.interfaces.nsIClipboardHelper);
+        clipboardHelper.copyString(path);
+        return false;
+      } catch (e) {}
+      return false;
+    } catch (e) {
+      this._debugLog("_openInOS ERROR: " + (e && (e.stack || e.message || String(e))));
+      return false;
+    }
+  },
+
+_configVersion: 0,
+
+  _onConfigChange() {
+    try {
+      this._configVersion++;
+      this._debugLog("_onConfigChange: version=" + this._configVersion);
+      // ???? Item Pane ???? custom sections??????? section?
+      if (Zotero && Zotero.Notifier && typeof Zotero.Notifier.trigger === "function") {
+        Zotero.Notifier.trigger("refresh", "itempane", []).catch(function (e) { try { Zotero.debug("[WordTranslator] notifier trigger ERROR: " + (e && (e.message || e))); } catch (e2) {} });
+      }
+      // ?????????? refresh ??
+      if (this._paneRefresh && typeof this._paneRefresh === "function") {
+        try { this._paneRefresh(); } catch (e) { this._debugLog("paneRefresh notify ERROR: " + (e && e.message || e)); }
+      }
+    } catch (e) {
+      this._debugLog("_onConfigChange ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+
+
+  shutdown(reason) {
+    try {
+      // 无论原因，关闭/升级/禁用时都立即写盘，避免防抖定时器未触发导致数据丢失
+      try { this._flushAndPersistWords(); } catch (e2) {}
+      for (const [, handler] of this._readerTabHandlers || []) {
+        try { Zotero.Reader.unregisterEventListener("renderTextSelectionPopup", handler); } catch (e) {}
+      }
+      (this._readerTabHandlers = new Map()).clear();
+      try {
+        if (Zotero.Notifier && this._notifierID) Zotero.Notifier.unregisterObserver(this._notifierID);
+      } catch (e) {}
+      try {
+        if (Zotero.Notifier && this._hotkeyNotifierID) Zotero.Notifier.unregisterObserver(this._hotkeyNotifierID);
+      } catch (e) {}
+      this._hotkeyNotifierID = null;
+      try {
+        if (this._paneKey && Zotero.ItemPaneManager && Zotero.ItemPaneManager.unregisterSection) {
+          Zotero.ItemPaneManager.unregisterSection(this._paneKey);
+        }
+      } catch (e) {}
+      this._paneKey = null;
+      // 注销偏好页（防止更新后旧 pane 残留导致新标签不显示）
+      try {
+        if (this._prefsPaneID && Zotero.PreferencePanes && typeof Zotero.PreferencePanes.unregister === "function") {
+          try { Zotero.PreferencePanes.unregister(this._prefsPaneID); } catch (e0) {}
+        }
+      } catch (e0) {}
+      this._prefsPaneID = null;
+      this._initialized = false;
+    } catch (e) {}
+  },
+
+  async init() {
+    try {
+      if (this._initialized) return;
+      this._initialized = true;
+      this._addonRoot = (typeof addonRoot !== 'undefined' && addonRoot) ? addonRoot : '';
+      this._addonID = (typeof addonID !== 'undefined' && addonID) ? addonID : '';
+      this._addonVersion = (typeof addonVersion !== 'undefined' && addonVersion) ? addonVersion : '';
+      if (!this._buildTime) this._buildTime = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+      try {
+        Zotero.WordTranslator.addonVersion = this._addonVersion;
+        Zotero.WordTranslator.buildTime = this._buildTime;
+        try {
+          let pp = null;
+          const prof = this._getProfileDir();
+          if (prof && typeof prof === "object") { try { pp = prof.path; } catch (e) {} if (!pp) try { pp = String(prof); } catch (e) {} }
+          else if (typeof prof === "string") pp = prof;
+          if (pp) {
+            const sep = pp.indexOf("\\") >= 0 ? "\\" : "/";
+            Zotero.WordTranslator.prefsPath = pp.replace(/[\\/]+$/, "") + sep + "prefs.js";
+            // 预计算数据目录路径（纯字符串，偏好沙箱可直接读取，避免沙箱内 Components 不可用）
+            const baseDir = pp.replace(/[\\/]+$/, "") + sep + "wordtranslator";
+            Zotero.WordTranslator.dataDirPath = baseDir;
+            Zotero.WordTranslator.apiConfigPath = baseDir + sep + "api-config.json";
+            Zotero.WordTranslator.wordsDirPath = baseDir + sep + "words";
+          }
+        } catch (e) {}
+      } catch (e) {}
+        // 暴露其他资源给偏好面板使用
+        try { Zotero.WordTranslator.openExternalURL = (url) => this._openExternalURL(url); } catch (e) {}
+        try { Zotero.WordTranslator.getDataDirPath = () => Zotero.WordTranslator.dataDirPath || (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getDataDirPath()) || ""; } catch (e) {}
+        try { Zotero.WordTranslator.getApiConfigPath = () => Zotero.WordTranslator.apiConfigPath || (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getApiConfigPath()) || ""; } catch (e) {}
+        try { Zotero.WordTranslator.getWordsDirPath = () => Zotero.WordTranslator.wordsDirPath || (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getWordsDirPath()) || ""; } catch (e) {}
+        try { Zotero.WordTranslator.openDataDir = () => this._openInOS(Zotero.WordTranslator.dataDirPath || (Zotero.WordTranslatorStorage && Zotero.WordTranslatorStorage.getDataDirPath()) || ""); } catch (e) {}
+        try { Zotero.WordTranslator.openInOS = (path) => this._openInOS(path); } catch (e) {}
+        // 偏好沙箱读取助手：返回 JSON 字符串（沙箱内无 Components，不能直接调 storage.js）
+        try { Zotero.WordTranslator.readApiConfigString = () => { try { const S = Zotero.WordTranslatorStorage; if (S && typeof S.loadApiConfig === "function") { const obj = S.loadApiConfig(); return obj ? JSON.stringify(obj) : ""; } } catch (e0) {} return ""; }; } catch (e) {}
+        try { Zotero.WordTranslator.writeApiConfigString = (jsonStr) => { try { const S = Zotero.WordTranslatorStorage; if (S && typeof S.saveApiConfig === "function") { const obj = jsonStr ? JSON.parse(jsonStr) : null; return !!S.saveApiConfig(obj); } } catch (e0) {} return false; }; } catch (e) {}
+      await this.loadDataFromDisk();
+      this._loadWordsFromDisk();
+      this._sortMode = this._data.sortMode || "reverse";
+      this._activeSearchStrategy = this._getActiveSearchStrategyName();
+      // 主动验证存储层：确保数据目录存在并写盘（输出日志便于定位写文件失败）
+      try {
+        if (Zotero.WordTranslatorStorage) {
+          const dir = Zotero.WordTranslatorStorage.getDataDirPath();
+          const apiPath = Zotero.WordTranslatorStorage.getApiConfigPath();
+          this._debugLog("storage verify: dataDir=" + dir + ", apiPath=" + apiPath);
+          if (this._data && this._data.apis && this._data.apis.length > 0) {
+            const ok = Zotero.WordTranslatorStorage.saveApiConfig(this._data);
+            this._debugLog("storage verify: saveApiConfig=" + ok + ", apis=" + this._data.apis.length);
+          }
+        } else {
+          this._debugLog("storage verify: WordTranslatorStorage NOT FOUND");
+        }
+      } catch (e) { this._debugLog("storage verify ERROR: " + (e && (e.stack || e.message || String(e)))); }
+      // 启动路径检测：明确打印数据文件是否存在，便于排查
+      try {
+        if (Zotero.WordTranslatorStorage) {
+          const dirP = Zotero.WordTranslatorStorage.getDataDirPath();
+          const apiP = Zotero.WordTranslatorStorage.getApiConfigPath();
+          const wordsDir = Zotero.WordTranslatorStorage.getWordsDirPath();
+          let apiExists = false;
+          let wordsExists = false;
+          try {
+            const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+            f.initWithPath(apiP);
+            apiExists = f.exists();
+          } catch (e4) {}
+          try {
+            const f2 = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+            f2.initWithPath(wordsDir);
+            wordsExists = f2.exists() && f2.isDirectory();
+          } catch (e5) {}
+          this._debugLog("storage paths: dataDir=" + dirP + " | apiConfig=" + apiP + " (exists=" + apiExists + ") | wordsDir=" + wordsDir + " (exists=" + wordsExists + ")");
+        }
+      } catch (e6) {}
+      await this.registerPrefsWindow();
+      this.registerReaderEvents();
+      this.registerItemPaneSection();
+      // Beta：插件更新/加载后延迟强制重渲染当前 Item Pane，
+      // 确保单词本立即显示本地已加载数据（热更新后 Item Pane 不会自动重画）
+      try {
+        const self = this;
+        setTimeout(function () {
+          try { self._rerenderCurrentItemPane("post-init"); } catch (e) {}
+        }, 1500);
+      } catch (e) {}
+      this._debugLog("init OK; root=" + this._addonRoot);
+    } catch (e) {
+      this._debugLog("init ERROR: " + (e && (e.stack || e.message || e)));
+    }
+  },
+
+  async loadDataFromDisk() {
+    try {
+      // 优先读独立文件；无文件时回退读 prefs.js 旧数据（一次性迁移）
+      let raw = null;
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.loadApiConfig === "function") {
+        try { raw = Zotero.WordTranslatorStorage.loadApiConfig(); } catch (e0) {}
+      }
+      if (!raw) {
+        const rawStr = Zotero.Prefs.get("extensions.zotero.wordtranslator.config", true);
+        if (rawStr) { try { raw = JSON.parse(rawStr); } catch (e1) {} }
+        if (raw) {
+          this._debugLog("loadDataFromDisk: migrating old prefs config to file");
+          try {
+            if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveApiConfig === "function") {
+              Zotero.WordTranslatorStorage.saveApiConfig(raw);
+            }
+          } catch (e2) {}
+          try { Zotero.Prefs.clear && Zotero.Prefs.clear("extensions.zotero.wordtranslator.config", true); } catch (e3) {}
+        }
+      }
+      this._data = this._normalize(raw);
+      this._debugLog("loadDataFromDisk OK, apis=" + (this._data.apis || []).length);
+    } catch (e) {
+      this._debugLog("loadDataFromDisk ERROR: " + (e && (e.stack || e.message || e)));
+      this._data = this._normalize(null);
+    }
+  },
+
+  // ---------- 注册 Zotero 偏好页 ----------
+  async registerPrefsWindow() {
+    try {
+      const rootURI = this._addonRoot.endsWith("/") ? this._addonRoot : this._addonRoot + "/";
+      // 避免重复注册冲突：插件更新/重新安装后，旧版的 PreferencePane 仍可能残留。
+      // 先 unregister 再 register，确保新版的 URL 生效。
+      try {
+        if (Zotero.PreferencePanes && typeof Zotero.PreferencePanes.unregister === "function" && this._prefsPaneID) {
+          try { Zotero.PreferencePanes.unregister(this._prefsPaneID); } catch (e0) {}
+        }
+      } catch (e0) {}
+      this._prefsPaneID = "wordtranslator-prefs";
+      await Zotero.PreferencePanes.register({
+        pluginID: this._addonID,
+        id: this._prefsPaneID,
+        src: rootURI + "content/preferences.xhtml",
+        label: "单词翻译 Word Translator",
+        image: rootURI + "content/icons/wordtranslator-section-20.svg",
+        scripts: [rootURI + "content/preferences.js"],
+      });
+      this._debugLog("registerPrefsWindow OK: " + rootURI + "content/preferences.xhtml");
+    } catch (e) {
+      this._debugLog("registerPrefsWindow ERROR: " + (e && (e.stack || e.message || e)));
+    }
+  },
+
+  // ---------- 注册划词菜单 ----------
+  registerReaderEvents() {
+    this._readerTabHandlers = this._readerTabHandlers || new Map();
+    const handler = (event) => {
+      try { this._onRenderTextSelectionPopup(event); }
+      catch (e) { this._debugLog("popup handler ERROR: " + (e && e.message || e)); }
+    };
+    Zotero.Reader.registerEventListener("renderTextSelectionPopup", handler, this._addonID);
+    this._readerTabHandlers.set("popup", handler);
+    // 阅读器打开时（renderToolbar 事件）主动给 PDF iframe 挂快捷键监听，
+    // 保证“按住修饰键 + 第一次划词”也能生效（首次 popup 时再挂就太晚了）。
+    try {
+      if (!this._hotkeyToolbarHandler) {
+        const self = this;
+        this._hotkeyToolbarHandler = (event) => {
+          try {
+            // renderToolbar 事件的 detail 不含 reader 字段，遍历当前所有阅读器绑定
+            const readers = Zotero.Reader && Zotero.Reader._readers;
+            if (readers && readers.length) {
+              for (const r of readers) {
+                try { self._bindHotkeyForReaderInstance(r); } catch (e) {}
+              }
+            }
+          } catch (e) {}
+        };
+        Zotero.Reader.registerEventListener("renderToolbar", this._hotkeyToolbarHandler, this._addonID);
+      }
+    } catch (e) {
+      this._debugLog("hotkey renderToolbar ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+    // 启动兜底：遍历已打开的阅读器，绑定快捷键监听
+    try {
+      const readers = Zotero.Reader && Zotero.Reader._readers;
+      if (readers && readers.length) {
+        for (const r of readers) {
+          try { this._bindHotkeyForReaderInstance(r); } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    // 全局监听：主窗口挂 keydown/keyup/mousedown，焦点在 debug 界面等处也能记录快捷键状态
+    try {
+      this._bindGlobalHotkeyListener();
+    } catch (e) {
+      this._debugLog("global hotkey ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _bindGlobalHotkeyListener() {
+    try {
+      if (this._hotkeyGlobalBound) return;
+      const win = Zotero.getMainWindow();
+      const target = win && (win.document || win);
+      if (!target) return;
+      this._hotkeyGlobalBound = true;
+      // 主 Zotero 窗口失焦通常意味着应用被 Alt+Tab 切走；与 Reader/PDF
+      // 内部因 popup 夺焦点产生的 blur 分开处理。
+      // reset listener 必须绑定真实的顶层 Window；target 可能是 document，
+      // 而 Alt+Tab 触发的是 Window blur，不能依赖 document 接收该事件。
+      this._bindHotkeyResetListener(win, "main-window");
+      const self = this;
+      // 偏好页设置什么快捷键，就由同一套全局状态匹配器处理；不按具体按键分别注册。
+      target.addEventListener("keydown", function (ev) {
+        try { self._handleSelectionTranslateGlobalKeyDown(ev, "main-window"); } catch (e) {}
+      }, true);
+      target.addEventListener("keyup", function (ev) {
+        try { self._handleSelectionTranslateGlobalKeyUp(ev, "main-window"); } catch (e) {}
+      }, true);
+      // —— 鼠标：只保留“先选区后按绑定键”的入口；侧键划词已废弃 ——
+      target.addEventListener("mousedown", function (ev) {
+        try {
+          self._refreshPrefsFromStorage();
+          const d = self._data;
+          if (!d || !self._addWordHotkeyActive()) return;
+          if (self._matchSelectionFirstKey(ev)) {
+            self._fireAddWordHotkey();
+          }
+        } catch (e) {}
+      }, true);
+      // —— 键盘：“先选区后按绑定键” ——
+      target.addEventListener("keydown", function (ev) {
+        try {
+          self._refreshPrefsFromStorage();
+          const d = self._data;
+          if (!d || !self._addWordHotkeyActive()) return;
+          if (self._matchSelectionFirstKey(ev)) {
+            self._fireAddWordHotkey();
+          }
+        } catch (e) {}
+      }, true);
+      this._debugLog("global hotkey listener bound");
+    } catch (e) {
+      this._debugLog("_bindGlobalHotkeyListener ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _handleSelectionTranslateGlobalKeyDown(ev, source) {
+    try {
+      this._refreshPrefsFromStorage();
+      const d = this._data;
+      if (!d || !this._selectionHotkeyActive()) return false;
+      if (!this._matchConfiguredSelectionTranslateKeyDown(ev)) return false;
+      // 保持“先选区后按添加单词快捷键”独立；同一按键不启动新的划词会话。
+      if (this._addWordHotkeyActive() && this._matchSelectionFirstKey(ev) && this._getSelectionFirstPending()) {
+        this._debugLog("selection translate global keydown skipped: add-word hotkey owns selection");
+        return false;
+      }
+      const existing = this._selectionTranslateKeyState;
+      if (existing && existing.active) return true;
+      this._selectionTranslateKeyState = {
+        active: true,
+        spec: this._selectionTranslateHotkeySpec(),
+        key: String(ev && ev.key || ""),
+        source: source || "unknown",
+        time: Date.now(),
+      };
+      this._debugLog("selection translate global keydown: spec=" + this._selectionTranslateKeyState.spec + ", source=" + source);
+      return true;
+    } catch (e) {
+      this._debugLog("selection translate global keydown ERROR: " + (e && (e.message || String(e))));
+      return false;
+    }
+  },
+
+  _handleSelectionTranslateGlobalKeyUp(ev, source) {
+    try {
+      const state = this._selectionTranslateKeyState;
+      if (!state || !state.active) return false;
+      if (!this._matchConfiguredSelectionTranslateKeyUp(ev, state.spec)) return false;
+      this._debugLog("selection translate global keyup: spec=" + state.spec + ", source=" + source);
+      this._selectionTranslateKeyState = null;
+      this._clearSelectionTranslateState("global keyup");
+      return true;
+    } catch (e) {
+      this._debugLog("selection translate global keyup ERROR: " + (e && (e.message || String(e))));
+      return false;
+    }
+  },
+
+  _selectionTranslateHotkeySpec() {
+    try {
+      if (this._customHotkeyActive()) return this._normalizeHotkeySpecCase(this._data.customHotkey);
+      const mod = String((this._data && this._data.hotkeyModifier) || "Ctrl");
+      return this._normalizeHotkeySpecCase(mod);
+    } catch (e) {
+      return "Ctrl";
+    }
+  },
+
+  _normalizeHotkeySpecCase(spec) {
+    return String(spec || "").split("+").map((part) => {
+      const p = part.trim();
+      if (!p) return "";
+      if (/^ctrl$/i.test(p) || /^control$/i.test(p)) return "Ctrl";
+      if (/^alt$/i.test(p)) return "Alt";
+      if (/^shift$/i.test(p)) return "Shift";
+      if (/^meta$/i.test(p) || /^command$/i.test(p)) return "Meta";
+      return p.length === 1 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1);
+    }).filter(Boolean).join("+");
+  },
+
+  // 校验当前鼠标事件上配置所需的修饰键是否仍然实际按下。
+  // 用于 Alt+Tab 等丢失 keyup 后，在建立新划词会话前清除残留状态。
+  _isSelectionTranslateModifierDown(ev, spec) {
+    try {
+      const p = this._parseHotkeySpec(spec);
+      if (!p || !ev) return false;
+      // 纯修饰键配置：如 "Alt" / "Ctrl" / "Shift"，要求该键按下且其余修饰键未按下。
+      if (p.key === "ctrl" || p.key === "control") return !!ev.ctrlKey && !ev.altKey && !ev.shiftKey && !ev.metaKey;
+      if (p.key === "alt") return !!ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey;
+      if (p.key === "shift") return !!ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey;
+      // 组合键配置：如 "Alt+Z"，校验声明的修饰键均按下。
+      if (p.ctrl && !ev.ctrlKey) return false;
+      if (p.alt && !ev.altKey) return false;
+      if (p.shift && !ev.shiftKey) return false;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+
+  _matchConfiguredSelectionTranslateKeyDown(ev) {
+    try {
+      const spec = this._selectionTranslateHotkeySpec();
+      const p = this._parseHotkeySpec(spec);
+      if (!p || !ev) return false;
+      const key = String(ev.key || "").toLowerCase();
+      if (p.key === "ctrl" || p.key === "alt" || p.key === "shift") {
+        const requiredCtrl = p.ctrl && p.key !== "ctrl";
+        const requiredAlt = p.alt && p.key !== "alt";
+        const requiredShift = p.shift && p.key !== "shift";
+        const keyMatches =
+          (p.key === "ctrl" && (key === "control" || key === "ctrl")) ||
+          (p.key === "alt" && key === "alt") ||
+          (p.key === "shift" && key === "shift");
+        return keyMatches &&
+          (!requiredCtrl || !!ev.ctrlKey) &&
+          (!requiredAlt || !!ev.altKey) &&
+          (!requiredShift || !!ev.shiftKey);
+      }
+      if (!key || key !== String(p.key || "").toLowerCase()) return false;
+      return (!!ev.ctrlKey) === (!!p.ctrl) && (!!ev.altKey) === (!!p.alt) && (!!ev.shiftKey) === (!!p.shift);
+    } catch (e) {
+      return false;
+    }
+  },
+
+  _matchConfiguredSelectionTranslateKeyUp(ev, spec) {
+    try {
+      const p = this._parseHotkeySpec(spec);
+      const key = String(ev && ev.key || "").toLowerCase();
+      if (!p || !key) return false;
+      if (p.key === "ctrl") return key === "control" || key === "ctrl";
+      if (p.key === "alt") return key === "alt";
+      if (p.key === "shift") return key === "shift";
+      return key === String(p.key || "").toLowerCase();
+    } catch (e) {
+      return false;
+    }
+  },
+
+  _handleAddWordTrigger({ source, doc, btn, append, reader, text }) {
+    try {
+      if (!reader || !text) return;
+      if (this._tempEditState) {
+        this._restoreButtonFromTempEdit();
+      }
+      // 入口传入的 btn 可能是旧节点，也可能是 append 前创建的节点。
+      // 统一入口只接受当前 popup 中仍连接的本插件按钮。
+      if (!btn || !btn.isConnected || !btn.classList || !btn.classList.contains("wordtranslator-add-btn")) {
+        btn = doc && doc.querySelector ? doc.querySelector(".wordtranslator-add-btn") : null;
+      }
+      if (!btn && doc && typeof append === "function") {
+        const created = this._createAddWordButton(doc, reader, text, this._getAddWordButtonHTML((this._data && this._data.contextMenuLabel) || "添加单词并翻译"));
+        append(created);
+        // append() 可能通过 cloneInto 跨文档传递元素；绝不能继续使用 created。
+        btn = doc.querySelector ? doc.querySelector(".wordtranslator-add-btn") : null;
+        if (!btn && created.isConnected) btn = created;
+        this._lastSelectionPopup = { doc, reader, button: btn, text, time: Date.now() };
+        this._debugLog("add trigger button appended: queried=" + !!btn + ", connected=" + !!(btn && btn.isConnected));
+      }
+      this._debugLog("add trigger: source=" + source + ", word=" + JSON.stringify(text));
+      if (doc && btn && btn.isConnected) {
+        this._showTempEditArea(doc, btn, reader, text, "");
+      } else {
+        this._debugLog("temp edit skipped: reason=button-not-connected, source=" + source + ", hasDoc=" + !!doc + ", hasButton=" + !!btn + ", buttonConnected=" + !!(btn && btn.isConnected));
+      }
+      this._addWordForReader(reader, text).catch((err) => {
+        this._debugLog("add trigger ERROR: source=" + source + ", " + (err && (err.stack || err.message || String(err))));
+      });
+    } catch (e) {
+      this._debugLog("_handleAddWordTrigger ERROR: " + (e && (e.message || String(e))));
+    }
+  },
+
+  _triggerHotkeyTranslate(pending) {
+    try {
+      if (!pending || !pending.reader || !pending.text) return;
+      const popup = this._lastSelectionPopup;
+      const popupButton = popup && popup.button && popup.button.classList && popup.button.classList.contains("wordtranslator-add-btn") ? popup.button : null;
+      this._handleAddWordTrigger({
+        source: "hotkey",
+        doc: pending.doc || (popup && popup.doc),
+        btn: pending.btn || popupButton,
+        append: pending.append || null,
+        reader: pending.reader,
+        text: pending.text,
+      });
+    } catch (e) {
+      this._debugLog("_triggerHotkeyTranslate ERROR: " + (e && (e.message || String(e))));
+    }
+  },
+  _fireAddWordHotkey() {
+    try {
+      this._refreshPrefsFromStorage();
+      if (!this._data || !this._data.addWordHotkeyEnabled) return;
+      if (!this._data.selectionFirstEnabled) {
+        this._debugLog("addWord hotkey ignored: selectionFirst disabled");
+        return;
+      }
+      const now = Date.now();
+      if (this._addWordHotkeyFired && now - this._addWordHotkeyFired < 1000) return;
+      const pending = this._getSelectionFirstPending();
+      if (!pending) {
+        this._debugLog("addWord hotkey pressed but no selected text cached");
+        return;
+      }
+      this._addWordHotkeyFired = now;
+      this._debugLog("addWord hotkey fired: word=" + JSON.stringify(pending.text));
+      this._selectionFirstPending = null;
+      this._triggerHotkeyTranslate(pending);
+    } catch (e) {
+      this._debugLog("_fireAddWordHotkey ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _bindHotkeyForReaderInstance(reader) {
+    try {
+      if (!reader || !reader.tabID) return;
+      const key = "wtHotkeyBound_" + this._addonID;
+      if (reader[key]) return;
+      reader[key] = true;
+      const self = this;
+      this._debugLog("hotkey bind start: itemID=" + (reader && reader.itemID) + ", tabID=" + (reader && reader.tabID));
+      // 先绑阅读器主窗口 iframe（稳定存在；PDF iframe 事件会冒泡到这里）
+      try {
+        this._bindHotkeyModifierListener(reader._iframeWindow, reader);
+      } catch (e) {}
+      // PDF.js 视图 iframe 需要等初始化完成，轮询等待
+      this._waitForHotkeyWindow(reader, 0);
+    } catch (e) {
+      this._debugLog("_bindHotkeyForReaderInstance ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _waitForHotkeyWindow(reader, attempt) {
+    try {
+      const internal = reader && reader._internalReader;
+      let win = null;
+      try {
+        const primary = internal && (internal._primaryView || internal.primaryView);
+        if (primary) {
+          win = primary._iframeWindow || primary.iframeWindow;
+        }
+      } catch (e) {}
+      if (!win) {
+        try {
+          const secondary = internal && (internal._secondaryView || internal.secondaryView);
+          if (secondary) {
+            win = secondary._iframeWindow || secondary.iframeWindow;
+          }
+        } catch (e) {}
+      }
+      if (win) {
+        this._bindHotkeyModifierListener(win, reader);
+        return;
+      }
+      if (attempt < 100) {
+        const self = this;
+        setTimeout(function () { self._waitForHotkeyWindow(reader, attempt + 1); }, 100);
+      } else {
+        this._debugLog("hotkey wait timeout: tabID=" + (reader && reader.tabID));
+      }
+    } catch (e) {
+      this._debugLog("_waitForHotkeyWindow ERROR: " + (e && (e.message || String(e))));
+    }
+  },
+
+  _bindHotkeyResetListener(win, role) {
+    try {
+      if (!win) return;
+      if (win.__wordTranslatorHotkeyResetBound) return;
+      win.__wordTranslatorHotkeyResetBound = true;
+      const self = this;
+      const clear = (reason) => {
+        const session = self._selectionTranslateSession;
+        const isMainWindow = role === "main-window";
+
+        // 主窗口 blur 表示 Zotero 整体失去激活（例如 Alt+Tab）。此时
+        // Windows 可能不会再把匹配的 keyup 发回 Zotero，必须主动清除
+        // 全局快捷键状态，避免回来后普通划词继续被误判为按住快捷键。
+        if (reason === "window blur" && isMainWindow) {
+          self._selectionTranslateKeyState = null;
+          self._clearSelectionHotkeyState("main-window-deactivate");
+          self._clearSelectionTranslateState("main-window-deactivate");
+          self._debugLog("selection translate main window blur: global state cleared");
+          return;
+        }
+
+        // 主窗口 deactivate：它在 Reader/popup/临时编辑区域的内部焦点切换时
+        // 也会频繁触发（日志已证实），不能无条件当作应用被切出。
+        // 当存在进行中的选区/弹窗状态时保留会话，避免破坏连续划词。
+        if (reason === "window deactivate" && isMainWindow) {
+          if (
+            session &&
+            session.active &&
+            (session.mouseDown || session.selectionReady || session.popupContext)
+          ) {
+            self._debugLog(
+              "selection translate deactivate ignored: pending selection state, " +
+              "mouseDown=" + session.mouseDown +
+              ", selectionReady=" + session.selectionReady +
+              ", popupContext=" + !!session.popupContext
+            );
+            return;
+          }
+          self._selectionTranslateKeyState = null;
+          self._clearSelectionHotkeyState("main-window-deactivate");
+          self._clearSelectionTranslateState("main-window-deactivate");
+          self._debugLog("selection translate main window deactivation: global state cleared");
+          return;
+        }
+
+        // 方案 A：部分桌面切换场景可能不向顶层 Window 派发 blur，
+        // 但主文档会进入 hidden；将其作为 Alt+Tab 丢失 keyup 的兜底。
+        if (reason === "document hidden" && isMainWindow) {
+          self._selectionTranslateKeyState = null;
+          self._clearSelectionHotkeyState("main-window-hidden");
+          self._clearSelectionTranslateState("main-window-hidden");
+          self._debugLog("selection translate main document hidden: global state cleared");
+          return;
+        }
+
+        // Reader/PDF 内部 blur 可能只是 popup 或临时编辑区域夺取焦点；
+        // 保留原有保护逻辑，不能把它等同于应用被切出。
+        if (
+          reason === "window blur" &&
+          session &&
+          session.active &&
+          (session.mouseDown || session.selectionReady || session.popupContext)
+        ) {
+          self._debugLog(
+            "selection translate blur ignored: pending selection state, " +
+            "mouseDown=" + session.mouseDown +
+            ", selectionReady=" + session.selectionReady +
+            ", popupContext=" + !!session.popupContext
+          );
+          return;
+        }
+        self._clearSelectionHotkeyState(reason);
+        // 窗口 blur 不等于配置快捷键已经释放；全局 keyup 才是正常结束条件。
+        if (reason !== "window blur" || !self._selectionTranslateKeyState) {
+          self._clearSelectionTranslateState(reason);
+        } else {
+          self._debugLog("selection translate blur ignored: global key state active");
+        }
+      };
+      win.addEventListener("blur", () => clear("window blur"), true);
+      win.addEventListener("pagehide", () => clear("pagehide"), true);
+      // 方案 B：XUL 顶层窗口失活时派发 deactivate；用于捕获 Alt+Tab
+      // 场景中可能丢失的 modifier keyup。
+      if (role === "main-window") {
+        win.addEventListener("deactivate", () => clear("window deactivate"), true);
+      }
+    } catch (e) {}
+  },
+
+  _bindHotkeyModifierListener(win, reader) {
+    try {
+      if (!win) return;
+      if (this._hotkeyBoundWindows && this._hotkeyBoundWindows.has(win)) return;
+      if (!this._hotkeyBoundWindows) this._hotkeyBoundWindows = new Set();
+      this._hotkeyBoundWindows.add(win);
+      this._bindHotkeyResetListener(win, "reader-window");
+      const self = this;
+      // PDF/Reader 窗口也把按键交给同一个全局状态函数；这里不是为每个按键单独注册。
+      win.addEventListener("keydown", function (ev) {
+        try { self._handleSelectionTranslateGlobalKeyDown(ev, "reader-window"); } catch (e) {}
+      }, true);
+      // 鼠标左键只负责“快捷键-划词翻译”的一次选区边界：
+      // keydown 开始会话 → mousedown 开始选择 → mouseup 检查选区 → popup 触发。
+      win.addEventListener("mousedown", function (ev) {
+        try {
+          if (ev.button !== 0) return;
+          const keyState = self._selectionTranslateKeyState;
+          // Alt+Tab 等场景可能丢失 modifier keyup，导致 _selectionTranslateKeyState
+          // 残留为 active（即使 _selectionTranslateSession 也残留 active）。在每次
+          // 左键 mousedown 都用本事件携带的实时修饰键状态实测校验：若配置所需的
+          // modifier 已不再实际按下，则清除残留状态并拒绝本次划词翻译。
+          if (keyState && keyState.active) {
+            const staleSpec = keyState.spec || self._selectionTranslateHotkeySpec();
+            if (!self._isSelectionTranslateModifierDown(ev, staleSpec)) {
+              self._debugLog(
+                "selection translate stale state cleared on mousedown: spec=" +
+                staleSpec +
+                ", altKey=" + !!ev.altKey +
+                ", ctrlKey=" + !!ev.ctrlKey +
+                ", shiftKey=" + !!ev.shiftKey +
+                ", metaKey=" + !!ev.metaKey
+              );
+              self._selectionTranslateKeyState = null;
+              self._clearSelectionTranslateState("stale modifier on mousedown");
+              return;
+            }
+          }
+          let session = self._selectionTranslateSession;
+          // 全局按键状态已经激活且校验通过时，由当前 Reader 的左键 mousedown 建立本 Reader 会话。
+          if ((!session || !session.active) && keyState && keyState.active) {
+            session = self._selectionTranslateSession = {
+              active: true,
+              reader: reader,
+              win: win,
+              doc: win.document || null,
+              mouseDown: false,
+              selectionReady: false,
+              selectionText: "",
+              selectionTime: 0,
+              popupContext: null,
+              sequence: Date.now(),
+            };
+            self._debugLog("selection translate session attached: reader=" + (reader && reader.tabID));
+          }
+          if (!session || !session.active || session.win !== win) return;
+          session.mouseDown = true;
+          session.selectionReady = false;
+          session.selectionText = "";
+          session.selectionTime = Date.now();
+          session.popupContext = null;
+          self._debugLog("selection translate mouse down: reader=" + (session.reader && session.reader.tabID));
+        } catch (e) {}
+      }, true);
+      win.addEventListener("mouseup", function (ev) {
+        try {
+          const session = self._selectionTranslateSession;
+          if (!session || !session.active || session.win !== win || ev.button !== 0) return;
+          session.mouseDown = false;
+          session.selectionReady = false;
+          session.selectionText = "";
+          let selectedText = "";
+          try {
+            const selection = win.getSelection && win.getSelection();
+            selectedText = self._normalizeSelectionTranslateText(selection && selection.toString());
+          } catch (e) {}
+          if (!selectedText) {
+            self._debugLog("selection translate mouse up: result=no-selection");
+            return;
+          }
+          session.selectionReady = true;
+          session.selectionText = selectedText;
+          session.selectionTime = Date.now();
+          // popup 可能在划词中途出现（mousedown 之后、mouseup 之前），缓存的文本
+          // 是不完整的中间选区。鼠标松开后选区已变，需同步更新 popupContext.text
+          // 使 _tryTriggerSelectionTranslate 的文本校验能通过。
+          if (session.popupContext) {
+            session.popupContext.text = selectedText;
+          }
+          self._debugLog("selection translate mouse up: result=selection-ready, text=" + JSON.stringify(selectedText));
+          self._tryTriggerSelectionTranslate(session);
+        } catch (e) {}
+      }, true);
+      win.addEventListener("keyup", function (ev) {
+        try { self._handleSelectionTranslateGlobalKeyUp(ev, "reader-window"); } catch (e) {}
+      }, true);
+      // —— 键盘：“先选区后按绑定键” ——
+      win.addEventListener("keydown", function (ev) {
+        try {
+          self._refreshPrefsFromStorage();
+          const d = self._data;
+          if (!d || !self._addWordHotkeyActive()) return;
+          if (self._matchSelectionFirstKey(ev)) {
+            self._fireAddWordHotkey();
+          }
+        } catch (e) {}
+      }, true);
+      this._debugLog("hotkey bound to iframe window");
+    } catch (e) {
+      this._debugLog("_bindHotkeyModifierListener ERROR: " + (e && (e.message || String(e))));
+    }
+  },
+
+  _tryTriggerSelectionTranslate(session) {
+    try {
+      if (!session || !session.active || session.mouseDown || !session.selectionReady) return false;
+      const popup = session.popupContext;
+      if (!popup) {
+        this._debugLog("selection translate waiting popup: text=" + JSON.stringify(session.selectionText));
+        return false;
+      }
+      if (Date.now() - popup.time > 1500) {
+        this._debugLog("selection translate popup-skip: reason=stale");
+        session.popupContext = null;
+        return false;
+      }
+      const popupText = this._normalizeSelectionTranslateText(popup.text);
+      const selectionText = this._normalizeSelectionTranslateText(session.selectionText);
+      const sameReader = popup.reader === session.reader;
+      const sameText = popupText === selectionText;
+      if (!sameReader || !sameText) {
+        this._debugLog("selection translate popup-skip: reader=" + (!sameReader ? "mismatch" : "ok") + ", doc=not-checked, text=" + (!sameText ? "mismatch" : "ok"));
+        return false;
+      }
+      const triggerText = selectionText;
+      const popupDoc = popup.doc;
+      const popupButton = popup.button && popup.button.isConnected
+        ? popup.button
+        : (popupDoc && popupDoc.querySelector ? popupDoc.querySelector(".wordtranslator-add-btn") : null);
+      session.selectionReady = false;
+      session.selectionText = "";
+      session.selectionTime = 0;
+      session.popupContext = null;
+      this._debugLog("selection translate trigger: text=" + JSON.stringify(triggerText));
+      this._handleAddWordTrigger({
+        source: "hotkey-selection",
+        doc: popupDoc,
+        btn: popupButton,
+        // append 只能在 renderTextSelectionPopup 回调同步执行；
+        // mouseup 阶段绝不能再次调用已失效的 append。
+        append: null,
+        reader: session.reader,
+        text: triggerText,
+      });
+      return true;
+    } catch (e) {
+      this._debugLog("_tryTriggerSelectionTranslate ERROR: " + (e && (e.stack || e.message || String(e))));
+      return false;
+    }
+  },
+
+  _isSelectionTextAllowed(text) {
+    const value = String(text || "").trim();
+    if (!value) return { allowed: false, reason: "empty" };
+    const mode = this._data && this._data.selectionMode === "sentence" ? "sentence" : "word";
+    // 句子模式放宽单词模式的 500 字符限制，但保留 5000 字符安全上限，
+    // 防止误选整篇 PDF 后直接提交过大的 API 请求。
+    const maxLength = mode === "sentence" ? 5000 : 500;
+    if (value.length > maxLength) {
+      return { allowed: false, reason: mode === "sentence" ? "sentence-mode-too-long" : "word-mode-too-long", mode, maxLength };
+    }
+    return { allowed: true, reason: mode === "sentence" ? "sentence-mode" : "word-mode", mode, maxLength };
+  },
+
+  _onRenderTextSelectionPopup(event) {
+    const { reader, doc, params, append } = event;
+    try {
+      this._refreshPrefsFromStorage();
+      this._debugLog(
+        "popup event: reader.itemID=" + (reader && reader.itemID) +
+        ", tabID=" + (reader && reader.tabID) +
+        ", keys=" + Object.keys(reader || {}).slice(0, 12).join(",")
+      );
+    } catch (e) {}
+    if (!this._data || !this._data.enabled) return;
+    const text = (params && params.annotation && params.annotation.text || "").trim();
+    this._debugLog("popup text: len=" + text.length + ", text=" + JSON.stringify(text.slice(0, 120)));
+    if (!text) {
+      this._debugLog("popup skip: no selected text");
+      return;
+    }
+    const selectionCheck = this._isSelectionTextAllowed(text);
+    if (!selectionCheck.allowed) {
+      this._debugLog(
+        "popup skip: reason=" + selectionCheck.reason +
+        ", mode=" + (selectionCheck.mode || "word") +
+        ", len=" + text.length +
+        ", max=" + (selectionCheck.maxLength || 0)
+      );
+      return;
+    }
+
+    // 快捷键-划词翻译：缓存当前选中文本。
+    // 鼠标/按键事件实际发生在 PDF.js 的 iframe window，popup 出现时绑定一次。
+    try {
+      const hotkeyWin = this._getHotkeyTargetWindow(reader);
+      if (hotkeyWin) this._bindHotkeyModifierListener(hotkeyWin, reader);
+    } catch (e) {
+      this._debugLog("hotkey bind ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+    const session = this._selectionTranslateSession;
+    const popupText = this._normalizeSelectionTranslateText(text);
+    if (session && session.active) {
+      const popupWindow = doc && doc.defaultView;
+      const sameReader = session.reader === reader;
+      if (!sameReader) {
+        this._debugLog("selection translate popup-skip: reader=mismatch, doc=not-checked");
+        return;
+      }
+      // Reader 的 append 只在本次 renderTextSelectionPopup 回调栈内有效。
+      // 因此必须在这里同步创建/挂载本插件按钮，不能把 append 留到 mouseup 再调用。
+      let popupButton = doc && doc.querySelector ? doc.querySelector(".wordtranslator-add-btn") : null;
+      if (!popupButton && typeof append === "function") {
+        try {
+          const label = this._data.contextMenuLabel || "添加单词并翻译";
+          const created = this._createAddWordButton(doc, reader, popupText, this._getAddWordButtonHTML(label));
+          append(created);
+          popupButton = doc.querySelector ? doc.querySelector(".wordtranslator-add-btn") : null;
+          if (!popupButton && created.isConnected) popupButton = created;
+          this._debugLog("selection translate popup button mounted synchronously: connected=" + !!(popupButton && popupButton.isConnected));
+        } catch (e) {
+          this._debugLog("selection translate popup button mount ERROR: " + (e && (e.message || String(e))));
+        }
+      }
+      session.popupContext = {
+        reader,
+        doc,
+        button: popupButton,
+        append: null,
+        text: popupText,
+        time: Date.now(),
+      };
+      this._debugLog("selection translate popup cached: text=" + JSON.stringify(popupText) + ", mouseDown=" + session.mouseDown + ", selectionReady=" + session.selectionReady + ", doc=session-doc? " + (doc === session.doc));
+      this._tryTriggerSelectionTranslate(session);
+      return;
+    }
+    // 为“先选区后按添加单词快捷键”保留最新普通选区上下文。
+    this._selectionFirstPending = { reader: reader, text: text, doc: doc, append: append, time: Date.now() };
+    if (this._data.autoTranslate) {
+      // 防抖去重：相同文本 2 秒内不重复自动添加
+      const now = Date.now();
+      if (this._lastAutoWord === text && now - (this._lastAutoTime || 0) < 2000) {
+        return;
+      }
+      this._lastAutoWord = text;
+      this._lastAutoTime = now;
+      this._debugLog("autoTranslate: word=" + JSON.stringify(text) + ", reader.itemID=" + (reader && reader.itemID));
+      const autoButton = doc.querySelector(".wordtranslator-add-btn");
+      this._handleAddWordTrigger({ source: "auto", doc, btn: autoButton, append, reader, text });
+      return;
+    }
+    // 先选区后按“添加单词”快捷键，以及普通 popup 按钮创建逻辑保持不变。
+    const label = this._data.contextMenuLabel || "添加单词并翻译";
+    const existingButton = doc.querySelector(".wordtranslator-add-btn");
+    if (existingButton) {
+      existingButton.innerHTML = this._getAddWordButtonHTML(label);
+      this._lastSelectionPopup = { doc, reader, button: existingButton, text, time: Date.now() };
+      return;
+    }
+
+    // Item Pane 标题和侧栏导航使用统一的 icon5.ico；
+    const btn = this._createAddWordButton(doc, reader, text, this._getAddWordButtonHTML(label));
+    append(btn);
+    // 与统一触发入口一致：缓存 append 后 popup 中真实存在的节点。
+    const mountedButton = doc.querySelector(".wordtranslator-add-btn") || (btn.isConnected ? btn : null);
+    this._lastSelectionPopup = { doc, reader, button: mountedButton, text, time: Date.now() };
+  },
+
+
+  // 快捷键-划词翻译：组合键按下时触发翻译
+  _getHotkeyTargetWindow(reader) {
+    try {
+      const internal = reader && reader._internalReader;
+      if (internal) {
+        try {
+          const primary = internal._primaryView || internal.primaryView;
+          if (primary) {
+            const w = primary._iframeWindow || primary.iframeWindow;
+            if (w) return w;
+          }
+        } catch (e) {}
+        try {
+          const secondary = internal._secondaryView || internal.secondaryView;
+          if (secondary) {
+            const w = secondary._iframeWindow || secondary.iframeWindow;
+            if (w) return w;
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+    try {
+      if (reader && reader._iframeWindow) return reader._iframeWindow;
+    } catch (e) {}
+    return null;
+  },
+
+  _getHotkeyTargetDoc(reader, fallbackDoc) {
+    try {
+      const w = this._getHotkeyTargetWindow(reader);
+      if (w && w.document) return w.document;
+    } catch (e) {}
+    return fallbackDoc || null;
+  },
+
+
+  // 创建"添加单词并翻译"按钮（带 SVG 图标）
+  _createAddWordButton(doc, reader, text, btnHTML) {
+    const btn = doc.createElement("button");
+    btn.className = "toolbar-button wide-button wordtranslator-add-btn";
+    btn.setAttribute("data-tabstop", "1");
+    btn.innerHTML = btnHTML || "";
+    btn.addEventListener("click", (ev) => {
+      try {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this._debugLog(
+          "selection button clicked: word=" + JSON.stringify(text) +
+          ", reader.itemID=" + (reader && reader.itemID) +
+          ", reader.itemId=" + (reader && reader.itemId) +
+          ", reader.tabID=" + (reader && reader.tabID)
+        );
+
+        this._handleAddWordTrigger({
+          source: "button",
+          doc,
+          btn,
+          reader,
+          text,
+        });
+      } catch (err) {
+        this._debugLog("btn click ERROR: " + (err && (err.stack || err.message || String(err))));
+      }
+    }, true);
+    return btn;
+  },
+
+  _formatTempEditText(word, translation) {
+    const w = String(word || "").trim();
+    const t = String(translation || "").trim() || "正在翻译…";
+    return w ? w + " -- " + t : t;
+  },
+
+  _getAddWordButtonHTML(label) {
+    const text = String(label || "添加单词并翻译");
+    const safe = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // 方案 A：使用内联 SVG 图标，不依赖 chrome:// 外部资源加载。
+    // PDF 划词弹窗运行在 PDF.js iframe 沙箱中，无法加载 chrome:// 图片，
+    // 因此改用与参考插件(zotero-pdf-translate)一致的内联 SVG 方式，确保稳定显示。
+    const iconSVG = '<svg class="wordtranslator-add-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" style="vertical-align:middle;flex:0 0 16px;" aria-hidden="true"><rect x="0.5" y="0.5" width="15" height="15" rx="3" fill="Highlight"/><text x="8" y="8" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="7" font-weight="700" fill="HighlightText">word</text><text x="8" y="13" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="3.5" fill="HighlightText">翻译</text></svg>';
+    return iconSVG + "<span>" + safe + "</span>";
+  },
+
+  // 把按钮原地替换为可编辑文本框；已有编辑框时先恢复按钮
+  _showTempEditArea(doc, btn, reader, text, translation) {
+    try {
+      if (this._tempEditState) this._restoreButtonFromTempEdit();
+      if (!doc || !btn || !btn.isConnected) return;
+      const textarea = doc.createElement("textarea");
+      textarea.className = "wordtranslator-temp-edit";
+      textarea.rows = 1;
+      textarea.value = this._formatTempEditText(text, translation);
+      textarea.placeholder = "正在翻译…";
+      textarea.setAttribute("data-tabstop", "1");
+      textarea.style.resize = "both";
+      textarea.style.boxSizing = "border-box";
+      textarea.style.width = "100%";
+      textarea.style.maxWidth = "100%";
+      textarea.style.minWidth = "0";
+      textarea.style.minHeight = "1.8em";
+      textarea.style.height = "auto";
+      textarea.style.lineHeight = "1.35";
+      textarea.style.padding = "2px 4px";
+      textarea.style.margin = "4px 0";
+      textarea.style.fontSize = "inherit";
+      textarea.style.whiteSpace = "pre-wrap";
+      textarea.style.overflowWrap = "anywhere";
+      textarea.style.overflowY = "hidden";
+      this._resizeTempEditArea(textarea);
+      btn.replaceWith(textarea);
+      this._tempEditState = {
+        doc: doc,
+        btn: btn,
+        textarea: textarea,
+        reader: reader || null,
+        text: String(text || "").trim(),
+      };
+      this._lastSelectionPopup = {
+        doc,
+        reader,
+        button: textarea,
+        textarea,
+        text: String(text || "").trim(),
+        time: Date.now(),
+      };
+      try {
+        textarea.focus();
+        textarea.select();
+      } catch (e) {}
+      this._bindTempEditAutoClose();
+    } catch (e) {
+      this._debugLog("_showTempEditArea ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _resizeTempEditArea(textarea) {
+    try {
+      if (!textarea) return;
+      textarea.style.height = "auto";
+      const view = textarea.ownerDocument && textarea.ownerDocument.defaultView;
+      const style = view && view.getComputedStyle ? view.getComputedStyle(textarea) : null;
+      const lineHeight = parseFloat(style && style.lineHeight) || 18;
+      const maxHeight = lineHeight * 3.2;
+      const minHeight = lineHeight * 1.35;
+      const next = Math.max(minHeight, Math.min(textarea.scrollHeight || minHeight, maxHeight));
+      textarea.style.height = next + "px";
+      textarea.style.overflowY = (textarea.scrollHeight || 0) > maxHeight ? "auto" : "hidden";
+    } catch (e) {}
+  },
+
+  // 翻译完成后更新临时编辑框内容
+  _updateTempEditArea(word, translation) {
+    const st = this._tempEditState;
+    if (!st || !st.textarea || !st.textarea.isConnected) return;
+    try {
+      const cur = String(st.text || "").trim().toLowerCase();
+      const tgt = String(word || "").trim().toLowerCase();
+      if (!cur || cur !== tgt) return;
+      st.textarea.value = this._formatTempEditText(st.text, translation);
+      st.textarea.placeholder = translation ? "" : "正在翻译…";
+      this._resizeTempEditArea(st.textarea);
+    } catch (e) {
+      this._debugLog("_updateTempEditArea ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 取消选中/外部点击/下一次翻译时：编辑框恢复为按钮
+  _restoreButtonFromTempEdit() {
+    const st = this._tempEditState;
+    if (!st) return;
+    this._tempEditState = null;
+    this._unbindTempEditAutoClose();
+    try {
+      const { doc, textarea, reader, text } = st;
+      if (!doc || !textarea || !textarea.isConnected) return;
+      const label = (this._data && this._data.contextMenuLabel) || "添加单词并翻译";
+      const btn = this._createAddWordButton(doc, reader, text, this._getAddWordButtonHTML(label));
+      textarea.replaceWith(btn);
+      this._lastSelectionPopup = {
+        doc,
+        reader,
+        button: btn,
+        text,
+        time: Date.now(),
+      };
+    } catch (e) {
+      this._debugLog("_restoreButtonFromTempEdit ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 外部 mousedown（PDF 页面/弹出层）时自动恢复按钮
+  _bindTempEditAutoClose() {
+    try {
+      if (this._tempEditBound) return;
+      const st = this._tempEditState;
+      if (!st) return;
+      const handler = (ev) => {
+        const s = this._tempEditState;
+        if (!s || !s.textarea || !s.textarea.isConnected) {
+          this._restoreButtonFromTempEdit();
+          return;
+        }
+        const t = ev.target;
+        if (t && (t === s.textarea || (s.textarea.contains && s.textarea.contains(t)))) return;
+        this._restoreButtonFromTempEdit();
+      };
+      this._tempEditBound = true;
+      this._tempEditCloseHandler = handler;
+      const win = this._getHotkeyTargetWindow(st.reader);
+      if (win && win.document) {
+        win.document.addEventListener("mousedown", handler, true);
+      }
+      if (st.doc && st.doc.defaultView) {
+        st.doc.defaultView.addEventListener("mousedown", handler, true);
+      }
+    } catch (e) {
+      this._debugLog("_bindTempEditAutoClose ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _unbindTempEditAutoClose() {
+    try {
+      if (!this._tempEditBound) return;
+      this._tempEditBound = false;
+      const handler = this._tempEditCloseHandler;
+      this._tempEditCloseHandler = null;
+      if (!handler) return;
+      const st = this._tempEditState;
+      const win = st ? this._getHotkeyTargetWindow(st.reader) : null;
+      if (win && win.document) {
+        win.document.removeEventListener("mousedown", handler, true);
+      }
+      if (st && st.doc && st.doc.defaultView) {
+        st.doc.defaultView.removeEventListener("mousedown", handler, true);
+      }
+    } catch (e) {
+      this._debugLog("_unbindTempEditAutoClose ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 解析键盘快捷键 spec，如 "ctrl+d"、"alt+1"、"ctrl"、"shift"。
+  _parseHotkeySpec(spec) {
+    try {
+      if (!spec) return null;
+      const parts = String(spec).toLowerCase().split("+").map(function (x) { return x.trim(); }).filter(Boolean);
+      if (!parts.length) return null;
+      const last = parts[parts.length - 1];
+      if (parts.length === 1) {
+        if (last === "ctrl" || last === "control") return { key: "ctrl" };
+        if (last === "alt") return { key: "alt" };
+        if (last === "shift") return { key: "shift" };
+      }
+      return {
+        ctrl: parts.indexOf("ctrl") >= 0 || parts.indexOf("control") >= 0,
+        alt: parts.indexOf("alt") >= 0,
+        shift: parts.indexOf("shift") >= 0,
+        key: last,
+      };
+    } catch (e) {
+      return null;
+    }
+  },
+
+  // 匹配键盘事件（keydown/keyup）与自定义快捷键 spec
+  _matchCustomHotkeyKey(ev, spec) {
+    try {
+      const p = this._parseHotkeySpec(spec);
+      if (!p || p.mouse) return false;
+      const k = (ev.key || "").toLowerCase();
+      if (!k || k === "control" || k === "shift" || k === "alt" || k === "meta") return false;
+      if (k !== p.key) return false;
+      return (
+        (!!ev.ctrlKey) === (!!p.ctrl) &&
+        (!!ev.altKey) === (!!p.alt) &&
+        (!!ev.shiftKey) === (!!p.shift)
+      );
+    } catch (e) {
+      return false;
+    }
+  },
+
+  // 匹配"事件时记录的修饰键状态"与自定义键盘 spec（不依赖 ev 对象，供 popup 路径使用）
+  _matchCustomHotkeyMods(p, mods) {
+    try {
+      if (!p || !mods) return false;
+      if (p.key === "ctrl") return !!mods.ctrl && !mods.alt && !mods.shift;
+      if (p.key === "alt") return !!mods.alt && !mods.ctrl && !mods.shift;
+      if (p.key === "shift") return !!mods.shift && !mods.ctrl && !mods.alt;
+      return (
+        (!!mods.ctrl) === (!!p.ctrl) &&
+        (!!mods.alt) === (!!p.alt) &&
+        (!!mods.shift) === (!!p.shift)
+      );
+    } catch (e) {
+      return false;
+    }
+  },
+
+  // 当前是否启用自定义快捷键（划词翻译）
+  _customHotkeyActive() {
+    return !!(this._data && this._data.customHotkeyEnabled && this._data.customHotkey);
+  },
+
+  // 划词翻译快捷键是否处于可用状态：
+  // 预设组合键（hotkeyEnabled）与自定义快捷键（customHotkeyEnabled）二选一，任一开启即视为可用。
+  _selectionHotkeyActive() {
+    return !!(this._data && (this._data.hotkeyEnabled || this._data.customHotkeyEnabled));
+  },
+
+  // 当前是否启用“添加单词”快捷键（合并方案：先选区后按绑定键）
+  // mode: "ctrl" | "alt" | "shift" | "custom"
+  _addWordHotkeyActive() {
+    if (!this._data || !this._data.addWordHotkeyEnabled) return false;
+    const mode = this._data.addWordHotkeyMode || "custom";
+    if (mode === "ctrl" || mode === "alt" || mode === "shift") return true;
+    if (mode === "custom") return !!this._data.addWordHotkey;
+    return false;
+  },
+
+  // 当前“添加单词”快捷键对应的实际 spec（用于运行时匹配）
+  _addWordHotkeySpec() {
+    if (!this._data) return "";
+    const mode = this._data.addWordHotkeyMode || "custom";
+    if (mode === "ctrl" || mode === "alt" || mode === "shift") return mode;
+    if (mode === "custom") return this._data.addWordHotkey || "";
+    return "";
+  },
+
+  // “先选区后按绑定键”：按下绑定键（keydown 触发，不要求 keyup）时，
+  // 若当前缓存了选中文本（_hotkeyPending），则立即执行「添加单词并翻译」。
+  _matchSelectionFirstKey(ev) {
+    try {
+      if (!ev) return false;
+      const d = this._data;
+      if (!d) return false;
+      if (d.addWordHotkeyMode === "ctrl") {
+        return (ev.key === "Control" || ev.key === "ctrl") && !ev.altKey && !ev.shiftKey;
+      }
+      if (d.addWordHotkeyMode === "alt") {
+        return (ev.key === "Alt" || ev.key === "alt") && !ev.ctrlKey && !ev.shiftKey;
+      }
+      if (d.addWordHotkeyMode === "shift") {
+        // Shift 在 PDF 中用于整段连选（点 A → Shift+点 B），仅作为“先选区后按绑定键”的绑定键使用
+        return (ev.key === "Shift" || ev.key === "shift") && !ev.ctrlKey && !ev.altKey;
+      }
+      if (d.addWordHotkeyMode === "custom") {
+        const p = this._parseHotkeySpec(d.addWordHotkey || "");
+        if (!p || p.mouse) return false;
+        const k = (ev.key || "").toLowerCase();
+        // 纯修饰键录制（如 Ctrl / Alt / Shift）
+        if (p.key === "ctrl" || p.key === "alt" || p.key === "shift") {
+          return (
+            (p.key === "ctrl" && k === "control") ||
+            (p.key === "alt" && k === "alt") ||
+            (p.key === "shift" && k === "shift")
+          );
+        }
+        if (!k || k === "control" || k === "shift" || k === "alt" || k === "meta") return false;
+        return (
+          k === p.key &&
+          (!!ev.ctrlKey) === (!!p.ctrl) &&
+          (!!ev.altKey) === (!!p.alt) &&
+          (!!ev.shiftKey) === (!!p.shift)
+        );
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  },
+
+  // Refresh self._data from storage. Used so that toggling
+  // "addWordHotkeyEnabled" / "customHotkeyEnabled" in the preferences takes effect
+  // immediately, without requiring a Zotero restart.
+  // 节流策略：默认 250ms 内只读一次磁盘，避免高频热路径（mousedown/keydown/keyup）
+  // 反复 IO 造成卡顿（特别是自定义快捷键 Ctrl+C 等组合键时表现明显）。
+  // 同时使用 mtime 对比——文件未变化则完全跳过反序列化。
+  _refreshPrefsFromStorage(force) {
+    try {
+      const now = Date.now();
+      if (!force && this._lastPrefsRefresh && (now - this._lastPrefsRefresh) < 250) {
+        return true;
+      }
+      if (!Zotero || !Zotero.WordTranslatorStorage) return false;
+      // 读取磁盘 mtime
+      let mtime = 0;
+      try {
+        if (typeof Zotero.WordTranslatorStorage.getApiConfigMtime === "function") {
+          mtime = Zotero.WordTranslatorStorage.getApiConfigMtime() || 0;
+        }
+      } catch (e0) {}
+      if (!force && this._lastPrefsMtime && mtime && mtime === this._lastPrefsMtime) {
+        this._lastPrefsRefresh = now;
+        return true;
+      }
+      const raw = Zotero.WordTranslatorStorage.loadApiConfig();
+      this._lastPrefsRefresh = now;
+      if (!raw || typeof raw !== "object") {
+        this._lastPrefsMtime = 0;
+        return false;
+      }
+      this._data = this._normalize(raw);
+      this._lastPrefsMtime = mtime;
+      this._sortMode = this._data.sortMode || "reverse";
+      this._activeSearchStrategy = this._getActiveSearchStrategyName();
+      return true;
+    } catch (e) {
+      this._debugLog("_refreshPrefsFromStorage ERROR: " + (e && (e.message || String(e))));
+      return false;
+    }
+  },
+
+  // 强制失效缓存，使下一次 _refreshPrefsFromStorage() 一定会读盘。
+  // preferences.js 的 save() 在写盘后会调用此方法，确保开关状态立即生效。
+  _invalidatePrefsCache() {
+    try { this._lastPrefsMtime = 0; this._lastPrefsRefresh = 0; } catch (e) {}
+  },
+
+  _hotkeyMatches(mods) {
+    try {
+      if (!mods || !mods.time) return false;
+      if (Date.now() - mods.time > 5000) return false;
+      const mod = (this._data && this._data.hotkeyModifier) || "ctrl";
+      const c = !!mods.ctrl;
+      const s = !!mods.shift;
+      const a = !!mods.alt;
+      // 鼠标按键组合已迁移至"添加单词并翻译"功能；此处只处理键盘组合键。
+      // 鼠标按键组合已迁移至“添加单词并翻译”功能；此处仅处理键盘修饰键，
+      // 不再因 mouse 字段误杀（按住 Alt/Ctrl 划词时 mousedown 记录含 mouse 字段）
+      if (mods && (mods.mouse !== undefined && mods.mouse !== null) && !c && !s && !a) {
+        return false;
+      }
+      // hotkeyModifier 只接受键盘修饰键；历史鼠标值统一视为无效配置。
+      if (mod && mod.indexOf("mouse") === 0) return false;
+      return (
+        (mod === "ctrl" && c && !s && !a) ||
+        (mod === "alt" && a && !c && !s) ||
+        (mod === "ctrl+alt" && c && a && !s)
+      );
+    } catch (e) {
+      return false;
+    }
+  },
+
+  _normalizeSelectionTranslateText(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
+  },
+
+  _matchSelectionTranslateKey(ev) {
+    try {
+      const p = this._parseHotkeySpec(this._data && this._data.customHotkey);
+      if (!p) return false;
+      const key = String(ev && ev.key || "").toLowerCase();
+      if (!key) return false;
+      if (p.key === "ctrl") return key === "control" || key === "ctrl";
+      if (p.key === "alt") return key === "alt";
+      if (p.key === "shift") return key === "shift";
+      if (key !== String(p.key || "").toLowerCase()) return false;
+      return (
+        (!!ev.ctrlKey) === (!!p.ctrl) &&
+        (!!ev.altKey) === (!!p.alt) &&
+        (!!ev.shiftKey) === (!!p.shift)
+      );
+    } catch (e) {
+      return false;
+    }
+  },
+
+  _clearSelectionTranslateState(reason) {
+    this._debugLog("clear selection translate state: " + (reason || "unknown"));
+    this._selectionTranslateSession = null;
+  },
+
+  _clearSelectionHotkeyState(reason) {
+    this._debugLog("clear selection hotkey state: " + (reason || "unknown"));
+  },
+
+  _hasFreshPendingSelection() {
+    const pending = this._selectionFirstPending;
+    return !!(pending && pending.text && Date.now() - (pending.time || 0) <= 10000);
+  },
+
+  // 判断 keyup 释放的是否为当前划词翻译快捷键的按键本体
+  _isSelectionHotkeyKeyUp(ev) {
+    try {
+      if (!ev) return false;
+      const key = String(ev.key || "").toLowerCase();
+      if (this._customHotkeyActive()) {
+        const p = this._parseHotkeySpec(this._data.customHotkey);
+        if (!p || p.mouse) return false;
+        if (p.key === "alt") return key === "alt";
+        if (p.key === "ctrl") return key === "control" || key === "ctrl";
+        if (p.key === "shift") return key === "shift";
+        return key === String(p.key || "").toLowerCase();
+      }
+      const mod = (this._data && this._data.hotkeyModifier) || "ctrl";
+      if (mod === "alt") return key === "alt";
+      if (mod === "ctrl") return key === "control" || key === "ctrl";
+      if (mod === "ctrl+alt") return key === "control" || key === "ctrl" || key === "alt";
+      return false;
+    } catch (e) {
+      return false;
+    }
+  },
+
+  // 当前选中文本是否有有效“先选区后按绑定键”缓存
+  _getSelectionFirstPending() {
+    const pending = this._selectionFirstPending;
+    if (!pending || !pending.text) return null;
+    if (Date.now() - (pending.time || 0) > 10000) return null;
+    return pending;
+  },
+
+  _inSelectionHotkeySession() {
+    const session = this._selectionTranslateSession;
+    if (!session) return false;
+    const sourceText = this._normalizeSelectionTranslateText(session.selectionText);
+    return !!(session.active && sourceText && session.selectionReady && !session.mouseDown);
+  },
+
+  // 先选区后按“添加单词”快捷键的适配器；不属于快捷键-划词翻译会话。
+  _triggerHotkeyTranslate(pending) {
+    try {
+      if (!pending || !pending.reader || !pending.text) return;
+      const now = Date.now();
+      const key = String((pending.reader && pending.reader.tabID) || "") + "|" + String(pending.text || "");
+      if (this._lastHotkeyKey === key && now - (this._lastHotkeyTime || 0) < 500) {
+        return;
+      }
+      this._lastHotkeyKey = key;
+      this._lastHotkeyTime = now;
+      const popup = this._lastSelectionPopup;
+      const pendingDoc = pending.doc || null;
+      const popupDoc = popup && popup.doc || null;
+      const doc = pendingDoc || popupDoc;
+      let btn = pending.btn || null;
+      if (!btn && doc && doc.querySelector) {
+        btn = doc.querySelector(".wordtranslator-add-btn");
+      }
+      if (!btn && popup && popup.doc === doc && popup.button &&
+          popup.button.classList && popup.button.classList.contains("wordtranslator-add-btn")) {
+        btn = popup.button;
+      }
+
+      this._debugLog(
+        "hotkey adapter: word=" + JSON.stringify(pending.text) +
+        ", hasPendingDoc=" + !!pendingDoc +
+        ", hasPendingAppend=" + (typeof pending.append === "function") +
+        ", hasPopupDoc=" + !!popupDoc +
+        ", hasPopupButton=" + !!(popup && popup.button) +
+        ", hasButton=" + !!btn +
+        ", buttonConnected=" + !!(btn && btn.isConnected)
+      );
+      this._debugLog("hotkey translate: word=" + JSON.stringify(pending.text));
+
+      // 快捷键路径只负责适配选区缓存，UI 生命周期和业务处理统一交给入口函数。
+      this._handleAddWordTrigger({
+        source: "hotkey",
+        doc,
+        btn,
+        append: pending.append || null,
+        reader: pending.reader,
+        text: pending.text,
+      });
+    } catch (e) {
+      this._debugLog("_triggerHotkeyTranslate ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _getReaderItemID(reader) {
+    if (!reader) return null;
+
+    const candidates = [
+      reader.itemID,
+      reader.itemId,
+      reader._itemID,
+      reader.item && reader.item.id,
+    ];
+
+    for (const value of candidates) {
+      if (value !== undefined && value !== null && value !== "") {
+        const id = Number(value);
+        if (Number.isFinite(id) && id > 0) {
+          return id;
+        }
+      }
+    }
+
+    try {
+      if (reader.tabID && Zotero.Reader && Zotero.Reader.getByTabID) {
+        const r = Zotero.Reader.getByTabID(reader.tabID);
+        if (r) {
+          const id = Number(r.itemID || r.itemId);
+          if (Number.isFinite(id) && id > 0) {
+            return id;
+          }
+        }
+      }
+    } catch (e) {
+      this._debugLog(
+        "_getReaderItemID ERROR: " +
+        (e && (e.stack || e.message || String(e)))
+      );
+    }
+
+    return null;
+  },
+
+
+  /**
+   * ? reader ???/?? ID ??? Item Pane ?????? ID?
+   * Zotero ?? PDF ????Item Pane ???????????????
+   * ?? null ??????????? ID ?? fallback??
+   */
+  _getItemPaneID(attachmentOrItemID) {
+    try {
+      let itemID = Number(attachmentOrItemID);
+      if (!Number.isFinite(itemID) || itemID <= 0) return null;
+
+      const item = Zotero.Items.get(itemID);
+      if (!item) return null;
+
+      // ?? -> ???
+      if (typeof item.isAttachment === "function" ? item.isAttachment() : item.isAttachment) {
+        if (item.parentID) {
+          const parentID = Number(item.parentID);
+          this._debugLog("resolve pane ID: attachment " + itemID + " -> parent " + parentID);
+          return parentID;
+        }
+        // ??????????????????? ID
+        return itemID;
+      }
+
+      // ???? -> ??
+      return itemID;
+    } catch (e) {
+      this._debugLog(
+        "_getItemPaneID ERROR: " +
+        (e && (e.stack || e.message || String(e)))
+      );
+      return null;
+    }
+  },
+
+  async _addWordForReader(reader, word) {
+    this._debugLog(
+      "_addWordForReader called: word=" + JSON.stringify(word) +
+      ", reader=" + !!reader +
+      ", reader.itemID=" + (reader && reader.itemID)
+    );
+
+    const readerItemID = this._getReaderItemID(reader);
+    if (!readerItemID) {
+      this._debugLog(
+        "_addWordForReader ABORT: itemID empty; reader keys=" +
+        Object.keys(reader || {}).join(",")
+      );
+      try {
+        Services.prompt.alert(
+          Zotero.getMainWindow(),
+          "Word Translator",
+          "无法获取当前 PDF 对应的条目 ID。请查看 startup-debug.log。"
+        );
+      } catch (e) {}
+      return;
+    }
+
+    // ???reader.itemID ? PDF ?? ID?Item Pane ??????? ID
+    const paneID = this._getItemPaneID(readerItemID) || readerItemID;
+    this._debugLog(
+      "_addWordForReader resolve: readerItemID=" + readerItemID +
+      ", paneID=" + paneID
+    );
+
+    const normWord = String(word || "").trim();
+    if (!normWord) {
+      this._debugLog("_addWordForReader ABORT: word empty");
+      return;
+    }
+    const list = this._itemWords.get(Number(paneID)) || [];
+    const existingCard = list.find(function (c) {
+      return c && String(c.word || "").toLowerCase() === normWord.toLowerCase();
+    });
+    if (existingCard) {
+      this._debugLog("_addWordForReader skip (duplicate): " + JSON.stringify(normWord));
+      // 重复选中视为一次最近使用：保留同一个 card，不重复调用 API，
+      // 但将其移动到原始数组末尾，交由当前 sortMode 重新计算显示位置。
+      try {
+        const existingTranslation = String(existingCard.translation || "").trim();
+        if (existingTranslation && existingTranslation !== "翻译中…") {
+          this._updateTempEditArea(normWord, existingTranslation);
+        }
+        const existingIndex = list.indexOf(existingCard);
+        if (existingIndex >= 0 && existingIndex !== list.length - 1) {
+          list.splice(existingIndex, 1);
+          list.push(existingCard);
+          this._itemWords.set(Number(paneID), list);
+          this._persistWords();
+          this._applyWordBookView(Number(paneID), { source: "duplicate-reorder" });
+        }
+      } catch (e) {
+        this._debugLog("duplicate recent-use update ERROR: " + (e && (e.message || String(e))));
+      }
+      return;
+    }
+    const card = { word: normWord, translation: "翻译中…", pending: true };
+    list.push(card);
+    this._itemWords.set(Number(paneID), list);
+    this._persistWords();
+    this._debugLog("_addWordForReader added: paneID=" + paneID + ", count=" + list.length);
+
+    // 新单词加入后回到第 1 页，便于用户确认刚加入的词（保留搜索词）
+    try {
+      const st = this._getWordBookViewState(Number(paneID));
+      if (st && st.page !== 1) {
+        st.page = 1;
+        this._wordBookViewState.set(Number(paneID), st);
+      }
+    } catch (e) {}
+
+    this._applyWordBookView(Number(paneID), { source: "addWord" });
+
+    try {
+      const api = this.getActiveApi();
+      this._debugLog(
+        "translate start: api=" + JSON.stringify(api ? {
+          name: api.name, provider: api.provider,
+          baseUrl: api.baseUrl, model: api.model, hasKey: !!api.apiKey
+        } : null)
+      );
+      const result = await this.translate(word);
+      card.translation = result || "翻译失败";
+      this._debugLog("translate success: " + JSON.stringify(card.translation));
+    } catch (e) {
+      card.translation = "翻译失败";
+      this._debugLog("translate ERROR: " + (e && (e.stack || e.message || String(e))));
+    } finally {
+      card.pending = false;
+      this._flushAndPersistWords();
+      this._applyWordBookView(Number(paneID), { source: "translate-finish" });
+      // Beta: udpate temp edit area
+      try {
+        this._updateTempEditArea(normWord, card.translation);
+      } catch (e) {
+        this._debugLog("_updateTempEditArea ERROR in finally: " + (e && (e.message || String(e))));
+      }
+      // 兜底：若当前激活的 Item Pane 与本卡片归属的 paneID 相同，
+      // 直接重渲染当前 body，确保单词本立即显示新卡片/新翻译
+      try {
+        const win = Zotero.getMainWindow();
+        const doc = win && win.document;
+        const zp = doc && doc.getElementById && doc.getElementById("zotero-item-pane");
+        const curItemId = zp && zp.getAttribute && zp.getAttribute("data-itemid");
+        if (curItemId && Number(curItemId) === Number(paneID)) {
+          await this._rerenderCurrentItemPane("addWord-finish");
+        }
+      } catch (e2) {}
+      this._debugLog("_addWordForReader finished: paneID=" + paneID);
+    }
+  },
+
+  _refreshItemPane(itemID, viewInfo) {
+    const id = Number(itemID);
+    if (!Number.isFinite(id) || id <= 0) return;
+    this._debugLog("_refreshItemPane: id=" + id + ", hasViewInfo=" + !!viewInfo);
+    try {
+      const pane = this._currentPaneContext;
+      const win = Zotero.getMainWindow();
+      const doc = pane && pane.doc && pane.doc.defaultView ? pane.doc : (win && win.document);
+      const body = pane && pane.body && pane.body.isConnected
+        ? pane.body
+        : (doc && doc.querySelector && doc.querySelector(".wordtranslator-pane-body"));
+      if (!body || !this._renderPaneBody) return;
+      this._currentPaneContext = {
+        doc,
+        body,
+        itemID: id,
+        paneUID: body.dataset && body.dataset.wtPaneUid || null,
+      };
+      try { body.dataset.paneItemID = String(id); } catch (e) {}
+      this._renderPaneBody(doc, body, { id, viewInfo: viewInfo || null });
+    } catch (e) {
+      this._debugLog("_refreshItemPane ERROR: " + (e && (e.message || String(e))));
+    }
+  },
+
+  _deleteWordForItem(itemID, index) {
+    const id = Number(itemID);
+    const list = this._itemWords.get(id);
+    if (!list) return;
+    list.splice(index, 1);
+    this._itemWords.set(id, list);
+    this._persistWords();
+    this._applyWordBookView(id, { source: "delete" });
+  },
+
+  async _retryTranslationForCard(itemID, index, card) {
+    const id = Number(itemID);
+    const list = this._itemWords.get(id);
+    const currentCard = list && list[index];
+    if (!list || !currentCard || currentCard !== card) return;
+
+    currentCard.translation = "翻译中…";
+    currentCard.pending = true;
+    this._persistWords();
+    this._applyWordBookView(id, { source: "retry-translate" });
+
+    try {
+      const result = await this.translate(currentCard.word);
+      currentCard.translation = result || "翻译失败";
+    } catch (e) {
+      currentCard.translation = "翻译失败";
+    } finally {
+      currentCard.pending = false;
+      this._flushAndPersistWords();
+      this._applyWordBookView(id, { source: "retry-translate-finish" });
+    }
+  },
+
+  _setActiveApiForItem(itemID, idx) {
+    if (!this._data) return;
+    this._data.activeApiIndex = Number(idx);
+    this._saveData();
+  },
+
+  async _openPreferencesPane() {
+    try {
+      this._debugLog("_openPreferencesPane called");
+      // 1. 先尝试使用 Zotero.Utilities.openPreferences 打开本插件配置面板
+      try {
+        if (Zotero && Zotero.Utilities && typeof Zotero.Utilities.openPreferences === "function") {
+          Zotero.Utilities.openPreferences(this._paneID || "wordtranslator-prefs");
+          this._debugLog("opened via Zotero.Utilities.openPreferences");
+          return;
+        }
+      } catch (e1) {
+        this._debugLog("Zotero.Utilities.openPreferences ERROR: " + (e1 && e1.message || e1));
+      }
+      // 2. 回退：直接打开 Zotero 偏好设置窗口（不切换到本插件 tab）
+      try {
+        const win = Zotero.getMainWindow();
+        if (win && typeof win.openPreferences === "function") {
+          win.openPreferences();
+          this._debugLog("opened via win.openPreferences");
+        } else if (win && win.ZoteroPane && typeof win.ZoteroPane.openPreferences === "function") {
+          win.ZoteroPane.openPreferences();
+          this._debugLog("opened via win.ZoteroPane.openPreferences");
+        } else {
+          this._debugLog("no available openPreferences API");
+        }
+      } catch (e2) {
+        this._debugLog("openPreferences fallback ERROR: " + (e2 && e2.message || e2));
+      }
+    } catch (e) {
+      this._debugLog("_openPreferencesPane ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _onZoomFontSize(itemID, delta) {
+    try {
+      if (!this._data) { this._debugLog("_onZoomFontSize ABORT: no data"); return; }
+      const MIN = 9, MAX = 24, STEP = 1;
+      const cur = Number(this._data.fontSize) || 13;
+      let next = cur + delta * STEP;
+      if (next < MIN) next = MIN;
+      if (next > MAX) next = MAX;
+      this._data.fontSize = next;
+      this._saveData();
+      this.applyFontSizeToPane();
+      this._debugLog("_onZoomFontSize: " + cur + " -> " + next);
+    } catch (e) {
+      this._debugLog("_onZoomFontSize ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  applyFontSizeToPane() {
+    try {
+      const fs = Number(this._data && this._data.fontSize) || 13;
+      // 优先：只对当前 pane 里的 .wt-card-text 设置字号
+      const cur = this._currentPane;
+      if (cur && cur.body) {
+        const nodes = cur.body.querySelectorAll(".wt-card-text");
+        for (let i = 0; i < nodes.length; i++) nodes[i].style.fontSize = fs + "px";
+        this._debugLog("applyFontSizeToPane: " + fs + "px applied to " + nodes.length + " .wt-card-text via _currentPane");
+        return;
+      }
+      // 回退：扫描主 doc（可能在同一 doc 中）
+      const win = Zotero.getMainWindow();
+      const doc = win && win.document;
+      if (!doc) return;
+      const nodes = doc.querySelectorAll(".wt-card-text");
+      let n = 0;
+      for (let i = 0; i < nodes.length; i++) { nodes[i].style.fontSize = fs + "px"; n++; }
+      // 再回退：遍历所有已知 paneUID，对每个用 dataset.wtPaneUid 找 body
+      if (n === 0 && this._panelUIDs && this._panelUIDs.size > 0) {
+        for (const [itemID, entry] of this._panelUIDs) {
+          if (!entry || !entry.paneUID) continue;
+          let body = doc.querySelector && doc.querySelector("[data-wt-pane-uid=\"" + entry.paneUID + "\"]");
+          if (body) {
+            const inner = body.querySelectorAll(".wt-card-text");
+            for (let i = 0; i < inner.length; i++) { inner[i].style.fontSize = fs + "px"; n++; }
+            continue;
+          }
+          try {
+            const browsers = doc.getElementsByTagName && doc.getElementsByTagName("browser");
+            if (browsers) {
+              for (let i2 = 0; i2 < browsers.length; i2++) {
+                const sd = browsers[i2].contentDocument;
+                if (!sd) continue;
+                const b = sd.querySelector("[data-wt-pane-uid=\"" + entry.paneUID + "\"]");
+                if (b) {
+                  const inner = b.querySelectorAll(".wt-card-text");
+                  for (let i = 0; i < inner.length; i++) { inner[i].style.fontSize = fs + "px"; n++; }
+                  break;
+                }
+              }
+            }
+          } catch (e2) { /* ignore */ }
+        }
+      }
+      this._debugLog("applyFontSizeToPane: " + fs + "px applied to " + n + " node(s) (fallback)");
+    } catch (e) {
+      this._debugLog("applyFontSizeToPane ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  async _reloadDataFromDisk() {
+    try {
+      let raw = null;
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.loadApiConfig === "function") {
+        try { raw = Zotero.WordTranslatorStorage.loadApiConfig(); } catch (e0) {}
+      }
+      if (!raw) {
+        const rawStr = Zotero.Prefs.get("extensions.zotero.wordtranslator.config", true);
+        if (rawStr) { try { raw = JSON.parse(rawStr); } catch (e1) {} }
+      }
+      // 仅当读到有效数据时才覆盖内存中的 _data；
+      // 读到空时保留现有 _data（避免写入失败导致内存被冲掉）
+      if (raw && typeof raw === "object") {
+        this._data = this._normalize(raw);
+      }
+      this._debugLog("_reloadDataFromDisk: apis=" + ((this._data && this._data.apis && this._data.apis.length) || 0) + ", rawFromDisk=" + !!raw);
+    } catch (e) {
+      this._debugLog("_reloadDataFromDisk ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _refreshProvidersInAllPanes(currentItemID) {
+    return (async () => {
+      try {
+        await this._reloadDataFromDisk();
+        const context = this._currentPaneContext;
+        const id = context && Number(context.itemID) || Number(currentItemID);
+        if (Number.isFinite(id) && id > 0) this._refreshItemPane(id);
+        this._debugLog("_refreshProvidersInAllPanes: direct refresh=" + (Number.isFinite(id) && id > 0) + ", currentItemID=" + currentItemID);
+      } catch (e) {
+        this._debugLog("_refreshProvidersInAllPanes ERROR: " + (e && (e.stack || e.message || String(e))));
+      }
+    })();
+  },
+
+  // 强制按当前 Zotero.ItemPane 激活的 item id 重渲染单词本 body
+  async _rerenderCurrentItemPane(reason) {
+    try {
+      const context = this._currentPaneContext;
+      if (context && context.body && context.body.isConnected && Number.isFinite(Number(context.itemID)) && Number(context.itemID) > 0) {
+        this._renderPaneBody(context.doc, context.body, { id: Number(context.itemID) });
+        this._debugLog("_rerenderCurrentItemPane(" + reason + "): context itemID=" + context.itemID);
+        return;
+      }
+      const win = Zotero.getMainWindow();
+      const doc = win && win.document;
+      const zp = doc && doc.getElementById && doc.getElementById("zotero-item-pane");
+      const curItemId = zp && zp.getAttribute && zp.getAttribute("data-itemid");
+      if (curItemId && this._renderPaneBody) {
+        const item = await Zotero.Items.getAsync(Number(curItemId));
+        const body = doc.querySelector && doc.querySelector(".wordtranslator-pane-body");
+        if (item && body) {
+          this._renderPaneBody(doc, body, item);
+          this._debugLog("_rerenderCurrentItemPane(" + reason + "): itemID=" + item.id);
+        }
+      }
+    } catch (e3) {
+      this._debugLog("_rerenderCurrentItemPane(" + reason + ") ERROR: " + (e3 && e3.message || e3));
+    }
+  },
+
+  _clearAllWordsForItem(itemID) {
+    const id = Number(itemID);
+    this._itemWords.set(id, []);
+    this._wordBookViewState.set(id, { page: 1, search: "" }); // 清空后回到第 1 页并清空搜索
+    this._persistWords();
+    this._applyWordBookView(id, { source: "clear" });
+  },
+
+  // ---------- 注册 Item Pane 面板 ----------
+  registerItemPaneSection() {
+    try {
+      const key = Zotero.ItemPaneManager.registerSection({
+        paneID: "wordtranslator",
+        pluginID: this._addonID,
+        header: {
+          l10nID: "wordtranslator-itemPaneSection-header",
+          icon: "chrome://wordtranslator/content/icons/wordtranslator-section-16.svg",
+        },
+        sidenav: {
+          l10nID: "wordtranslator-itemPaneSection-sidenav",
+          icon: "chrome://wordtranslator/content/icons/wordtranslator-section-20.svg",
+          orderable: true,
+        },
+        bodyXHTML: '<html:div class="wordtranslator-pane-body" style="padding: 8px;"></html:div>',
+        onInit: ({ body, refresh }) => {
+          try {
+            this._paneRefresh = refresh;
+            const uid = Zotero.Utilities.randomString(8);
+            if (body) {
+              body.dataset.wtPaneUid = uid;
+              body._wtRefresh = refresh;
+            }
+            this._debugLog("pane onInit: uid=" + uid + ", hasRefresh=" + !!refresh);
+            if (!this._currentPaneContext || !this._currentPaneContext.body || !this._currentPaneContext.body.isConnected) {
+              this._currentPaneContext = { doc: body && body.ownerDocument, body, itemID: null, paneUID: uid };
+            }
+          } catch (e) {
+            this._debugLog("pane onInit ERROR: " + (e && (e.stack || e.message || String(e))));
+          }
+        },
+        onDestroy: ({ body }) => {
+          const uid = body.dataset.wtPaneUid;
+          if (this._currentPaneContext && this._currentPaneContext.body === body) {
+            this._currentPaneContext = null;
+          }
+          if (uid) {
+            for (const [itemID, entry] of this._panelUIDs) {
+              if (entry.paneUID === uid) this._panelUIDs.delete(itemID);
+            }
+          }
+        },
+        onItemChange: ({ item, body, setEnabled }) => {
+          setEnabled(true);
+          try {
+            if (body && item && Number.isFinite(Number(item.id)) && Number(item.id) > 0) {
+              const itemID = Number(item.id);
+              body.dataset.itemID = String(itemID);
+              this._currentPaneContext = {
+                doc: body.ownerDocument,
+                body,
+                itemID,
+                paneUID: body.dataset && body.dataset.wtPaneUid || null,
+              };
+            }
+          } catch (e) {}
+        },
+        onRender: ({ doc, body, item }) => {
+          try {
+            this._debugLog("pane onRender: itemID=" + (item && item.id) + ", body=" + !!body);
+            const rendered = this._renderPaneBody(doc, body, item);
+            if (rendered !== false) this._applyPaneL10nFallback(doc, body);
+          } catch (e) {
+            this._debugLog("onRender ERROR: " + (e && (e.stack || e.message || String(e))));
+          }
+        },
+      });
+      if (key) this._paneKey = key;
+      this._debugLog("registerItemPaneSection key=" + key);
+    } catch (e) {
+      this._debugLog("registerItemPaneSection ERROR: " + (e && (e.stack || e.message || e)));
+    }
+  },
+
+  // DOM 兜底：Fluent 未加载时直接设置 header label 和 sidenav tooltiptext
+  _applyPaneL10nFallback(doc, body) {
+    try {
+      if (!doc || !body) return;
+      const isZh = Zotero.locale && Zotero.locale.startsWith("zh");
+      const headerLabel = isZh ? "单词本" : "Word List";
+      const sidenavTooltip = isZh ? "单词翻译" : "Word Translator";
+      // 向上查找 item-pane-section 容器
+      let section = body.closest ? body.closest("item-pane-section") : null;
+      if (!section) {
+        const p = body.parentElement;
+        if (p) section = p.closest ? p.closest("item-pane-section") : null;
+      }
+      if (section) {
+        // header label
+        const labelEl = section.querySelector ? section.querySelector(".head .title, .head .label, .head label") : null;
+        if (labelEl) {
+          if (!labelEl.textContent || labelEl.textContent.trim() === "") {
+            labelEl.textContent = headerLabel;
+          }
+        }
+        // sidenav tooltiptext（在 sidebar 侧）
+        const sidenavBtn = doc.querySelector('[data-pane-id="wordtranslator"]');
+        if (sidenavBtn) {
+          sidenavBtn.setAttribute("tooltiptext", sidenavTooltip);
+          sidenavBtn.setAttribute("title", sidenavTooltip);
+        }
+      }
+      // 另一种结构：直接在 sidenav-toolbar 内查找
+      const sidenavBtns = doc.querySelectorAll('[data-pane-id="wordtranslator"], [data-pane="wordtranslator"]');
+      for (const btn of sidenavBtns) {
+        if (btn.classList && (btn.classList.contains("sidenav-button") || btn.tagName === "toolbarbutton" || btn.getAttribute("data-l10n-id") === "wordtranslator-itemPaneSection-sidenav")) {
+          btn.setAttribute("tooltiptext", sidenavTooltip);
+          btn.setAttribute("title", sidenavTooltip);
+        }
+      }
+      // 最后兜底：部分 Zotero 版本把 l10n 节点放在独立的主窗口文档中，
+      // 通过 data-l10n-id 直接定位并写入原生 tooltip 属性。
+      const l10nBtns = doc.querySelectorAll('[data-l10n-id="wordtranslator-itemPaneSection-sidenav"]');
+      for (const btn of l10nBtns) {
+        btn.setAttribute("tooltiptext", sidenavTooltip);
+        btn.setAttribute("title", sidenavTooltip);
+      }
+    } catch (e) {
+      this._debugLog("_applyPaneL10nFallback ERROR: " + (e && (e.stack || e.message || e)));
+    }
+  },
+
+  _createEl(doc, tag, attrs, children) {
+    const HTML_NS = "http://www.w3.org/1999/xhtml";
+    const e = doc.createElementNS(HTML_NS, tag);
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) {
+        // null/undefined/false 表示不设置该属性；尤其避免 disabled=null 仍让按钮进入禁用态。
+        if (v === null || v === undefined || v === false) continue;
+        if (k === "class") e.className = v;
+        else if (k === "style") e.style.cssText = v;
+        else e.setAttribute(k, v);
+      }
+    }
+    (children || []).forEach((c) => e.append(c));
+    return e;
+  },
+  _createTxt(doc, s) {
+    return doc.createTextNode(String(s ?? ""));
+  },
+
+  _getSortedIndices(raw, mode) {
+    if (!raw || !raw.length) return [];
+    const indices = raw.map((_, i) => i);
+    switch (mode) {
+      case "forward":
+        return indices;
+      case "reverse":
+        return indices.slice().reverse();
+      case "alpha":
+        return indices.slice().sort((a, b) => {
+          const wa = (raw[a].word || "").toLowerCase();
+          const wb = (raw[b].word || "").toLowerCase();
+          return wa.localeCompare(wb);
+        });
+      default:
+        return indices.slice().reverse();
+    }
+  },
+
+  _registerWordBookSearchStrategy(name, matcher) {
+    const key = String(name || "").trim();
+    if (!key || typeof matcher !== "function") return false;
+    this._wordBookSearchStrategies.set(key, matcher);
+    return true;
+  },
+
+  _getWordBookSearchStrategy(name) {
+    const key = String(name || "").trim();
+    if (this._wordBookSearchStrategies.has(key)) return this._wordBookSearchStrategies.get(key);
+    return this._wordBookSearchStrategies.get("prefix");
+  },
+
+  _getActiveSearchStrategyName() {
+    const cfg = this._data && this._data.searchStrategy;
+    const key = String(cfg || "prefix").trim();
+    return this._wordBookSearchStrategies.has(key) ? key : "prefix";
+  },
+
+  _getWordBookSearchMatches(rawWords, search, strategyName) {
+    const kw = String(search || "").trim().toLowerCase();
+    if (!kw) return rawWords.map((_, index) => index);
+    const matcher = this._getWordBookSearchStrategy(strategyName);
+    return rawWords.reduce((matches, word, index) => {
+      try {
+        if (matcher && matcher(word, kw)) matches.push(index);
+      } catch (e) {
+        this._debugLog("search strategy ERROR: " + (e && (e.message || String(e))));
+      }
+      return matches;
+    }, []);
+  },
+
+  // ---------- 单词本分页与搜索（临时界面状态，不写盘） ----------
+  _getWordBookViewState(itemID) {
+    let st = this._wordBookViewState.get(Number(itemID));
+    if (!st) {
+      st = { page: 1, search: "" };
+      this._wordBookViewState.set(Number(itemID), st);
+    }
+    return st;
+  },
+
+  // 搜索匹配 → 排序 → 分页。返回 { indices, page, pageCount, total }
+  _computePagedIndices(rawWords, sortMode, search, page, pageSize, strategyName) {
+    const matched = new Set(this._getWordBookSearchMatches(rawWords, search, strategyName));
+    const filtered = this._getSortedIndices(rawWords, sortMode)
+      .filter((origIdx) => matched.has(origIdx));
+    const total = filtered.length;
+    const size = Math.max(1, Number(pageSize) || 10);
+    const pageCount = Math.max(1, Math.ceil(total / size));
+    let cur = Math.max(1, Math.floor(Number(page) || 1));
+    if (cur > pageCount) cur = pageCount;
+    const start = (cur - 1) * size;
+    const indices = filtered.slice(start, start + size);
+    return { indices, page: cur, pageCount, total };
+  },
+
+  _setWordBookPage(itemID, page) {
+    const id = Number(itemID);
+    const st = this._getWordBookViewState(id);
+    this._debugLog("pagination request: itemID=" + id + ", requestedPage=" + page + ", currentPage=" + st.page);
+    this._applyWordBookView(id, { source: "pagination", page: page });
+  },
+
+  // 触发层：一次 input 只产生一个搜索事件，防抖后交给统一后置处理器。
+  _onWordBookSearchTrigger(itemID, keyword) {
+    const id = Number(itemID);
+    const value = String(keyword || "");
+    this._debugLog("search trigger: itemID=" + id + ", keyword=" + JSON.stringify(value));
+
+    const oldTimer = this._wordBookSearchTimers.get(id);
+    if (oldTimer) {
+      try { clearTimeout(oldTimer); } catch (e) {}
+    }
+    const timer = setTimeout(() => {
+      this._wordBookSearchTimers.delete(id);
+      this._handleWordBookSearchEvent({ type: "input", itemID: id, keyword: value });
+      // _refreshItemPane 会重建 input；重建后恢复焦点和光标位置，保证可连续输入。
+      try {
+        const pane = this._currentPaneContext;
+        const input = pane && pane.body && pane.body.isConnected
+          ? pane.body.querySelector('input[type="search"]') : null;
+        if (input) {
+          input.focus();
+          const end = String(input.value || "").length;
+          if (typeof input.setSelectionRange === "function") input.setSelectionRange(end, end);
+        }
+      } catch (e) {
+        this._debugLog("search focus restore ERROR: " + (e && (e.message || String(e))));
+      }
+    }, 250);
+    this._wordBookSearchTimers.set(id, timer);
+  },
+
+  // 搜索事件触发后逻辑：更新视图状态，并统一执行检索、排序、分页和重渲染。
+  _handleWordBookSearchEvent(event) {
+    const e = event || {};
+    const id = Number(e.itemID);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const st = this._getWordBookViewState(id);
+    st.search = String(e.keyword || "");
+    st.page = 1;
+    this._wordBookViewState.set(id, st);
+    this._debugLog("search post-trigger: itemID=" + id + ", strategy=" + (this._getActiveSearchStrategyName()) + ", keyword=" + JSON.stringify(st.search));
+    this._applyWordBookView(id, { source: e.type || "search" });
+  },
+
+  // 统一的单词本视图更新调度：检索 → 排序 → 分页 → 重渲染。所有业务触发点汇聚于此。
+  _applyWordBookView(itemID, options) {
+    const id = Number(itemID);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const opts = options || {};
+    const st = this._getWordBookViewState(id);
+    const rawWords = this._itemWords.get(id) || [];
+    const pageSize = Math.max(1, Number(this._data && this._data.pageSize) || 10);
+    const strategyName = this._getActiveSearchStrategyName();
+    const info = this._computePagedIndices(rawWords, this._sortMode, st.search, opts.page || st.page, pageSize, strategyName);
+    st.page = info.page;
+    this._wordBookViewState.set(id, st);
+    this._debugLog("word-book post-trigger: source=" + (opts.source || "unknown") + ", itemID=" + id + ", strategy=" + strategyName + ", total=" + info.total + ", page=" + info.page + "/" + info.pageCount);
+    this._refreshItemPane(id, info);
+  },
+
+  // 返回需要显示的"空态/搜索无结果"提示节点；有结果时返回 null
+  _getEmptyHint(doc, rawWords, search, pageInfo) {
+    const HTML_NS = "http://www.w3.org/1999/xhtml";
+    const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
+    const txt = (s) => this._createTxt(doc, s);
+    const kw = String(search || "").trim();
+    if (rawWords.length === 0) {
+      return el("div", { style: "color:GrayText;font-size:12px;padding:6px 4px;" }, [
+        txt("暂无单词。打开 PDF 划词后，点击「" + (this._data && this._data.contextMenuLabel || "添加单词并翻译") + "」即可加入。")
+      ]);
+    }
+    // 只在过滤后的结果确实为空时才显示"未找到"提示
+    if (kw && pageInfo && pageInfo.indices && pageInfo.indices.length === 0) {
+      return el("div", { style: "color:GrayText;font-size:12px;padding:6px 4px;" }, [
+        txt("未找到与" + kw + "匹配的单词。")
+      ]);
+    }
+    return null;
+  },
+
+  _setSortMode(mode) {
+    if (mode !== "forward" && mode !== "reverse" && mode !== "alpha") return false;
+    this._sortMode = mode;
+    if (this._data) {
+      this._data.sortMode = mode;
+      this._saveData();
+    }
+    this._debugLog("_setSortMode: mode=" + mode + ", saved=true");
+    return true;
+  },
+
+  _getSortIconHTML(mode) {
+    const icons = {
+      forward: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/><polyline points="7 10 3 14 7 18"/></svg>',
+      reverse: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/><polyline points="17 10 21 14 17 18"/></svg>',
+      alpha: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><text x="2" y="10" font-size="10" font-family="Arial" font-weight="700" fill="currentColor" stroke="none">A</text><text x="11" y="10" font-size="10" font-family="Arial" font-weight="700" fill="currentColor" stroke="none">Z</text><polyline points="19 18 21 14 19 10 17 14 19 18"/></svg>'
+    };
+    return icons[mode] || icons.reverse;
+  },
+
+  _getSortLabel(mode) {
+    const map = { forward: "顺序", reverse: "倒序", alpha: "字母" };
+    return map[mode] || "倒序";
+  },
+
+  _renderPaneBody(doc, body, item) {
+    // 使用 HTML 命名空间创建元素（body 是 html:div，doc 是 XUL document）
+    const HTML_NS = "http://www.w3.org/1999/xhtml";
+    const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
+    const txt = (s) => this._createTxt(doc, s);
+
+    // 优先级：onRender 传入的 item.id → body.dataset.paneItemID（_refreshItemPane 显式标记）
+    // → body.dataset.itemID（onItemChange 保存）→ #zotero-item-pane 的 data-itemid。
+    let itemID = Number(item && item.id);
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const context = this._currentPaneContext;
+        if (context && Number.isFinite(Number(context.itemID)) && Number(context.itemID) > 0) {
+          itemID = Number(context.itemID);
+        }
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const explicit = body && body.dataset && body.dataset.paneItemID;
+        if (explicit) itemID = Number(explicit);
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const stored = body && body.dataset && body.dataset.itemID;
+        if (stored) itemID = Number(stored);
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      try {
+        const win = Zotero.getMainWindow();
+        const zp = win && win.document && win.document.getElementById && win.document.getElementById("zotero-item-pane");
+        const cur = zp && zp.getAttribute && zp.getAttribute("data-itemid");
+        if (cur) itemID = Number(cur);
+      } catch (e) {}
+    }
+    if (!Number.isFinite(itemID) || itemID <= 0) {
+      this._debugLog("_renderPaneBody skipped: invalid itemID; item=" + (item && item.id) + ", context=" + (this._currentPaneContext && this._currentPaneContext.itemID));
+      return false;
+    }
+    body.replaceChildren();
+
+    const rawWords = this._itemWords.get(itemID) || [];
+
+    // 缓存 panelUID 用于后续刷新
+    if (body.dataset.wtPaneUid) {
+      this._panelUIDs.set(itemID, {
+        paneUID: body.dataset.wtPaneUid,
+        refresh: body._wtRefresh,
+      });
+      this._debugLog(
+        "pane mapped: itemID=" + itemID +
+        ", uid=" + body.dataset.wtPaneUid +
+        ", hasRefresh=" + !!body._wtRefresh
+      );
+    }
+
+    // 头部采用两行布局：第一行是“图标 + 单词本 + 菜单 + 清空”，第二行是 API 和常用操作。
+    const header = el("div", { style: "display:flex;flex-direction:column;gap:5px;margin:0 0 8px;width:100%;padding:0 0 6px;border-bottom:1px solid rgba(0,0,0,0.08);box-sizing:border-box;" });
+    const titleRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;" });
+    const controlsRow = el("div", { style: "display:flex;align-items:center;gap:5px;width:100%;min-width:0;min-height:26px;" });
+    const titleGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex:1;min-width:0;" });
+    const titleActions = el("div", { style: "display:flex;align-items:center;gap:6px;flex-shrink:0;" });
+
+    const title = el("strong", { title: "单词本", style: "white-space:nowrap;font-size:14px;line-height:20px;" }, [txt("单词本")]);
+    titleGroup.append(title);
+
+    const apiSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换翻译 API", "aria-label": "当前翻译 API" });
+    this._fillApiSelect(doc, apiSelect);
+    apiSelect.addEventListener("change", () => {
+      const idx = parseInt(apiSelect.value, 10);
+      this._setActiveApiForItem(itemID, idx);
+    });
+    controlsRow.append(apiSelect);
+
+    const compactButtonStyle = "width:28px;height:26px;padding:0;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:ButtonText;box-sizing:border-box;flex:0 0 28px;";
+    const refreshBtn = el("button", { title: "刷新服务商列表", "aria-label": "刷新服务商列表", style: compactButtonStyle }, []);
+    refreshBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"23 4 23 10 17 10\"></polyline><polyline points=\"1 20 1 14 7 14\"></polyline><path d=\"M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15\"></path></svg>";
+    refreshBtn.addEventListener("click", () => this._refreshProvidersInAllPanes(itemID));
+    controlsRow.append(refreshBtn);
+
+    const settingsBtn = el("button", { title: "设置", "aria-label": "设置", style: compactButtonStyle }, []);
+    settingsBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"3\" y1=\"6\" x2=\"21\" y2=\"6\"></line><line x1=\"3\" y1=\"12\" x2=\"21\" y2=\"12\"></line><line x1=\"3\" y1=\"18\" x2=\"21\" y2=\"18\"></line></svg>";
+    settingsBtn.addEventListener("click", () => this._openPreferencesPane());
+    titleActions.append(settingsBtn);
+
+    const sortBtn = el("button", { title: this._getSortLabel(this._sortMode), "aria-label": "切换排序方式", style: compactButtonStyle }, []);
+    if (this._sortMode === "reverse") {
+      sortBtn.textContent = "倒";
+    } else if (this._sortMode === "forward") {
+      sortBtn.textContent = "正";
+    } else { // alpha
+      sortBtn.innerHTML = this._getSortIconHTML("alpha");
+    }
+    sortBtn.addEventListener("click", () => {
+      const modes = ["reverse", "forward", "alpha"];
+      const current = this._sortMode;
+      const idx = modes.indexOf(current);
+      const next = modes[(idx + 1) % modes.length];
+      this._debugLog("sort click: current=" + current + ", next=" + next);
+      if (!this._setSortMode(next)) return;
+      // 排序改变后回到第 1 页（保留搜索词），统一走 _applyWordBookView。
+      this._applyWordBookView(itemID, { source: "sort", page: 1 });
+    });
+    controlsRow.append(sortBtn);
+
+    const zoomInBtn = el("button", { title: "放大字体", "aria-label": "放大字体", style: compactButtonStyle }, []);
+    zoomInBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><text x=\"6\" y=\"17\" font-size=\"14\" font-family=\"Arial, sans-serif\" font-weight=\"700\" stroke=\"none\" fill=\"currentColor\">A</text><polyline points=\"16,4 19,1 22,4\"></polyline><line x1=\"19\" y1=\"1\" x2=\"19\" y2=\"7\"></line></svg>";
+    zoomInBtn.addEventListener("click", () => this._onZoomFontSize(itemID, +1));
+    controlsRow.append(zoomInBtn);
+
+    const zoomOutBtn = el("button", { title: "缩小字体", "aria-label": "缩小字体", style: compactButtonStyle }, []);
+    zoomOutBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><text x=\"6\" y=\"17\" font-size=\"11\" font-family=\"Arial, sans-serif\" font-weight=\"700\" stroke=\"none\" fill=\"currentColor\">A</text><polyline points=\"16,7 19,10 22,7\"></polyline><line x1=\"19\" y1=\"10\" x2=\"19\" y2=\"4\"></line></svg>";
+    zoomOutBtn.addEventListener("click", () => this._onZoomFontSize(itemID, -1));
+    controlsRow.append(zoomOutBtn);
+
+    const clearBtn = el("button", { title: "清空当前条目的全部单词", "aria-label": "清空当前条目的全部单词", style: "height:26px;padding:0 9px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:12px;line-height:24px;box-sizing:border-box;white-space:nowrap;color:ButtonText;" }, [txt("清空")]);
+    clearBtn.addEventListener("click", () => this._clearAllWordsForItem(itemID));
+    titleActions.append(clearBtn);
+
+    titleRow.append(titleGroup, titleActions);
+
+    // 第三行：搜索 + 翻页（新增，不影响上面两行排版）
+    const pageSize = Math.max(1, Number(this._data && this._data.pageSize) || 10);
+    const view = this._getWordBookViewState(itemID);
+    const pageInfo = item && item.viewInfo
+      ? item.viewInfo
+      : this._computePagedIndices(rawWords, this._sortMode, view.search, view.page, pageSize, this._getActiveSearchStrategyName());
+    // 若当前页超出范围则自动收拢到最后一页（例如清空/删除后）
+    if (view.page !== pageInfo.page) {
+      this._wordBookViewState.set(itemID, { page: pageInfo.page, search: view.search });
+      view.page = pageInfo.page;
+    }
+    const navRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;margin-top:2px;" });
+    const searchInput = el("input", {
+      type: "search",
+      placeholder: "搜索单词或释义…",
+      title: "搜索单词或中文释义（同时匹配单词与翻译）",
+      style: "flex:1;min-width:0;font-size:12px;padding:3px 8px;border:1px solid ThreeDShadow;border-radius:6px;background:Field;color:FieldText;box-sizing:border-box;",
+    });
+    searchInput.value = view.search;
+    searchInput.addEventListener("input", (ev) => {
+      // 中文输入法合成中不触发搜索（拼音→选字过程），合成完成后的 input 事件 isComposing=false 正常触发
+      if (ev.isComposing) return;
+      this._onWordBookSearchTrigger(itemID, searchInput.value);
+    });
+    searchInput.addEventListener("compositionend", () => {
+      // 兼容：部分浏览器 compositionend 后可能不触发 isComposing=false 的 input
+      this._onWordBookSearchTrigger(itemID, searchInput.value);
+    });
+    navRow.append(searchInput);
+
+    const prevBtn = el("button", { title: "上一页", "aria-label": "上一页", disabled: pageInfo.page <= 1 ? "disabled" : null, style: "height:26px;min-width:28px;padding:0 8px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:13px;line-height:24px;color:ButtonText;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;" }, [txt("‹")]);
+    prevBtn.addEventListener("click", () => this._setWordBookPage(itemID, pageInfo.page - 1));
+    navRow.append(prevBtn);
+
+    const pageInput = el("input", {
+      type: "text",
+      inputmode: "numeric",
+      pattern: "[0-9]*",
+      min: "1",
+      max: String(Math.max(1, pageInfo.pageCount)),
+      title: "输入页码后按回车或点击“跳”",
+      "aria-label": "当前页",
+      style: "width:44px;font-size:12px;padding:3px 4px;text-align:center;border:1px solid ThreeDShadow;border-radius:6px;background:Field;color:FieldText;box-sizing:border-box;flex:0 0 auto;",
+    });
+    pageInput.value = String(pageInfo.page);
+
+    // 页码框只允许输入 ASCII 数字；粘贴或输入中文/英文时立即过滤。
+    pageInput.addEventListener("input", () => {
+      const digitsOnly = String(pageInput.value || "").replace(/[^0-9]/g, "");
+      if (pageInput.value !== digitsOnly) pageInput.value = digitsOnly;
+    });
+
+    // Enter 与“跳”按钮共用同一个跳转函数，避免两套逻辑产生差异。
+    const jumpToInputPage = () => {
+      const raw = parseInt(String(pageInput.value || "").trim(), 10);
+      this._debugLog("pagination jump request: itemID=" + itemID + ", input=" + JSON.stringify(pageInput.value) + ", parsed=" + raw);
+      if (!Number.isFinite(raw) || raw < 1 || raw > pageInfo.pageCount) {
+        pageInput.value = String(pageInfo.page);
+        this._debugLog("pagination jump ignored: itemID=" + itemID + ", page=" + raw + ", pageCount=" + pageInfo.pageCount);
+        return;
+      }
+      this._setWordBookPage(itemID, raw);
+    };
+
+    pageInput.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      jumpToInputPage();
+    });
+    navRow.append(pageInput);
+
+    const jumpBtn = el("button", {
+      type: "button",
+      title: "跳转到输入的页码",
+      "aria-label": "跳转到输入的页码",
+      style: "height:26px;padding:0 7px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:12px;line-height:24px;color:ButtonText;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;",
+    }, [txt("跳")]);
+    jumpBtn.addEventListener("click", () => {
+      this._debugLog("pagination jump button click: itemID=" + itemID);
+      jumpToInputPage();
+    });
+    navRow.append(jumpBtn);
+
+    const totalLabel = el("span", { style: "font-size:12px;color:GrayText;white-space:nowrap;flex:0 0 auto;" }, [txt(" / " + pageInfo.pageCount)]);
+    navRow.append(totalLabel);
+
+    const nextBtn = el("button", { title: "下一页", "aria-label": "下一页", disabled: pageInfo.page >= pageInfo.pageCount ? "disabled" : null, style: "height:26px;min-width:28px;padding:0 8px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:13px;line-height:24px;color:ButtonText;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;" }, [txt("›")]);
+    nextBtn.addEventListener("click", () => this._setWordBookPage(itemID, pageInfo.page + 1));
+    navRow.append(nextBtn);
+
+    header.append(titleRow, controlsRow, navRow);
+    body.append(header);
+
+    // 卡片列表
+    const list = el("div", { class: "wordtranslator-pane-list", style: "display:flex;flex-direction:column;gap:6px;" });
+    const emptyHint = this._getEmptyHint(doc, rawWords, view.search, pageInfo);
+    if (emptyHint) {
+      list.append(emptyHint);
+    } else {
+      pageInfo.indices.forEach((origIdx) => {
+        const w = rawWords[origIdx];
+        list.append(this._renderCard(doc, itemID, origIdx, w));
+      });
+    }
+    body.append(list);
+
+    // CSS（注入一次，挂在 body 内部最安全）
+    if (!body.querySelector(".wordtranslator-pane-style")) {
+      const style = doc.createElementNS(HTML_NS, "style");
+      style.className = "wordtranslator-pane-style";
+      style.textContent = this._getPaneCSS();
+      body.append(style);
+    }
+    // 保存当前 pane 的 doc / body 引用，以便点击放大/缩小按钮后只对卡片文本动态调整
+    this._currentPane = { doc: doc, body: body };
+    this._currentPaneContext = {
+      doc,
+      body,
+      itemID,
+      paneUID: body.dataset && body.dataset.wtPaneUid || null,
+    };
+    return true;
+  },
+
+  _renderCard(doc, itemID, idx, w) {
+    const HTML_NS = "http://www.w3.org/1999/xhtml";
+    const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
+    const txt = (s) => this._createTxt(doc, s);
+
+    const card = el("div", { style: "display:flex;align-items:flex-start;gap:6px;padding:6px 8px;border:1px solid ThreeDShadow;border-radius:8px;background:Canvas;" });
+    const fsVal = Number(this._data && this._data.fontSize) || 13;
+    // 文本部分包在一个容器里，只对它应用字号，并且可被选中
+    const textWrap = el("div", { class: "wt-card-text", style: "flex:1;min-width:0;font-size:" + fsVal + "px;line-height:1.5;user-select:text;-webkit-user-select:text;cursor:text;" });
+    const wordEl = el("span", { class: "wt-card-word", style: "font-weight:600;color:Highlight;word-break:break-word;" }, [txt(w.word)]);
+    const arrowEl = el("span", { class: "wt-card-arrow", style: "color:GrayText;flex-shrink:0;margin:0 2px;" }, [txt(" -- ")]);
+    const transEl = el("span", { class: "wt-card-trans", style: "word-break:break-word;" + (w.pending ? "color:GrayText;" : "") }, [txt(w.translation)]);
+    textWrap.append(wordEl, arrowEl, transEl);
+    const actionWrap = el("div", { style: "display:flex;align-items:center;gap:2px;flex-shrink:0;" });
+    const retryBtn = el("button", { title: "重新翻译", "aria-label": "重新翻译", style: "flex-shrink:0;border:none;background:transparent;color:GrayText;cursor:pointer;font-size:16px;padding:2px 5px;border-radius:4px;line-height:1;" }, [txt("↻")]);
+    retryBtn.addEventListener("click", () => this._retryTranslationForCard(itemID, idx, w));
+    const delBtn = el("button", { title: "删除", "aria-label": "删除", style: "flex-shrink:0;border:none;background:transparent;color:GrayText;cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;" }, [txt("✕")]);
+    delBtn.addEventListener("click", () => this._deleteWordForItem(itemID, idx));
+    actionWrap.append(retryBtn, delBtn);
+    card.append(textWrap, actionWrap);
+    return card;
+  },
+
+  _fillApiSelect(doc, select) {
+    select.replaceChildren();
+    const apis = (this._data && this._data.apis) || [];
+    if (apis.length === 0) {
+      const opt = doc.createElementNS("http://www.w3.org/1999/xhtml", "option");
+      opt.value = "-1";
+      opt.textContent = "未配置 API";
+      select.append(opt);
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+    apis.forEach((api, i) => {
+      const opt = doc.createElementNS("http://www.w3.org/1999/xhtml", "option");
+      opt.value = String(i);
+      opt.textContent = (api.name || "API " + (i + 1)) + (api.model ? "（" + api.model + "）" : "");
+      select.append(opt);
+    });
+    const cur = (this._data && this._data.activeApiIndex) || 0;
+    select.value = String(Math.min(cur, apis.length - 1));
+  },
+
+  _getPaneCSS() {
+    return ".wordtranslator-pane-body { color-scheme: light dark; } .wordtranslator-pane-body button:hover { background: color-mix(in srgb, Canvas 92%, CanvasText); } .wordtranslator-pane-body select { color: FieldText; background: Field; } .wt-card-text { user-select: text; -webkit-user-select: text; cursor: text; }";
+  },
+
+  // ---------- 偏好面板 onload ----------
+  onPrefsLoad(event) {
+    // preferences.js 已由 PreferencePanes.register 的 scripts[] 在沙箱中自动加载，
+    // 这里仅作兼容占位，不再手动 loadSubScript，避免重复加载。
+    this._prefWindowLoaded = true;
+  },
+
+  onPrefsUnload(event) {
+    this._prefWindowLoaded = false;
+  },
+
+  _normalize(raw) {
+    const base = {
+      contextMenuLabel: "添加单词并翻译",
+      enabled: true,
+      autoTranslate: false,
+      selectionMode: "word",
+      hotkeyEnabled: false,
+      hotkeyModifier: "ctrl",
+      customHotkeyEnabled: false,
+      customHotkey: "",
+      addWordHotkeyEnabled: true,
+      addWordHotkey: "",
+      addWordHotkeyMode: "ctrl",
+      selectionFirstEnabled: true,
+      promptSystem:
+        "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。",
+      promptUser: "请将以下英文单词或短语翻译为专业中文：{{word}}",
+      promptMode: "split",
+      promptGlobal:
+        "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}",
+      fontSize: 13,
+      pageSize: 10, // 单词本每页显示单词数
+      apis: [],
+      activeApiIndex: 0,
+      sortMode: "reverse",
+      searchStrategy: "prefix",
+    };
+    if (!raw || typeof raw !== "object") return base;
+    return {
+      ...base,
+      ...raw,
+      apis: Array.isArray(raw.apis) ? raw.apis : [],
+      activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
+      sortMode: typeof raw.sortMode === "string" ? raw.sortMode : "reverse",
+      searchStrategy: typeof raw.searchStrategy === "string" ? raw.searchStrategy : "prefix",
+      pageSize: Number.isFinite(Number(raw.pageSize)) && Number(raw.pageSize) >= 1 ? Math.floor(Number(raw.pageSize)) : 10,
+      selectionMode: raw.selectionMode === "sentence" ? "sentence" : "word",
+      // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）
+      addWordHotkeyEnabled: typeof raw.addWordHotkeyEnabled === "boolean" ? raw.addWordHotkeyEnabled : true,
+      addWordHotkeyMode: (raw.addWordHotkeyMode === "ctrl" || raw.addWordHotkeyMode === "alt" ||
+        raw.addWordHotkeyMode === "shift" || raw.addWordHotkeyMode === "custom")
+        ? raw.addWordHotkeyMode : "ctrl",
+      selectionFirstEnabled: typeof raw.selectionFirstEnabled === "boolean" ? raw.selectionFirstEnabled : true,
+      hotkeyModifier: (raw.hotkeyModifier === "shift" || raw.hotkeyModifier === "ctrl+shift" || raw.hotkeyModifier === "alt+shift")
+        ? "ctrl" : (raw.hotkeyModifier || "ctrl"),
+    };
+  },
+
+  getActiveApi() {
+    const apis = (this._data && this._data.apis) || [];
+    const i = (this._data && this._data.activeApiIndex) || 0;
+    return apis[i] || apis[0] || null;
+  },
+
+  // ---- 单词本紓存与读取（跨插件升级/重启）----
+  // ---- 单词本存储与读取（存于 profile/wordtranslator/words/ 下，按条目分文件）---
+  _wordsPrefKey: "extensions.zotero.wordtranslator.words",
+
+  _loadWordsFromDisk() {
+    try {
+      let migrated = false;
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.loadWordsMap === "function") {
+        try {
+          const map = Zotero.WordTranslatorStorage.loadWordsMap();
+          this._itemWords = map;
+          if (map.size > 0) migrated = true;
+        } catch (e0) {}
+      }
+      // 旧版 prefs.js 数据迁移（仅当文件目录为空时）
+      if (!migrated) {
+        const raw = Zotero.Prefs.get(this._wordsPrefKey, true);
+        if (raw) {
+          this._debugLog("_loadWordsFromDisk: migrating old prefs words to files");
+          const obj = JSON.parse(raw);
+          this._itemWords = new Map();
+          for (const k of Object.keys(obj || {})) {
+            const id = Number(k);
+            if (!Number.isFinite(id)) continue;
+            const list = Array.isArray(obj[k]) ? obj[k].map(function (w) {
+              return { word: String(w.word || ""), translation: String(w.translation || ""), pending: !!w.pending };
+            }) : [];
+            if (list.length > 0) {
+              this._itemWords.set(id, list);
+              try {
+                if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItem === "function") {
+                  Zotero.WordTranslatorStorage.saveWordsForItem(id, list);
+                }
+              } catch (e1) {}
+            }
+          }
+          try { Zotero.Prefs.clear && Zotero.Prefs.clear(this._wordsPrefKey, true); } catch (e2) {}
+        } else {
+          this._debugLog("_loadWordsFromDisk: no persisted data");
+        }
+      }
+      this._debugLog("_loadWordsFromDisk: loaded " + this._itemWords.size + " item(s)");
+    } catch (e) {
+      this._debugLog("_loadWordsFromDisk ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _persistWords() {
+    try {
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItemDebounced === "function") {
+        for (const [itemID, list] of this._itemWords) {
+          Zotero.WordTranslatorStorage.saveWordsForItemDebounced(itemID, list, 300);
+        }
+        return;
+      }
+      // 兜底：仍写 prefs
+      const obj = {};
+      for (const [itemID, list] of this._itemWords) {
+        obj[String(itemID)] = list;
+      }
+      Zotero.Prefs.set(this._wordsPrefKey, JSON.stringify(obj), true);
+    } catch (e) {
+      this._debugLog("_persistWords ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  // 立即 flush 防抖定时器并将当前内存中的全部单词本数据写盘
+  _flushAndPersistWords() {
+    try {
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.flushAll === "function") {
+        Zotero.WordTranslatorStorage.flushAll();
+      }
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItem === "function") {
+        for (const [itemID, list] of this._itemWords) {
+          try { Zotero.WordTranslatorStorage.saveWordsForItem(itemID, list); } catch (e1) {}
+        }
+        return;
+      }
+      const obj = {};
+      for (const [itemID, list] of this._itemWords) {
+        obj[String(itemID)] = list;
+      }
+      Zotero.Prefs.set(this._wordsPrefKey, JSON.stringify(obj), true);
+    } catch (e) {
+      this._debugLog("_flushAndPersistWords ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
+  _clearAllWordsStore() {
+    try {
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.flushAll === "function") {
+        Zotero.WordTranslatorStorage.flushAll();
+      }
+      for (const itemID of Array.from(this._itemWords.keys())) {
+        try {
+          if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItem === "function") {
+            Zotero.WordTranslatorStorage.saveWordsForItem(itemID, []);
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+    try { Zotero.Prefs.clear && Zotero.Prefs.clear(this._wordsPrefKey, true); } catch (e) {}
+    this._itemWords = new Map();
+  },
+
+
+  _saveData() {
+    try {
+      let ok = false;
+      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveApiConfig === "function") {
+        ok = Zotero.WordTranslatorStorage.saveApiConfig(this._data);
+      }
+      if (!ok) {
+        Zotero.Prefs.set("extensions.zotero.wordtranslator.config", JSON.stringify(this._data), true);
+      }
+      const main = Zotero.getMainWindow();
+      if (main && main.document) {
+        try {
+          const ev = new main.document.defaultView.Event("wordtranslator-config-updated", { bubbles: false });
+          main.document.dispatchEvent(ev);
+        } catch (e2) {}
+      }
+    } catch (e) {
+      this._debugLog("_saveData ERROR: " + (e && e.message || e));
+    }
+  },
+
+  // ---------- 翻译 API ----------
+  // 执行层 Provider 注册表：偏好页负责分组和配置；这里按协议分发请求。
+  // 新服务只需注册执行方法；未注册服务保持原 OpenAI 兼容路径。
+  _translateAdapters: new Map([
+    ["google", "_translateGoogle"],
+    ["deepl", "_translateDeepL"],
+    ["microsoft", "_translateMicrosoft"],
+    ["caiyun", "_translateCaiyun"],
+    ["niutrans", "_translateNiuTrans"],
+    ["claude", "_translateClaude"],
+    ["libretranslate", "_translateLibreTranslate"],
+    ["baidu", "_translateBaidu"],
+    ["baidu-field", "_translateBaiduField"],
+    ["bing", "_translateBing"],
+    ["youdaozhiyun", "_translateYoudaoZhiyun"],
+    ["tencent", "_translateTencent"],
+    ["aliyun", "_translateAliyun"],
+    ["volcengine", "_translateVolcengine"],
+    ["xfyun", "_translateXfyun"],
+  ]),
+
+  _bingToken: null,
+  _bingTokenExpiresAt: 0,
+
+  _googleTranslateRL(value, operations) {
+    for (let i = 0; i < operations.length - 2; i += 3) {
+      let shift = operations.charAt(i + 2);
+      shift = shift >= "a" ? shift.charCodeAt(0) - 87 : Number(shift);
+      const shifted = operations.charAt(i + 1) === "+" ? value >>> shift : value << shift;
+      value = operations.charAt(i) === "+" ? (value + shifted) & 0xFFFFFFFF : value ^ shifted;
+    }
+    return value;
+  },
+
+  _getGoogleTranslateToken(text) {
+    let value = 406644;
+    const seed = 3293161072;
+    const bytes = new TextEncoder().encode(String(text || ""));
+    for (const byte of bytes) {
+      value += byte;
+      value = this._googleTranslateRL(value, "+-a^+6");
+    }
+    value = this._googleTranslateRL(value, "+-3^+b+-f");
+    value ^= seed;
+    if (value < 0) value = (value & 0x7FFFFFFF) + 0x80000000;
+    value %= 1000000;
+    return value + "." + (value ^ 406644);
+  },
+
+  _bytesToHex(buffer) {
+    return Array.from(new Uint8Array(buffer)).map(function (byte) { return byte.toString(16).padStart(2, "0"); }).join("");
+  },
+
+  _bytesToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  },
+
+  async _sha256Hex(value) {
+    return this._bytesToHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  },
+
+  async _hmacSha1Base64(value, keyValue) {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(keyValue), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+    return this._bytesToBase64(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
+  },
+
+  async _hmacSha256(value, keyValue) {
+    const keyData = typeof keyValue === "string" ? new TextEncoder().encode(keyValue) : keyValue;
+    const key = await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    return crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  },
+
+  _parseJsonResponse(resp, serviceName) {
+    let data = resp.response;
+    if (typeof data === "string") {
+      try { data = JSON.parse(data); }
+      catch (e) { throw new Error(serviceName + " 返回的不是有效 JSON：" + data.slice(0, 200)); }
+    }
+    return data;
+  },
+
+  async _translateBing(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("必应网页翻译文本为空");
+    if (!this._bingToken || Date.now() >= this._bingTokenExpiresAt) {
+      const tokenResponse = await Zotero.HTTP.request("GET", "https://edge.microsoft.com/translate/auth", { responseType: "text" });
+      const token = String(tokenResponse.response || "").trim();
+      if (tokenResponse.status < 200 || tokenResponse.status >= 300 || !token) {
+        throw new Error("必应网页翻译令牌获取失败(" + tokenResponse.status + ")");
+      }
+      this._bingToken = token;
+      this._bingTokenExpiresAt = Date.now() + 8 * 60 * 1000;
+    }
+    const endpoint = (api.baseUrl || "https://api-edge.cognitive.microsofttranslator.com/translate").trim();
+    const url = endpoint + (endpoint.indexOf("?") >= 0 ? "&" : "?") + "api-version=3.0&to=zh";
+    this._debugLog("Bing request URL: " + endpoint + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, {
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + this._bingToken },
+      body: JSON.stringify([{ text: source }]),
+      responseType: "json",
+    });
+    const data = this._parseJsonResponse(resp, "必应网页翻译");
+    if (resp.status < 200 || resp.status >= 300) {
+      const detail = data && data.error && (data.error.message || data.error.code) || resp.statusText || "";
+      throw new Error("必应网页翻译错误(" + resp.status + "): " + detail);
+    }
+    const translation = data && data[0] && data[0].translations && data[0].translations[0] && data[0].translations[0].text;
+    if (!translation) throw new Error("必应网页翻译返回中没有 [0].translations[0].text：" + JSON.stringify(data).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateYoudaoZhiyun(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("有道智云翻译文本为空");
+    const parts = String(api.apiKey || "").split("#");
+    const appKey = (parts.shift() || "").trim();
+    const appSecret = parts.shift() ? (parts.join("#")).trim() : "";
+    const vocabId = (parts.shift() || "").trim();
+    if (!appKey || !appSecret) throw new Error("有道智云 API Key 请按 AppKey#AppSecret 格式填写");
+    const salt = String(Date.now());
+    const curtime = String(Math.floor(Date.now() / 1000));
+    const truncated = source.length <= 20 ? source : source.slice(0, 10) + source.length + source.slice(-10);
+    const sign = await this._sha256Hex(appKey + truncated + salt + curtime + appSecret);
+    const endpoint = (api.baseUrl || "https://openapi.youdao.com/api").trim();
+    const form = [
+      "q=" + encodeURIComponent(source), "from=en", "to=zh-CHS", "appKey=" + encodeURIComponent(appKey),
+      "salt=" + encodeURIComponent(salt), "sign=" + encodeURIComponent(sign), "signType=v3", "curtime=" + encodeURIComponent(curtime),
+    ];
+    if (vocabId) form.push("vocabId=" + encodeURIComponent(vocabId));
+    this._debugLog("Youdao Zhiyun request URL: " + endpoint + " | textLength=" + source.length + " | method=POST");
+    const resp = await Zotero.HTTP.request("POST", endpoint, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.join("&"),
+      responseType: "json",
+    });
+    const data = this._parseJsonResponse(resp, "有道智云");
+    if (resp.status < 200 || resp.status >= 300) throw new Error("有道智云错误(" + resp.status + "): " + (resp.statusText || ""));
+    if (data && data.errorCode && data.errorCode !== "0") throw new Error("有道智云错误(" + data.errorCode + "): " + (data.errorMsg || ""));
+    const translation = data && data.translation && data.translation[0];
+    if (!translation) throw new Error("有道智云返回中没有 translation[0]：" + JSON.stringify(data).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateTencent(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("腾讯云机器翻译文本为空");
+    const parts = String(api.apiKey || "").split("#");
+    const secretId = (parts[0] || "").trim();
+    const secretKey = (parts[1] || "").trim();
+    const region = (parts[2] || "ap-shanghai").trim();
+    const projectId = Number(parts[3] || 0);
+    if (!secretId || !secretKey) throw new Error("腾讯云 API Key 请按 SecretId#SecretKey#Region#ProjectId 格式填写");
+    const service = "tmt";
+    const host = "tmt.tencentcloudapi.com";
+    const timestamp = Math.floor(Date.now() / 1000);
+    const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
+    const payload = JSON.stringify({ SourceText: source, Source: "en", Target: "zh", ProjectId: Number.isFinite(projectId) ? projectId : 0 });
+    const canonicalHeaders = "content-type:application/json; charset=utf-8\nhost:" + host + "\n";
+    const signedHeaders = "content-type;host";
+    const canonicalRequest = "POST\n/\n\n" + canonicalHeaders + "\n" + signedHeaders + "\n" + await this._sha256Hex(payload);
+    const credentialScope = date + "/" + service + "/tc3_request";
+    const stringToSign = "TC3-HMAC-SHA256\n" + timestamp + "\n" + credentialScope + "\n" + await this._sha256Hex(canonicalRequest);
+    const secretDate = await this._hmacSha256(date, "TC3" + secretKey);
+    const secretService = await this._hmacSha256(service, secretDate);
+    const secretSigning = await this._hmacSha256("tc3_request", secretService);
+    const signature = this._bytesToHex(await this._hmacSha256(stringToSign, secretSigning));
+    const authorization = "TC3-HMAC-SHA256 Credential=" + secretId + "/" + credentialScope + ", SignedHeaders=" + signedHeaders + ", Signature=" + signature;
+    this._debugLog("Tencent request URL: https://" + host + " | region=" + region + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", "https://" + host, {
+      headers: { "Content-Type": "application/json; charset=utf-8", Host: host, "X-TC-Action": "TextTranslate", "X-TC-Version": "2018-03-21", "X-TC-Timestamp": String(timestamp), "X-TC-Region": region, Authorization: authorization },
+      body: payload,
+      responseType: "json",
+    });
+    const data = this._parseJsonResponse(resp, "腾讯云机器翻译");
+    const error = data && data.Response && data.Response.Error;
+    if (resp.status < 200 || resp.status >= 300 || error) throw new Error("腾讯云机器翻译错误(" + (error && error.Code || resp.status) + "): " + (error && error.Message || resp.statusText || ""));
+    const translation = data && data.Response && data.Response.TargetText;
+    if (!translation) throw new Error("腾讯云机器翻译返回中没有 Response.TargetText：" + JSON.stringify(data).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateAliyun(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("阿里云机器翻译文本为空");
+    const parts = String(api.apiKey || "").split("#");
+    const accessKeyId = (parts[0] || "").trim();
+    const accessKeySecret = parts.slice(1).join("#").trim();
+    if (!accessKeyId || !accessKeySecret) throw new Error("阿里云 API Key 请按 AccessKeyId#AccessKeySecret 格式填写");
+    const encode = function (value) { return encodeURIComponent(value).replace(/[!'()*]/g, function (char) { return "%" + char.charCodeAt(0).toString(16).toUpperCase(); }); };
+    const params = {
+      AccessKeyId: accessKeyId, Action: "TranslateGeneral", Format: "JSON", FormatType: "text", Scene: "general",
+      SignatureMethod: "HMAC-SHA1", SignatureNonce: Zotero.Utilities.randomString(16), SignatureVersion: "1.0",
+      SourceLanguage: "en", SourceText: source, TargetLanguage: "zh", Timestamp: new Date().toISOString(), Version: "2018-10-12",
+    };
+    const canonical = Object.keys(params).sort().map(function (key) { return encode(key) + "=" + encode(params[key]); }).join("&");
+    const stringToSign = "POST&%2F&" + encode(canonical);
+    const signature = await this._hmacSha1Base64(stringToSign, accessKeySecret + "&");
+    const endpoint = (api.baseUrl || "https://mt.cn-hangzhou.aliyuncs.com/").trim();
+    const body = canonical + "&Signature=" + encode(signature);
+    this._debugLog("Aliyun request URL: " + endpoint + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", endpoint, { headers: { "Content-Type": "application/x-www-form-urlencoded" }, body, responseType: "json" });
+    const data = this._parseJsonResponse(resp, "阿里云机器翻译");
+    if (resp.status < 200 || resp.status >= 300 || (data && data.Code && data.Code !== "200")) throw new Error("阿里云机器翻译错误(" + (data && data.Code || resp.status) + "): " + (data && data.Message || resp.statusText || ""));
+    const translation = data && data.Data && data.Data.Translated;
+    if (!translation) throw new Error("阿里云机器翻译返回中没有 Data.Translated：" + JSON.stringify(data).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateVolcengine(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("火山引擎机器翻译文本为空");
+    const parts = String(api.apiKey || "").split("#");
+    const accessKeyId = (parts[0] || "").trim();
+    const accessKeySecret = parts.slice(1).join("#").trim();
+    if (!accessKeyId || !accessKeySecret) throw new Error("火山引擎 API Key 请按 AccessKeyId#AccessKeySecret 格式填写");
+    const host = "translate.volcengineapi.com";
+    const region = "cn-north-1";
+    const service = "translate";
+    const currTime = new Date().toISOString().replace(/[:-]|\.\d{3}/g, "");
+    const requestBody = { TargetLanguage: "zh", TextList: [source] };
+    const bodyStr = JSON.stringify(requestBody);
+    const contentHash = await this._sha256Hex(bodyStr);
+    const signedHeaders = "content-type;x-content-sha256;x-date";
+    const canonicalHeaders = "content-type:application/json\nx-content-sha256:" + contentHash + "\nx-date:" + currTime + "\n";
+    const canonicalRequest = "POST\n/\nAction=TranslateText&Version=2020-06-01\n" + canonicalHeaders + "\n" + signedHeaders + "\n" + contentHash;
+    const credentialScope = currTime.slice(0, 8) + "/" + region + "/" + service + "/request";
+    const stringToSign = "HMAC-SHA256\n" + currTime + "\n" + credentialScope + "\n" + await this._sha256Hex(canonicalRequest);
+    const kDate = await this._hmacSha256(currTime.slice(0, 8), accessKeySecret);
+    const kRegion = await this._hmacSha256(region, kDate);
+    const kService = await this._hmacSha256(service, kRegion);
+    const signingKey = await this._hmacSha256("request", kService);
+    const signature = this._bytesToHex(await this._hmacSha256(stringToSign, signingKey));
+    const authorization = "HMAC-SHA256 Credential=" + accessKeyId + "/" + credentialScope + ", SignedHeaders=" + signedHeaders + ", Signature=" + signature;
+    this._debugLog("Volcengine request URL: https://" + host + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", "https://" + host + "/?Action=TranslateText&Version=2020-06-01", {
+      headers: { "Content-Type": "application/json", "X-Date": currTime, "X-Content-Sha256": contentHash, Authorization: authorization },
+      body: bodyStr,
+      responseType: "json",
+    });
+    const data = this._parseJsonResponse(resp, "火山引擎机器翻译");
+    const error = data && data.ResponseMetadata && data.ResponseMetadata.Error;
+    if (resp.status < 200 || resp.status >= 300 || error) throw new Error("火山引擎机器翻译错误(" + (error && error.Code || resp.status) + "): " + (error && error.Message || resp.statusText || ""));
+    const translation = data && data.TranslationList && data.TranslationList[0] && data.TranslationList[0].Translation;
+    if (!translation) throw new Error("火山引擎机器翻译返回中没有 TranslationList[0].Translation：" + JSON.stringify(data).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateXfyun(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("讯飞机器翻译文本为空");
+    const parts = String(api.apiKey || "").split("#");
+    const appId = (parts[0] || "").trim();
+    const apiKey = (parts[1] || "").trim();
+    const apiSecret = (parts[2] || "").trim();
+    if (!appId || !apiKey || !apiSecret) throw new Error("讯飞 API Key 请按 AppID#APIKey#APISecret 格式填写");
+    const host = "itrans.xf-yun.com";
+    const path = "/v1/its";
+    const date = new Date().toUTCString();
+    const signatureOrigin = "host: " + host + "\ndate: " + date + "\nPOST " + path + " HTTP/1.1";
+    const signatureHash = this._bytesToBase64(await this._hmacSha256(signatureOrigin, apiSecret));
+    const authorizationOrigin = 'api_key="' + apiKey + '",algorithm="hmac-sha256",headers="host date request-line",signature="' + signatureHash + '"';
+    const authorization = this._bytesToBase64(new TextEncoder().encode(authorizationOrigin));
+    const url = "https://" + host + path + "?authorization=" + encodeURIComponent(authorization) + "&host=" + encodeURIComponent(host) + "&date=" + encodeURIComponent(date);
+    const encodedContent = this._bytesToBase64(new TextEncoder().encode(source));
+    const body = JSON.stringify({
+      header: { app_id: appId, status: 3, res_id: "" },
+      payload: { text: { from: "en", to: "cn", content: encodedContent } },
+    });
+    this._debugLog("Xfyun request URL: https://" + host + path + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, {
+      headers: { "Content-Type": "application/json", Accept: "application/json,version=1.0" },
+      body,
+      responseType: "json",
+    });
+    const data = this._parseJsonResponse(resp, "讯飞机器翻译");
+    const header = data && data.header;
+    if (resp.status < 200 || resp.status >= 300 || (header && header.code !== 0)) throw new Error("讯飞机器翻译错误(" + (header && header.code || resp.status) + "): " + (header && header.message || resp.statusText || ""));
+    const translation = data && data.payload && data.payload.result && data.payload.result.trans_result && data.payload.result.trans_result.dst;
+    if (!translation) throw new Error("讯飞机器翻译返回中没有 payload.result.trans_result.dst：" + JSON.stringify(data).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateBaiduField(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("百度垂直领域翻译文本为空");
+    const parts = String(api.apiKey || "").split("#");
+    const appid = (parts[0] || "").trim();
+    const key = parts.slice(1, -1).join("#").trim();
+    const domain = (parts[parts.length - 1] || "").trim();
+    if (!appid || !key || !domain) throw new Error("百度垂直领域 API Key 请按 AppID#密钥#domain 格式填写");
+    const salt = String(Date.now());
+    const sign = Zotero.Utilities.Internal.md5(appid + source + salt + domain + key, false);
+    const endpoint = (api.baseUrl || "https://api.fanyi.baidu.com/api/trans/vip/fieldtranslate").trim();
+    const query = ["q=" + encodeURIComponent(source), "from=en", "to=zh", "appid=" + encodeURIComponent(appid), "domain=" + encodeURIComponent(domain), "salt=" + encodeURIComponent(salt), "sign=" + encodeURIComponent(sign)].join("&");
+    this._debugLog("Baidu field request URL: " + endpoint + " | domain=" + domain + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("GET", endpoint + "?" + query, { responseType: "json" });
+    let responseData = resp.response;
+    if (typeof responseData === "string") { try { responseData = JSON.parse(responseData); } catch (e) { throw new Error("百度垂直领域返回的不是有效 JSON：" + responseData.slice(0, 200)); } }
+    if (resp.status < 200 || resp.status >= 300) throw new Error("百度垂直领域错误(" + resp.status + "): " + (resp.statusText || ""));
+    if (responseData && responseData.error_code) throw new Error("百度垂直领域错误(" + responseData.error_code + "): " + (responseData.error_msg || ""));
+    const rows = responseData && responseData.trans_result;
+    const translation = Array.isArray(rows) ? rows.map(function (row) { return row && row.dst || ""; }).join("\n").trim() : "";
+    if (!translation) throw new Error("百度垂直领域返回中没有 trans_result[].dst：" + JSON.stringify(responseData).slice(0, 500));
+    return translation;
+  },
+
+  async _translateBaidu(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("百度翻译文本为空");
+    const parts = String(api.apiKey || "").split("#");
+    const appid = (parts[0] || "").trim();
+    const key = parts.slice(1).join("#").trim();
+    if (!appid || !key) throw new Error("百度翻译 API Key 请按 AppID#密钥 格式填写");
+    const salt = String(Date.now());
+    const sign = Zotero.Utilities.Internal.md5(appid + source + salt + key, false);
+    const endpoint = (api.baseUrl || "https://api.fanyi.baidu.com/api/trans/vip/translate").trim();
+    const query = [
+      "q=" + encodeURIComponent(source),
+      "from=en",
+      "to=zh",
+      "appid=" + encodeURIComponent(appid),
+      "salt=" + encodeURIComponent(salt),
+      "sign=" + encodeURIComponent(sign),
+    ].join("&");
+    this._debugLog("Baidu request URL: " + endpoint + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("GET", endpoint + "?" + query, { responseType: "json" });
+    let responseData = resp.response;
+    if (typeof responseData === "string") { try { responseData = JSON.parse(responseData); } catch (e) { throw new Error("百度翻译返回的不是有效 JSON：" + responseData.slice(0, 200)); } }
+    if (resp.status < 200 || resp.status >= 300) throw new Error("百度翻译错误(" + resp.status + "): " + (resp.statusText || ""));
+    if (responseData && responseData.error_code) throw new Error("百度翻译错误(" + responseData.error_code + "): " + (responseData.error_msg || ""));
+    const rows = responseData && responseData.trans_result;
+    const translation = Array.isArray(rows) ? rows.map(function (row) { return row && row.dst || ""; }).join("\n").trim() : "";
+    if (!translation) throw new Error("百度翻译返回中没有 trans_result[].dst：" + JSON.stringify(responseData).slice(0, 500));
+    return translation;
+  },
+
+  async _translateClaude(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("Claude 翻译文本为空");
+    const base = (api.baseUrl || "https://api.anthropic.com/v1").trim().replace(/\/+$/, "");
+    const url = base + "/messages";
+    const headers = {
+      "Content-Type": "application/json",
+      "x-api-key": api.apiKey,
+      "anthropic-version": "2023-06-01",
+    };
+    const body = {
+      model: api.model,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "请将以下英文单词或短语翻译为专业中文，只输出译文：" + source }],
+    };
+    this._debugLog("Claude request URL: " + url + " | model=" + (api.model || "(none)"));
+    const resp = await Zotero.HTTP.request("POST", url, { headers, body: JSON.stringify(body), responseType: "json" });
+    let responseData = resp.response;
+    if (typeof responseData === "string") { try { responseData = JSON.parse(responseData); } catch (e) { throw new Error("Claude 返回的不是有效 JSON：" + responseData.slice(0, 200)); } }
+    if (resp.status < 200 || resp.status >= 300) {
+      const detail = responseData && responseData.error && (responseData.error.message || responseData.error) || resp.statusText || "";
+      throw new Error("Claude 错误(" + resp.status + "): " + detail);
+    }
+    const translation = responseData && responseData.content && responseData.content[0] && responseData.content[0].text;
+    if (!translation) throw new Error("Claude 返回中没有 content[0].text：" + JSON.stringify(responseData).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateLibreTranslate(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("LibreTranslate 翻译文本为空");
+    const url = (api.baseUrl || "").trim().replace(/\/+$/, "") + "/translate";
+    if (url === "/translate") throw new Error("请填写 LibreTranslate 服务的基础 URL");
+    const body = { q: source, source: "en", target: "zh", format: "text" };
+    if ((api.apiKey || "").trim()) body.api_key = api.apiKey;
+    this._debugLog("LibreTranslate request URL: " + url + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), responseType: "json" });
+    let responseData = resp.response;
+    if (typeof responseData === "string") { try { responseData = JSON.parse(responseData); } catch (e) { throw new Error("LibreTranslate 返回的不是有效 JSON：" + responseData.slice(0, 200)); } }
+    if (resp.status < 200 || resp.status >= 300) {
+      const detail = responseData && (responseData.error || responseData.message) || resp.statusText || "";
+      throw new Error("LibreTranslate 错误(" + resp.status + "): " + detail);
+    }
+    if (!responseData || !responseData.translatedText) throw new Error("LibreTranslate 返回中没有 translatedText：" + JSON.stringify(responseData).slice(0, 500));
+    return String(responseData.translatedText).trim();
+  },
+
+  async _translateNiuTrans(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("小牛翻译文本为空");
+    const url = (api.baseUrl || "https://api.niutrans.com/NiuTransServer/translation").trim();
+    const headers = { "Content-Type": "application/json" };
+    const body = {
+      from: "en",
+      to: "zh",
+      src_text: source,
+      apikey: api.apiKey,
+    };
+    this._debugLog("NiuTrans request URL: " + url + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, {
+      headers,
+      body: JSON.stringify(body),
+      responseType: "json",
+    });
+    let responseData = resp.response;
+    if (typeof responseData === "string") {
+      try { responseData = JSON.parse(responseData); }
+      catch (e) { throw new Error("小牛翻译返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+      const detail = responseData && (responseData.message || responseData.error_msg) || resp.statusText || "";
+      throw new Error("小牛翻译错误(" + resp.status + "): " + detail);
+    }
+    const translation = responseData && (responseData.tgt_text || responseData.target_text);
+    if (!translation) throw new Error("小牛翻译返回中没有 tgt_text：" + JSON.stringify(responseData).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateCaiyun(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("彩云小译文本为空");
+    const url = (api.baseUrl || "http://api.interpreter.caiyunai.com/v1/translator").trim();
+    const headers = {
+      "Content-Type": "application/json",
+      "x-authorization": "token " + api.apiKey,
+    };
+    const body = {
+      source: [source],
+      trans_type: "en2zh",
+      request_id: "wordtranslator-" + Date.now(),
+      detect: false,
+    };
+    this._debugLog("Caiyun request URL: " + url + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, {
+      headers,
+      body: JSON.stringify(body),
+      responseType: "json",
+    });
+    let responseData = resp.response;
+    if (typeof responseData === "string") {
+      try { responseData = JSON.parse(responseData); }
+      catch (e) { throw new Error("彩云小译返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+      const detail = responseData && (responseData.message || responseData.error) || resp.statusText || "";
+      throw new Error("彩云小译错误(" + resp.status + "): " + detail);
+    }
+    const translation = responseData && responseData.target && responseData.target[0];
+    if (!translation) throw new Error("彩云小译返回中没有 target[0]：" + JSON.stringify(responseData).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateMicrosoft(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("微软翻译文本为空");
+    const endpoint = (api.baseUrl || "https://api.cognitive.microsofttranslator.com/translate").trim();
+    const query = "api-version=3.0&to=zh";
+    const url = endpoint + (endpoint.indexOf("?") >= 0 ? "&" : "?") + query;
+    const headers = {
+      "Content-Type": "application/json",
+      "Ocp-Apim-Subscription-Key": api.apiKey,
+    };
+    const body = [{ Text: source }];
+    this._debugLog("Microsoft request URL: " + endpoint + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, {
+      headers,
+      body: JSON.stringify(body),
+      responseType: "json",
+    });
+    let responseData = resp.response;
+    if (typeof responseData === "string") {
+      try { responseData = JSON.parse(responseData); }
+      catch (e) { throw new Error("微软翻译返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+      const detail = responseData && responseData.error && (responseData.error.message || responseData.error) || resp.statusText || "";
+      throw new Error("微软翻译错误(" + resp.status + "): " + detail);
+    }
+    const translation = responseData && responseData[0] && responseData[0].translations && responseData[0].translations[0] && responseData[0].translations[0].text;
+    if (!translation) throw new Error("微软翻译返回中没有 [].translations[].text：" + JSON.stringify(responseData).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateDeepL(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("DeepL 翻译文本为空");
+    const base = (api.baseUrl || "https://api-free.deepl.com/v2").trim().replace(/\/+$/, "");
+    const url = base + "/translate";
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: "DeepL-Auth-Key " + api.apiKey,
+    };
+    const body = {
+      text: [source],
+      target_lang: "ZH",
+    };
+    this._debugLog("DeepL request URL: " + url + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, {
+      headers,
+      body: JSON.stringify(body),
+      responseType: "json",
+    });
+    let responseData = resp.response;
+    if (typeof responseData === "string") {
+      try { responseData = JSON.parse(responseData); }
+      catch (e) { throw new Error("DeepL 返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+      const detail = responseData && responseData.message || resp.statusText || "";
+      throw new Error("DeepL 错误(" + resp.status + "): " + detail);
+    }
+    const translation = responseData && responseData.translations && responseData.translations[0] && responseData.translations[0].text;
+    if (!translation) throw new Error("DeepL 返回中没有 translations[0].text：" + JSON.stringify(responseData).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  async _translateGoogle(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("Google 翻译文本为空");
+    const endpoint = (api.baseUrl || "https://translate.googleapis.com/translate_a/single")
+      .trim()
+      .replace(/\/+$/, "");
+    const query = [
+      "client=gtx",
+      "sl=en",
+      "tl=zh",
+      "dt=t",
+      "q=" + encodeURIComponent(source),
+      "tk=" + encodeURIComponent(this._getGoogleTranslateToken(source)),
+    ].join("&");
+    const url = endpoint + "?" + query;
+    this._debugLog("Google request URL: " + endpoint + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("GET", url, { responseType: "json" });
+    let responseData = resp.response;
+    if (typeof responseData === "string") {
+      try { responseData = JSON.parse(responseData); }
+      catch (e) { throw new Error("Google 翻译返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+      const detail = responseData && responseData.error && (responseData.error.message || responseData.error) || resp.statusText || "";
+      throw new Error("Google 翻译错误(" + resp.status + "): " + detail);
+    }
+    const segments = responseData && responseData[0];
+    const translation = Array.isArray(segments)
+      ? segments.map(function (segment) { return segment && segment[0] || ""; }).join("").trim()
+      : "";
+    if (!translation) throw new Error("Google 翻译返回中没有 [0][].0：" + JSON.stringify(responseData).slice(0, 500));
+    return translation;
+  },
+
+  async translate(text, apiOverride) {
+    const api = apiOverride || this.getActiveApi();
+    if (!api) throw new Error("未配置 API（请到设置->单词翻译 中添加 API）");
+    const provider = api.provider || (api.type === "deepseek" ? "deepseek" : "openai");
+    const adapterMethod = this._translateAdapters.get(provider);
+    if (adapterMethod && typeof this[adapterMethod] === "function") {
+      return this[adapterMethod](text, api);
+    }
+    const promptMode = (this._data && this._data.promptMode) || "split";
+    let messages = [];
+    if (promptMode === "combined") {
+      const globalTemplate = (this._data && this._data.promptGlobal) ||
+        "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}";
+      messages = [
+        { role: "user", content: globalTemplate.split("{{word}}").join(text) },
+      ];
+    } else {
+      const system = (this._data && this._data.promptSystem) || "";
+      const userTemplate = (this._data && this._data.promptUser) || "请将以下英文单词或短语翻译为专业中文：{{word}}";
+      const user = userTemplate.split("{{word}}").join(text);
+      messages = [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ];
+    }
+    const body = {
+      model: api.model,
+      messages,
+      temperature: 0.3,
+      stream: false,
+    };
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + api.apiKey,
+    };
+    let base = (api.baseUrl || "").trim().replace(/\/+$/, "");
+    if (!base) {
+      const defaultUrls = {
+        deepseek: "https://api.deepseek.com",
+        "qwen-mt": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      };
+      base = defaultUrls[provider] || "https://api.openai.com/v1";
+    }
+    const url = base + "/chat/completions";
+    this._debugLog("request URL: " + url + " | model=" + (api.model || "(none)"));
+    const resp = await Zotero.HTTP.request("POST", url, {
+      headers,
+      body: JSON.stringify(body),
+      responseType: "json",
+    });
+    let responseData = resp.response;
+    if (typeof responseData === "string") {
+      try { responseData = JSON.parse(responseData); }
+      catch (e) { throw new Error("API 返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+      const detail = responseData && responseData.error && (responseData.error.message || responseData.error) || responseData && responseData.message || resp.statusText || "";
+      throw new Error("API 错误(" + resp.status + "): " + detail);
+    }
+    const content = (responseData && responseData.choices && responseData.choices[0] && responseData.choices[0].message && responseData.choices[0].message.content) || "";
+    if (!content) {
+      throw new Error("API 返回中没有 choices[0].message.content：" + JSON.stringify(responseData).slice(0, 500));
+    }
+    return String(content).trim();
+  },
+async testApi(api) {
+    try {
+      const result = await this.translate("translation", api);
+      return !!result;
+    } catch (e) {
+      return false;
+    }
+  },
+};
+
+if (typeof Zotero !== "undefined") {
+  Zotero.WordTranslator = WordTranslator;
+}

@@ -1,0 +1,24 @@
+{
+  "baidu": {
+    "valid_shape_invalid_credentials": {
+      "endpoint": "https://api.fanyi.baidu.com/api/trans/vip/translate",
+      "method": "GET",
+      "query_keys": ["q", "from", "to", "appid", "salt", "sign", "action", "needIntervene"],
+      "send": "python scripts/probe_baidu.py --send"
+    },
+    "wrong_endpoint": {
+      "send": "python scripts/probe_baidu.py --send --bad-path"
+    },
+    "missing_required_field": {
+      "send": "python scripts/probe_baidu.py --send --missing-field"
+    }
+  },
+  "baidu-field": {
+    "valid_shape_invalid_credentials": {
+      "endpoint": "https://api.fanyi.baidu.com/api/trans/vip/fieldtranslate",
+      "method": "GET",
+      "query_keys": ["q", "from", "to", "appid", "domain", "salt", "sign"],
+      "send": "python scripts/probe_baidu.py --send --field"
+    }
+  }
+}

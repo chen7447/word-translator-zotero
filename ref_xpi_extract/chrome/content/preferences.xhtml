@@ -1,0 +1,375 @@
+<linkset>
+  <html:link rel="localization" href="zoteropdftranslate-preferences.ftl" />
+</linkset>
+<vbox
+  id="zotero-prefpane-zoteropdftranslate"
+  onload="Zotero.PDFTranslate.hooks.onPrefsLoad(event)"
+>
+  <groupbox>
+    <label><html:h2 data-l10n-id="zoteropdftranslate-pref-general"></html:h2></label>
+    <checkbox
+      id="zoteropdftranslate-enableAuto"
+      data-l10n-id="zoteropdftranslate-pref-basic-enableAuto"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.enableAuto"
+    />
+    <vbox>
+      <checkbox
+        id="zoteropdftranslate-enableComment"
+        data-l10n-id="zoteropdftranslate-pref-basic-enableComment"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.enableComment"
+      />
+      <radiogroup
+        id="zoteropdftranslate-annotationTranslationPosition"
+        class="auto-annotation"
+        style="padding-left: 18px"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.annotationTranslationPosition"
+      >
+        <radio
+          data-l10n-id="zoteropdftranslate-pref-basic-annotationTranslationInComment"
+          value="comment"
+        />
+        <radio
+          data-l10n-id="zoteropdftranslate-pref-basic-annotationTranslationInBody"
+          value="body"
+        />
+      </radiogroup>
+      <radiogroup
+        id="zoteropdftranslate-annotationTranslationPositionInBody"
+        class="annotation-translation-position-in-body"
+        style="padding-left: 36px"
+        orient="horizontal"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.annotationTranslationPositionInBody"
+      >
+        <radio
+          data-l10n-id="zoteropdftranslate-pref-basic-annotationTranslationInBodyBeforeText"
+          value="before"
+        />
+        <radio
+          data-l10n-id="zoteropdftranslate-pref-basic-annotationTranslationInBodyAfterText"
+          value="after"
+        />
+      </radiogroup>
+      <checkbox
+        id="zoteropdftranslate-enableAnnotationFromSyncTranslation"
+        data-l10n-id="zoteropdftranslate-pref-basic-enableAnnotationFromSyncTranslation"
+        style="padding-left: 18px"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.enableAnnotationFromSyncTranslation"
+      />
+    </vbox>
+    <vbox>
+      <checkbox
+        id="zoteropdftranslate-enableAutoTagAnnotation"
+        data-l10n-id="zoteropdftranslate-pref-basic-enableAutoTagAnnotation"
+        style="padding-left: 18px"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.enableAutoTagAnnotation"
+      />
+      <hbox align="center" style="padding-left: 36px">
+        <label data-l10n-id="zoteropdftranslate-pref-basic-annotationTagContent"></label>
+        <html:input
+          id="zoteropdftranslate-annotationTagContent"
+          type="text"
+          class="enable-auto-tag-annotation"
+          preference="extensions.zotero.ZoteroPDFTranslate.annotationTagContent"
+        ></html:input>
+      </hbox>
+    </vbox>
+    <vbox>
+      <checkbox
+        id="zoteropdftranslate-enablePopup"
+        data-l10n-id="zoteropdftranslate-pref-basic-enablePopup"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.enablePopup"
+      />
+      <checkbox
+        id="zoteropdftranslate-enableHidePopupTextarea"
+        data-l10n-id="zoteropdftranslate-pref-basic-enableHidePopupTextarea"
+        class="enable-popup"
+        style="padding-left: 18px"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.enableHidePopupTextarea"
+      />
+      <checkbox
+        id="zoteropdftranslate-enableAddToNote"
+        data-l10n-id="zoteropdftranslate-pref-basic-enableNote"
+        class="enable-popup"
+        style="padding-left: 18px"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.enableNote"
+      />
+      <checkbox
+        id="zoteropdftranslate-enableNoteReplaceMode"
+        data-l10n-id="zoteropdftranslate-pref-basic-enableNoteReplaceMode"
+        class="enable-popup enable-popup-addtonote"
+        style="padding-left: 18px"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.enableNoteReplaceMode"
+      />
+    </vbox>
+    <vbox>
+      <checkbox
+        id="zoteropdftranslate-showPlayBtn"
+        class="use-word-service"
+        data-l10n-id="zoteropdftranslate-pref-audio-showPlayBtn"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.showPlayBtn"
+      />
+      <checkbox
+        data-l10n-id="zoteropdftranslate-pref-audio-autoPlay"
+        class="use-word-service show-play-btn"
+        style="padding-left: 18px"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.autoPlay"
+      />
+    </vbox>
+  </groupbox>
+  <groupbox>
+    <label><html:h2 data-l10n-id="zoteropdftranslate-pref-service"></html:h2></label>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-service-sentenceServices"></label>
+      <!-- Replace -->
+      <box id="zoteropdftranslate-sentenceServices-placeholder"></box>
+      <label data-l10n-id="zoteropdftranslate-pref-service-sentenceServicesSecret"></label>
+      <html:input
+        type="text"
+        id="zoteropdftranslate-sentenceServicesSecret"
+      ></html:input>
+      <button id="zoteropdftranslate-sentenceServicesStatus"></button>
+    </hbox>
+    <label
+      data-l10n-id="zoteropdftranslate-pref-service-hint"
+      style="padding-left: 18px; margin-top: 8px; margin-bottom: 8px"
+    ></label>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-service-langfrom"></label>
+      <!-- Replace -->
+      <box id="zoteropdftranslate-langfrom-placeholder"></box>
+      <label data-l10n-id="zoteropdftranslate-pref-service-langto"></label>
+      <!-- Replace -->
+      <box id="zoteropdftranslate-langto-placeholder"></box>
+    </hbox>
+    <checkbox
+      id="zoteropdftranslate-attachPaperContext"
+      data-l10n-id="zoteropdftranslate-pref-service-attachPaperContext"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.attachPaperContext"
+    />
+    <checkbox
+      id="zoteropdftranslate-useWordService"
+      data-l10n-id="zoteropdftranslate-pref-service-useWordService"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.enableDict"
+    />
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-service-wordServices"></label>
+      <!-- Replace -->
+      <box id="zoteropdftranslate-wordServices-placeholder"></box>
+      <label data-l10n-id="zoteropdftranslate-pref-service-wordServicesSecret"></label>
+      <html:input
+        type="text"
+        id="zoteropdftranslate-wordServicesSecret"
+        class="use-word-service"
+      ></html:input>
+    </hbox>
+  </groupbox>
+  <groupbox>
+    <label><html:h2 data-l10n-id="zoteropdftranslate-pref-interface"></html:h2></label>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-interface-fontSize"></label>
+      <html:input
+        id="zoteropdftranslate-fontSize"
+        type="text"
+        preference="extensions.zotero.ZoteroPDFTranslate.fontSize"
+      ></html:input>
+    </hbox>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-interface-lineHeight"></label>
+      <html:input
+        id="zoteropdftranslate-lineHeight"
+        type="text"
+        preference="extensions.zotero.ZoteroPDFTranslate.lineHeight"
+      ></html:input>
+    </hbox>
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showItemMenuTitleTranslation"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showItemMenuTitleTranslation"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showItemMenuAbstractTranslation"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showItemMenuAbstractTranslation"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showSidebarEngine"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showSidebarEngine"
+    />
+    <checkbox
+      id="zoteropdftranslate-hideUnconfiguredServices"
+      data-l10n-id="zoteropdftranslate-pref-interface-hideUnconfiguredServices"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.hideUnconfiguredServices"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showSidebarLanguage"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showSidebarLanguage"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showSidebarRaw"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showSidebarRaw"
+    />
+    <checkbox
+      id="zoteropdftranslate-enableMathRendering"
+      data-l10n-id="zoteropdftranslate-pref-interface-enableMathRendering"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.enableMathRendering"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-rawResultOrder"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.rawResultOrder"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showSidebarSettings"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showSidebarSettings"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showSidebarConcat"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showSidebarConcat"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-enableConcatKey"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.enableConcatKey"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showSidebarCopy"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showSidebarCopy"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showItemBoxTitleTranslation"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showItemBoxTitleTranslation"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-showItemBoxAbstractTranslation"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.showItemBoxAbstractTranslation"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-keepWindowTop"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.keepWindowTop"
+    />
+    <checkbox
+      data-l10n-id="zoteropdftranslate-pref-interface-keepPopupSize"
+      native="true"
+      preference="extensions.zotero.ZoteroPDFTranslate.keepPopupSize"
+    />
+  </groupbox>
+  <groupbox>
+    <label><html:h2 data-l10n-id="zoteropdftranslate-pref-advanced"></html:h2></label>
+    <hbox align="center">
+      <checkbox
+        data-l10n-id="zoteropdftranslate-pref-advanced-stripEmptyLines"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.stripEmptyLines"
+      />
+    </hbox>
+    <hbox align="center">
+      <checkbox
+        data-l10n-id="zoteropdftranslate-pref-advanced-enableAutoDetectLanguage"
+        native="true"
+        preference="extensions.zotero.ZoteroPDFTranslate.enableAutoDetectLanguage"
+      />
+    </hbox>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-advanced-disabledLanguages"></label>
+      <html:input
+        type="text"
+        preference="extensions.zotero.ZoteroPDFTranslate.disabledLanguages"
+        style="min-width: 80px"
+      ></html:input>
+    </hbox>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-advanced-extraEngines"></label>
+      <html:input
+        type="text"
+        preference="extensions.zotero.ZoteroPDFTranslate.extraEngines"
+      ></html:input>
+    </hbox>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-advanced-splitChar"></label>
+      <html:input
+        type="text"
+        preference="extensions.zotero.ZoteroPDFTranslate.splitChar"
+      ></html:input>
+    </hbox>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-advanced-resultRegex"></label>
+      <html:input
+        type="text"
+        preference="extensions.zotero.ZoteroPDFTranslate.resultRegex"
+        style="min-width: 80px"
+      ></html:input>
+    </hbox>
+    <hbox align="center" style="gap: 8px">
+      <label data-l10n-id="zoteropdftranslate-pref-advanced-reset"></label>
+      <button
+        id="zoteropdftranslate-reset-titleTranslation"
+        data-l10n-id="zoteropdftranslate-pref-advanced-reset-titleTranslation"
+      ></button>
+      <button
+        id="zoteropdftranslate-reset-abstractTranslation"
+        data-l10n-id="zoteropdftranslate-pref-advanced-reset-abstractTranslation"
+      ></button>
+    </hbox>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-service-manageKeys-hint"></label>
+      <button
+        id="zoteropdftranslate-manageKeys"
+        data-l10n-id="zoteropdftranslate-pref-service-manageKeys"
+      ></button>
+    </hbox>
+    <hbox align="center">
+      <label data-l10n-id="zoteropdftranslate-pref-service-renameServices-hint"></label>
+      <button
+        id="zoteropdftranslate-renameServices"
+        data-l10n-id="zoteropdftranslate-pref-service-renameServices"
+      ></button>
+    </hbox>
+  </groupbox>
+  <groupbox>
+    <label><html:h2 data-l10n-id="zoteropdftranslate-pref-about"></html:h2></label>
+    <label
+      data-l10n-id="zoteropdftranslate-pref-about-version"
+      data-l10n-args='{"time": "2026-08-01 17:35:18","name": "Translate for Zotero","version":"2.4.6"}'
+    ></label>
+    <hbox align="center">
+      <label
+        data-l10n-id="zoteropdftranslate-pref-about-feedback"
+        is="zotero-text-link"
+        class="zotero-text-link"
+        href="https://github.com/windingwind/zotero-pdf-translate/issues"
+        style="margin-right: 4px"
+      ></label>
+      <label
+        data-l10n-id="zoteropdftranslate-pref-about-docs"
+        is="zotero-text-link"
+        class="zotero-text-link"
+        href="https://zotero.yuque.com/staff-gkhviy/pdf-trans"
+      ></label>
+    </hbox>
+  </groupbox>
+</vbox>

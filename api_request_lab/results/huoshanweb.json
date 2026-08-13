@@ -1,0 +1,23 @@
+{
+  "provider": "huoshanweb",
+  "status": "endpoint_redirect_400_unusable",
+  "confidence": "high",
+  "rechecked_at": "2026-08-12",
+  "proxy_test": {"used": true, "address": "127.0.0.1:7897", "restored_after_test": true},
+  "recheck": {
+    "method": "curl -L --max-redirs 5 -A <Chrome UA> -H 'Content-Type: application/json' -H 'Origin: https://translate.volcengine.com' -H 'Referer: https://translate.volcengine.com/' --data '{\"source_language\":\"en\",\"target_language\":\"zh\",\"text\":\"environment\"}' https://translate.volcengine.com/crx/translate/v1",
+    "http_status": 400,
+    "content_type": "text/plain",
+    "note": "307 -> /crx/translate/v1/ -> 400 Bad Request plain text. No JSON translation."
+  },
+  "request": {
+    "endpoint": "https://translate.volcengine.com/crx/translate/v1",
+    "method": "POST",
+    "content_type": "application/json",
+    "no_auth": true,
+    "body_keys": ["source_language", "target_language", "text"],
+    "response_success_path": "translation"
+  },
+  "plugin_ready": false,
+  "todo": ["do not integrate; final response is 400 Bad Request"]
+}

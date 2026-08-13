@@ -1,0 +1,21 @@
+{
+  "provider": "microsoft",
+  "status": "protocol_shape_verified",
+  "confidence": "high",
+  "proxy_test": {"used": true, "address": "127.0.0.1:7897", "restored_after_test": true},
+  "probes": [
+    {"name": "valid_shape_invalid_key", "http_status": 401, "response_code": "401001", "classification": "authentication_failed"},
+    {"name": "wrong_path", "http_status": 401, "classification": "authentication_failed"},
+    {"name": "missing_text", "http_status": 401, "classification": "authentication_failed"}
+  ],
+  "request": {
+    "endpoint": "https://api.cognitive.microsofttranslator.com/translate",
+    "method": "POST",
+    "content_type": "application/json",
+    "auth_header": "Ocp-Apim-Subscription-Key",
+    "query_params": "api-version=3.0&to=<target>",
+    "body": "[{\"Text\": \"<text>\"}]",
+    "response_success_path": "[].translations[].text"
+  },
+  "plugin_ready": false
+}

@@ -1,0 +1,32 @@
+{
+  "provider": "baidu-field",
+  "status": "protocol_partially_validated",
+  "confidence": "medium",
+  "probes": [
+    {
+      "name": "valid_shape_invalid_credentials",
+      "http_status": 200,
+      "response": {"error_code": "52003", "error_msg": "UNAUTHORIZED USER"},
+      "classification": "provider_error_code_received"
+    },
+    {
+      "name": "wrong_endpoint",
+      "http_status": 200,
+      "response": {"error_code": "517", "error_msg": "Unknown Error Code", "data": null},
+      "classification": "endpoint_or_request_shape_rejected"
+    },
+    {
+      "name": "missing_q",
+      "http_status": 200,
+      "response": {"error_code": "52003", "error_msg": "UNAUTHORIZED USER"},
+      "classification": "provider_error_code_received"
+    }
+  ],
+  "request": {
+    "endpoint": "https://api.fanyi.baidu.com/api/trans/vip/fieldtranslate",
+    "method": "GET",
+    "required_query_keys": ["q", "from", "to", "appid", "domain", "salt", "sign"],
+    "signature": "MD5(appid + q + salt + domain + key)"
+  },
+  "plugin_ready": false
+}

@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "last_updated": "2026-08-11",
+  "providers": {
+    "baidu": {
+      "name": "百度翻译",
+      "group": "国内翻译平台",
+      "official_docs": [
+        "https://fanyi-api.baidu.com/doc/21"
+      ],
+      "status": "discovered",
+      "request_style": "signed-query",
+      "requires_credentials": true,
+      "plugin_integrated": false,
+      "notes": "参考插件使用普通翻译接口；待占位凭证探测确认错误结构。"
+    },
+    "baidu-field": {
+      "name": "百度垂直领域翻译",
+      "group": "国内翻译平台",
+      "official_docs": [
+        "https://fanyi-api.baidu.com/doc/21"
+      ],
+      "status": "discovered",
+      "request_style": "signed-query-domain",
+      "requires_credentials": true,
+      "plugin_integrated": false,
+      "notes": "与百度普通翻译共用基础签名逻辑，但 Endpoint 和 domain 参数不同。"
+    },
+    "deepl": {
+      "name": "DeepL",
+      "group": "国际翻译平台",
+      "official_docs": [
+        "https://developers.deepl.com/docs/api-reference/translate"
+      ],
+      "status": "docs_found",
+      "request_style": "json-bearer",
+      "requires_credentials": true,
+      "plugin_integrated": false
+    },
+    "gemini": {
+      "name": "Gemini",
+      "group": "AI / 大模型",
+      "official_docs": [
+        "https://ai.google.dev/api/generate-content"
+      ],
+      "status": "docs_found",
+      "request_style": "json-generate-content",
+      "requires_credentials": true,
+      "plugin_integrated": false
+    },
+    "aliyun": {
+      "name": "阿里云机器翻译",
+      "group": "国内翻译平台",
+      "official_docs": [
+        "https://help.aliyun.com/zh/machine-translation/developer-reference/api-overview-1"
+      ],
+      "status": "docs_found",
+      "request_style": "signed-form",
+      "requires_credentials": true,
+      "plugin_integrated": false
+    },
+    "tencent": {
+      "name": "腾讯云翻译",
+      "group": "国内翻译平台",
+      "official_docs": [
+        "https://cloud.tencent.com/document/product/551/15619"
+      ],
+      "status": "docs_found_network_retry_needed",
+      "request_style": "tencent-signed-form",
+      "requires_credentials": true,
+      "plugin_integrated": false,
+      "notes": "PowerShell 访问文档时出现 TLS/连接关闭，后续用 Python 或 Node 重试。"
+    }
+  }
+}

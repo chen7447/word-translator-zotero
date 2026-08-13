@@ -1,0 +1,14 @@
+zoteropdftranslate-itemPaneSection-header =
+    .label = 翻译
+zoteropdftranslate-itemPaneSection-sidenav =
+    .tooltiptext = 翻译
+zoteropdftranslate-itemPaneSection-fullHeight =
+    .tooltiptext = 自适应高度
+zoteropdftranslate-itemPaneSection-openStandalone =
+    .tooltiptext = 在独立窗口中打开
+zoteropdftranslate-field-titleTranslation = 标题翻译
+zoteropdftranslate-field-abstractTranslation = 摘要翻译
+zoteropdftranslate-itemmenu-translateTitle =
+    .label = 翻译标题
+zoteropdftranslate-itemmenu-translateAbstract =
+    .label = 翻译摘要

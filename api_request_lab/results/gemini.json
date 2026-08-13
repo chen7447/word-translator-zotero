@@ -1,0 +1,27 @@
+{
+  "provider": "gemini",
+  "status": "protocol_shape_partially_validated_auth_failed",
+  "confidence": "high",
+  "proxy_test": {
+    "used": true,
+    "address": "127.0.0.1:7897",
+    "scope": "Gemini probe subprocess only",
+    "restored_after_test": true
+  },
+  "probes": [
+    {"name": "valid_shape_invalid_credentials", "http_status": 400, "classification": "authentication_failed", "confidence": "high", "response_reason": "API_KEY_INVALID"},
+    {"name": "wrong_endpoint", "http_status": 404, "classification": "endpoint_not_found", "confidence": "high"},
+    {"name": "missing_parts", "http_status": 400, "classification": "authentication_failed", "confidence": "high", "response_reason": "API_KEY_INVALID"},
+    {"name": "bad_content_type", "http_status": 400, "classification": "authentication_failed", "confidence": "high", "response_reason": "API_KEY_INVALID"}
+  ],
+  "request": {
+    "endpoint_template": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+    "method": "POST",
+    "content_type": "application/json",
+    "authentication": "query key",
+    "body_shape": "contents[].parts[].text",
+    "response_success_path": "candidates[].content.parts[].text"
+  },
+  "plugin_ready": false,
+  "note": "Correct path reached Google API through proxy; invalid key stopped validation before body checks."
+}

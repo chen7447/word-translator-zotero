@@ -1,0 +1,20 @@
+{
+  "provider": "caiyun",
+  "status": "protocol_shape_reached_api_auth_failed",
+  "confidence": "high",
+  "proxy_test": {"used": true, "address": "127.0.0.1:7897", "restored_after_test": true},
+  "probes": [
+    {"name": "valid_shape_invalid_token", "http_status": 401, "response": {"message": "Invalid token"}, "classification": "authentication_failed"},
+    {"name": "wrong_endpoint", "http_status": 404, "classification": "endpoint_not_found"},
+    {"name": "missing_source", "http_status": 401, "response": {"message": "Invalid token"}, "note": "auth before field validation"}
+  ],
+  "request": {
+    "endpoint": "http://api.interpreter.caiyunai.com/v1/translator",
+    "method": "POST",
+    "content_type": "application/json",
+    "auth_header": "x-authorization: token <TOKEN>",
+    "body_keys": ["source", "trans_type", "request_id", "detect"],
+    "response_success_path": "target[0]"
+  },
+  "plugin_ready": false
+}

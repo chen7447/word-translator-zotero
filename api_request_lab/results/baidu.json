@@ -1,0 +1,41 @@
+{
+  "provider": "baidu",
+  "status": "protocol_partially_validated",
+  "confidence": "medium",
+  "probes": [
+    {
+      "name": "valid_shape_invalid_credentials",
+      "http_status": 200,
+      "response": {
+        "error_code": "52003",
+        "error_msg": "UNAUTHORIZED USER"
+      },
+      "classification": "provider_error_code_received",
+      "interpretation": "请求到达百度官方接口并进入业务错误处理；占位凭证无效。"
+    },
+    {
+      "name": "wrong_endpoint",
+      "http_status": 200,
+      "response": {
+        "error_code": "517",
+        "error_msg": "Unknown Error Code",
+        "data": null
+      },
+      "classification": "endpoint_or_request_shape_rejected",
+      "interpretation": "与正确路径返回不同，支持 Endpoint 路径判断。"
+    },
+    {
+      "name": "missing_q",
+      "http_status": 200,
+      "response": {
+        "error_code": "52003",
+        "error_msg": "UNAUTHORIZED USER"
+      },
+      "classification": "provider_error_code_received",
+      "interpretation": "凭证校验先于字段校验，不能据此确认 q 的字段校验结果。"
+    }
+  ],
+  "network_note": "urllib TLS unexpected EOF; curl.exe -k successfully received official JSON responses.",
+  "plugin_ready": false,
+  "recording_scope": "protocol only; no real credential or translation success"
+}

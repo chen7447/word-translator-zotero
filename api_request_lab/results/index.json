@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "records": [],
+  "notes": "尚未执行网络探测；结果将在使用占位凭证运行 scripts/probe_baidu.py --send 后写入 results/。"
+}

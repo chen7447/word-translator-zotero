@@ -1,0 +1,21 @@
+{
+  "provider": "youdao",
+  "status": "endpoint_replaced_by_spa_unusable",
+  "confidence": "high",
+  "rechecked_at": "2026-08-12",
+  "proxy_test": {"used": true, "address": "127.0.0.1:7897", "restored_after_test": true},
+  "recheck": {
+    "method": "curl -L --max-redirs 5 -A <Chrome UA> -H 'Accept: application/json' http://fanyi.youdao.com/translate?&doctype=json&type=EN2ZH_CN&i=environment",
+    "http_status": 200,
+    "content_type": "text/html",
+    "note": "Returns new SPA HTML page, not JSON translateResult. Old doctype=json endpoint is dead."
+  },
+  "request": {
+    "endpoint": "http://fanyi.youdao.com/translate",
+    "method": "GET",
+    "query_params": "doctype=json&type=<langpair>&i=<text>",
+    "no_auth": true
+  },
+  "plugin_ready": false,
+  "todo": ["do not integrate; endpoint replaced by SPA"]
+}

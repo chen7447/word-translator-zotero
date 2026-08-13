@@ -1,0 +1,20 @@
+{
+  "provider": "qwenmt",
+  "status": "protocol_shape_verified_openai_compatible",
+  "confidence": "high",
+  "proxy_test": {"used": true, "restored_after_test": true},
+  "probes": [
+    {"name": "valid_shape_invalid_key", "http_status": 401, "response_code": "invalid_api_key", "classification": "authentication_failed"},
+    {"name": "wrong_path", "http_status": 400, "response_code": "InvalidParameter", "classification": "request_shape_rejected"},
+    {"name": "missing_message", "http_status": 401, "response_code": "invalid_api_key", "classification": "authentication_failed"}
+  ],
+  "request": {
+    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "method": "POST",
+    "content_type": "application/json",
+    "auth_header": "Authorization: Bearer <key>",
+    "body": {"model": "qwen-mt-plus", "messages": [{"role": "user", "content": "<text>"}]},
+    "response_success_path": "choices[0].message.content"
+  },
+  "plugin_ready": false
+}

@@ -1,0 +1,20 @@
+{
+  "provider": "claude",
+  "status": "protocol_shape_verified_anthropic_messages",
+  "confidence": "high",
+  "proxy_test": {"used": true, "restored_after_test": true},
+  "probes": [
+    {"name": "valid_shape_invalid_key", "http_status": 401, "response_code": "authentication_error", "classification": "authentication_failed"},
+    {"name": "wrong_path", "http_status": 404, "response_code": "not_found_error", "classification": "endpoint_not_found"},
+    {"name": "missing_content", "http_status": 401, "response_code": "authentication_error", "classification": "authentication_failed"}
+  ],
+  "request": {
+    "endpoint": "https://api.anthropic.com/v1/messages",
+    "method": "POST",
+    "content_type": "application/json",
+    "auth_headers": ["x-api-key", "anthropic-version: 2023-06-01"],
+    "body": {"model": "claude-3-5-haiku-latest", "max_tokens": 1024, "messages": [{"role": "user", "content": "<text>"}]},
+    "response_success_path": "content[0].text"
+  },
+  "plugin_ready": false
+}

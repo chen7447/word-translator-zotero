@@ -1,0 +1,25 @@
+{
+  "provider": "youdaozhiyun",
+  "status": "protocol_verified_post_sign_v3",
+  "confidence": "high",
+  "verified_at": "2026-08-12",
+  "proxy_test": {"used": true, "restored_after_test": true},
+  "official_doc": "https://ai.youdao.com/DOCSIRMA/html/trans/api/wbfy/",
+  "probes": [
+    {"name": "valid_shape_placeholder_credentials", "http_status": 200, "response_code": "108", "classification": "provider_error_code_received"},
+    {"name": "wrong_path", "http_status": 404, "classification": "endpoint_not_found"},
+    {"name": "missing_q", "http_status": 200, "response_code": "113", "classification": "provider_error_code_received"},
+    {"name": "post_placeholder_credentials", "http_status": 200, "response_code": "108", "response_sample": {"requestId": "a63a9cc4-...", "errorCode": "108", "l": "en2zh-CHS"}, "classification": "provider_error_code_received", "note": "POST application/x-www-form-urlencoded, signType=v3, from=en to=zh-CHS accepted; l field confirms language pair"}
+  ],
+  "request": {
+    "endpoint": "https://openapi.youdao.com/api",
+    "method": "POST",
+    "content_type": "application/x-www-form-urlencoded",
+    "auth": "SHA256(appKey + truncate(q) + salt + curtime + appSecret), signType=v3",
+    "form_fields": ["q", "from", "to", "appKey", "salt", "sign", "signType", "curtime", "vocabId(optional)"],
+    "response_success_path": "translation[0]",
+    "response_error_paths": ["errorCode"]
+  },
+  "plugin_ready": true,
+  "notes": "Official doc uses POST (jQuery $.ajax type:'post', dataType jsonp). Plugin adapter switched GET->POST on 2026-08-12. truncate(): len<=20 raw; else first10+len+last10."
+}

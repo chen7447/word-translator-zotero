@@ -1,0 +1,19 @@
+{
+  "provider": "bing",
+  "status": "protocol_shape_verified",
+  "confidence": "high",
+  "proxy_test": {"used": true, "restored_after_test": true},
+  "probes": [
+    {"name": "valid_shape_placeholder_token", "http_status": 401, "response_code": "401001", "classification": "authentication_failed"},
+    {"name": "wrong_path", "http_status": 401, "classification": "authentication_failed"},
+    {"name": "missing_text", "http_status": 401, "classification": "authentication_failed"}
+  ],
+  "request": {
+    "endpoint": "https://api-edge.cognitive.microsofttranslator.com/translate",
+    "method": "POST",
+    "auth": "Bearer token from edge.microsoft.com/translate/auth",
+    "body": "[{\"text\": \"<text>\"}]",
+    "response_success_path": "[0].translations[0].text"
+  },
+  "plugin_ready": false
+}

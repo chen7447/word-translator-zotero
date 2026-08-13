@@ -1,0 +1,19 @@
+{
+  "provider": "google",
+  "status": "protocol_verified_translation_returned",
+  "confidence": "high",
+  "proxy_test": {"used": true, "restored_after_test": true},
+  "probes": [
+    {"name": "valid_path_no_auth", "http_status": 200, "classification": "valid_translation_response", "response_summary": "environment → 环境"},
+    {"name": "wrong_path", "http_status": 404, "classification": "endpoint_not_found"},
+    {"name": "missing_q", "http_status": 200, "classification": "valid_translation_response"}
+  ],
+  "request": {
+    "endpoint": "https://translate.googleapis.com/translate_a/single",
+    "method": "GET",
+    "no_auth": true,
+    "query_params": "client=gtx&sl=en&tl=zh&dt=t&q=<text>&tk=<tk>",
+    "response_success_path": "[0][0][0]"
+  },
+  "plugin_ready": false
+}

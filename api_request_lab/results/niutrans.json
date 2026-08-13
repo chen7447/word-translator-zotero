@@ -1,0 +1,19 @@
+{
+  "provider": "niutrans",
+  "status": "protocol_shape_reached_api_auth_failed",
+  "confidence": "medium",
+  "proxy_test": {"used": true, "address": "127.0.0.1:7897", "restored_after_test": true},
+  "probes": [
+    {"name": "valid_shape_placeholder_key", "http_status": 200, "response_code": "13001", "classification": "provider_error_code_received"},
+    {"name": "wrong_path", "http_status": 200, "response_code": "13001", "note": "host ignores path suffix"},
+    {"name": "missing_src_text", "http_status": 200, "response_code": "13001", "note": "balance check before field validation"}
+  ],
+  "request": {
+    "endpoint": "https://api.niutrans.com/NiuTransServer/translation",
+    "method": "POST",
+    "content_type": "application/json",
+    "body_keys": ["from", "to", "src_text", "apikey"],
+    "response_success_path": "tgt_text"
+  },
+  "plugin_ready": false
+}
