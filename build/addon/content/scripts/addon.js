@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 // Word Translator for Zotero 核心模块（适配 Zotero 7/8/9/10）
 // 依赖：Zotero.Prefs（Zotero 7+ 标准偏好）
@@ -52,9 +52,6 @@ var WordTranslator = {
   _paneKey: null,
   _prefWindowLoaded: false,
   _paneRefresh: null,
-  _hotkeyPressed: null,
-  _hotkeyJustReleased: null,
-  _hotkeyModifiers: null,
   _selectionFirstPending: null,
   // 偏好页配置的“快捷键-划词翻译”统一全局按键状态；不为 Alt/Ctrl 等分别注册状态。
   _selectionTranslateKeyState: null,
@@ -701,23 +698,6 @@ _configVersion: 0,
     }
   },
 
-  _triggerHotkeyTranslate(pending) {
-    try {
-      if (!pending || !pending.reader || !pending.text) return;
-      const popup = this._lastSelectionPopup;
-      const popupButton = popup && popup.button && popup.button.classList && popup.button.classList.contains("wordtranslator-add-btn") ? popup.button : null;
-      this._handleAddWordTrigger({
-        source: "hotkey",
-        doc: pending.doc || (popup && popup.doc),
-        btn: pending.btn || popupButton,
-        append: pending.append || null,
-        reader: pending.reader,
-        text: pending.text,
-      });
-    } catch (e) {
-      this._debugLog("_triggerHotkeyTranslate ERROR: " + (e && (e.message || String(e))));
-    }
-  },
   _fireAddWordHotkey() {
     try {
       this._refreshPrefsFromStorage();
@@ -826,12 +806,11 @@ _configVersion: 0,
 
         // 主窗口 blur 表示 Zotero 整体失去激活（例如 Alt+Tab）。此时
         // Windows 可能不会再把匹配的 keyup 发回 Zotero，必须主动清除
-        // 全局快捷键状态，避免回来后普通划词继续被误判为按住快捷键。
-        if (reason === "window blur" && isMainWindow) {
-          self._selectionTranslateKeyState = null;
-          self._clearSelectionHotkeyState("main-window-deactivate");
           self._clearSelectionTranslateState("main-window-deactivate");
           self._debugLog("selection translate main window blur: global state cleared");
+          self._selectionTranslateKeyState = null;
+                    self._clearSelectionTranslateState("main-window-deactivate");
+                    self._debugLog("selection translate main window blur: global state cleared");
           return;
         }
 
@@ -850,12 +829,11 @@ _configVersion: 0,
               ", selectionReady=" + session.selectionReady +
               ", popupContext=" + !!session.popupContext
             );
-            return;
-          }
-          self._selectionTranslateKeyState = null;
-          self._clearSelectionHotkeyState("main-window-deactivate");
           self._clearSelectionTranslateState("main-window-deactivate");
           self._debugLog("selection translate main window deactivation: global state cleared");
+          self._selectionTranslateKeyState = null;
+                    self._clearSelectionTranslateState("main-window-deactivate");
+                    self._debugLog("selection translate main window deactivation: global state cleared");
           return;
         }
 
@@ -863,7 +841,6 @@ _configVersion: 0,
         // 但主文档会进入 hidden；将其作为 Alt+Tab 丢失 keyup 的兜底。
         if (reason === "document hidden" && isMainWindow) {
           self._selectionTranslateKeyState = null;
-          self._clearSelectionHotkeyState("main-window-hidden");
           self._clearSelectionTranslateState("main-window-hidden");
           self._debugLog("selection translate main document hidden: global state cleared");
           return;
@@ -885,7 +862,6 @@ _configVersion: 0,
           );
           return;
         }
-        self._clearSelectionHotkeyState(reason);
         // 窗口 blur 不等于配置快捷键已经释放；全局 keyup 才是正常结束条件。
         if (reason !== "window blur" || !self._selectionTranslateKeyState) {
           self._clearSelectionTranslateState(reason);
@@ -1606,32 +1582,6 @@ _configVersion: 0,
     try { this._lastPrefsMtime = 0; this._lastPrefsRefresh = 0; } catch (e) {}
   },
 
-  _hotkeyMatches(mods) {
-    try {
-      if (!mods || !mods.time) return false;
-      if (Date.now() - mods.time > 5000) return false;
-      const mod = (this._data && this._data.hotkeyModifier) || "ctrl";
-      const c = !!mods.ctrl;
-      const s = !!mods.shift;
-      const a = !!mods.alt;
-      // 鼠标按键组合已迁移至"添加单词并翻译"功能；此处只处理键盘组合键。
-      // 鼠标按键组合已迁移至“添加单词并翻译”功能；此处仅处理键盘修饰键，
-      // 不再因 mouse 字段误杀（按住 Alt/Ctrl 划词时 mousedown 记录含 mouse 字段）
-      if (mods && (mods.mouse !== undefined && mods.mouse !== null) && !c && !s && !a) {
-        return false;
-      }
-      // hotkeyModifier 只接受键盘修饰键；历史鼠标值统一视为无效配置。
-      if (mod && mod.indexOf("mouse") === 0) return false;
-      return (
-        (mod === "ctrl" && c && !s && !a) ||
-        (mod === "alt" && a && !c && !s) ||
-        (mod === "ctrl+alt" && c && a && !s)
-      );
-    } catch (e) {
-      return false;
-    }
-  },
-
   _normalizeSelectionTranslateText(text) {
     return String(text || "").replace(/\s+/g, " ").trim();
   },
@@ -1659,10 +1609,6 @@ _configVersion: 0,
   _clearSelectionTranslateState(reason) {
     this._debugLog("clear selection translate state: " + (reason || "unknown"));
     this._selectionTranslateSession = null;
-  },
-
-  _clearSelectionHotkeyState(reason) {
-    this._debugLog("clear selection hotkey state: " + (reason || "unknown"));
   },
 
   _hasFreshPendingSelection() {

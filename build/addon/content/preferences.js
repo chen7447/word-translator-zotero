@@ -61,12 +61,6 @@
       const modWrap = get("wt-hotkey-mod-wrap");
       const customWrap = get("wt-hotkey-custom-wrap");
       // 数据层互斥（双保险：UI 与 change 处理器都会同步）
-      if (en && useCustom) {
-        if (en.checked && useCustom.checked) {
-          // 不允许同时 on：以当前较新的为准。这里统一让后者胜出会出循环，
-          // 因此仅在 UI 阶段不修复两者同时 on，让 change 处理器负责修正。
-        }
-      }
       // UI 展示
       const anyOn = (en && en.checked) || (useCustom && useCustom.checked);
       if (modWrap) modWrap.style.display = (en && en.checked) ? "" : "none";
