@@ -195,11 +195,11 @@ _configVersion: 0,
     try {
       this._configVersion++;
       this._debugLog("_onConfigChange: version=" + this._configVersion);
-      // ???? Item Pane ???? custom sections??????? section?
+      // 通知 Item Pane 刷新（custom sections 需要重新渲染）
       if (Zotero && Zotero.Notifier && typeof Zotero.Notifier.trigger === "function") {
         Zotero.Notifier.trigger("refresh", "itempane", []).catch(function (e) { try { Zotero.debug("[WordTranslator] notifier trigger ERROR: " + (e && (e.message || e))); } catch (e2) {} });
       }
-      // ?????????? refresh ??
+      // 双保险：再调用一次 pane 自身的 refresh 回调
       if (this._paneRefresh && typeof this._paneRefresh === "function") {
         try { this._paneRefresh(); } catch (e) { this._debugLog("paneRefresh notify ERROR: " + (e && e.message || e)); }
       }
@@ -1742,11 +1742,10 @@ _configVersion: 0,
     return null;
   },
 
-
   /**
-   * ? reader ???/?? ID ??? Item Pane ?????? ID?
-   * Zotero ?? PDF ????Item Pane ???????????????
-   * ?? null ??????????? ID ?? fallback??
+   * 将 reader 的 itemID 解析为 Item Pane 实际使用的条目 ID
+   * Zotero 中 PDF 附件与 Item Pane 使用的条目 ID 可能不同，需要转换
+   * 返回 null 表示解析失败，调用方应使用原始 ID 作为 fallback
    */
   _getItemPaneID(attachmentOrItemID) {
     try {
@@ -1755,19 +1754,17 @@ _configVersion: 0,
 
       const item = Zotero.Items.get(itemID);
       if (!item) return null;
-
-      // ?? -> ???
+      // 附件 -> 父条目
       if (typeof item.isAttachment === "function" ? item.isAttachment() : item.isAttachment) {
         if (item.parentID) {
           const parentID = Number(item.parentID);
           this._debugLog("resolve pane ID: attachment " + itemID + " -> parent " + parentID);
           return parentID;
         }
-        // ??????????????????? ID
+        // 无父条目的附件，直接用自身 ID
         return itemID;
       }
-
-      // ???? -> ??
+      // 普通条目 -> 直接用自身 ID
       return itemID;
     } catch (e) {
       this._debugLog(
@@ -1801,7 +1798,7 @@ _configVersion: 0,
       return;
     }
 
-    // ???reader.itemID ? PDF ?? ID?Item Pane ??????? ID
+    // 将 reader.itemID（PDF 附件 ID）转换为 Item Pane 所需的条目 ID
     const paneID = this._getItemPaneID(readerItemID) || readerItemID;
     this._debugLog(
       "_addWordForReader resolve: readerItemID=" + readerItemID +

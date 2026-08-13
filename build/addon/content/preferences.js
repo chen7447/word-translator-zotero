@@ -381,7 +381,7 @@
     if (e) e.textContent = text;
   }
 
-  // ????????? Item Pane ???? API ??????????
+  // 配置变更后，通知主窗口的 Item Pane 重新加载 API 列表
   function notifyConfigChanged() {
     try {
       if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator._onConfigChange === "function") {
@@ -614,11 +614,10 @@
     closeEditor();
     save(true);
   }
-
   /**
-   * ?????????????????????? window.prompt??
-   * @param {string[]} ids ?? ID ??
-   * @returns {Promise<string|null>} ??????? ID????? null
+   * 以模态弹窗展示模型列表供选择（替代原生 window.prompt）
+   * @param {string[]} ids 模型 ID 数组
+   * @returns {Promise<string|null>} 返回选中的模型 ID，取消时为 null
    */
   function showModelPicker(ids) {
     return new Promise((resolve) => {
