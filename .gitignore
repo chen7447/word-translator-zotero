@@ -1,0 +1,20 @@
+# === 临时文件 ===
+_tmp_*
+*_tmp.*
+*_tmp_*
+*.bak
+*.bak-*
+*.bak.*
+
+# === 构建脚本与产物（打包源 addon 目录内的排除由 pack_xpi.py 负责）===
+__pycache__/
+*.pyc
+*.pyo
+
+# === 开发/测试工具 ===
+.zcode/
+api_request_lab/docs/_deeplx_*_tmp.*
+
+# === 操作系统 ===
+Thumbs.db
+.DS_Store
