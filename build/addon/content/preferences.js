@@ -306,6 +306,7 @@
       options: [
         { value: "custom", label: "自定义 OpenAI 兼容接口", enabled: true },
         { value: "libretranslate", label: "LibreTranslate", enabled: true, baseUrl: "", requiresModel: false, apiKeyOptional: true },
+        { value: "deeplx-selfhosted", label: "DeepLX 自建服务", enabled: true, requiresModel: false, apiKeyOptional: true, hideName: true },
         { value: "mtranserver", label: "MTranServer（需适配器：自建 JSON）", enabled: false },
       ],
     },
@@ -561,6 +562,7 @@
     const managed = meta.managedConfig === true;
     const noCredentials = meta.noCredentials === true;
     const requiresModel = meta.requiresModel !== false;
+    const hideName = meta.hideName === true;
     const nameField = get("wt-api-name");
     const keyField = get("wt-api-key");
     const modelField = get("wt-api-model");
@@ -573,18 +575,24 @@
     }
     preset.readOnly = managed;
     preset.placeholder = meta.baseUrl || "例如 https://api.example.com/v1";
-    setRowVisible("wt-api-name", !managed);
+    setRowVisible("wt-api-name", !managed && !hideName);
     setRowVisible("wt-api-baseurl", !managed);
     setRowVisible("wt-api-key", !noCredentials);
     setRowVisible("wt-api-model", requiresModel);
     if (fetchModelsButton) fetchModelsButton.hidden = !requiresModel;
     if (keyField) keyField.placeholder = meta.credentialFormat || "";
     const hint = preset.parentElement && preset.parentElement.querySelector(".wt-hint");
-    if (hint) hint.textContent = managed
-      ? "官方翻译服务已固定 API 地址，填写所需凭证后即可保存。"
-      : meta.enabled
-        ? "可填写或修改基础 URL，用于官方大模型、兼容接口或自建服务。"
-        : "该服务已加入目录，协议适配将在后续阶段接入，当前不可保存使用。";
+    if (hint) {
+      if (prov === "deeplx-selfhosted") {
+        hint.textContent = "填写自建 DeepLX 服务地址（不带 /translate，插件会自动拼接；测试失败？或许可以填上 /translate 试试）。";
+      } else if (managed) {
+        hint.textContent = "官方翻译服务已固定 API 地址，填写所需凭证后即可保存。";
+      } else if (meta.enabled) {
+        hint.textContent = "可填写或修改基础 URL，用于官方大模型、兼容接口或自建服务。";
+      } else {
+        hint.textContent = "该服务已加入目录，协议适配将在后续阶段接入，当前不可保存使用。";
+      }
+    }
   }
 
   function saveApi() {
@@ -592,7 +600,7 @@
     const meta = getProviderMeta(provider);
     if (!meta.enabled) { setStatus("该服务尚未接入，请先选择已启用的服务"); return; }
     const managed = meta.managedConfig === true;
-    const name = managed ? meta.label : (get("wt-api-name").value || "").trim();
+    const name = managed ? meta.label : (meta.hideName ? meta.label : (get("wt-api-name").value || "").trim());
     const baseUrl = ((managed ? meta.baseUrl : (get("wt-api-baseurl").value || "")) || "").trim().replace(/\/+$/, "");
     const apiKey = (get("wt-api-key").value || "").trim();
     const model = meta.requiresModel === false ? "" : (get("wt-api-model").value || "").trim();
@@ -750,7 +758,7 @@
     const provider = get("wt-api-provider").value;
     const meta = getProviderMeta(provider);
     const managed = meta.managedConfig === true;
-    const name = managed ? meta.label : (get("wt-api-name").value || "").trim();
+    const name = managed ? meta.label : (meta.hideName ? meta.label : (get("wt-api-name").value || "").trim());
     const baseUrl = ((managed ? meta.baseUrl : (get("wt-api-baseurl").value || "")) || "").trim().replace(/\/+$/, "");
     const apiKey = (get("wt-api-key").value || "").trim();
     const model = meta.requiresModel === false ? "" : (get("wt-api-model").value || "").trim();
