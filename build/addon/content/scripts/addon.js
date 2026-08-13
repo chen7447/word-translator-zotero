@@ -3015,6 +3015,7 @@ _configVersion: 0,
     ["baidu", "_translateBaidu"],
     ["baidu-field", "_translateBaiduField"],
     ["deeplx", "_translateDeepLX"],
+    ["deeplx-selfhosted", "_translateDeepLXSelfhosted"],
     ["youdaozhiyun", "_translateYoudaoZhiyun"],
     ["tencent", "_translateTencent"],
     ["aliyun", "_translateAliyun"],
@@ -3138,6 +3139,38 @@ _configVersion: 0,
     const translation = data && data.result && data.result.texts && data.result.texts[0] && data.result.texts[0].text;
     if (!translation) throw new Error("DeepL 免费翻译返回中没有 result.texts[0].text：" + JSON.stringify(data).slice(0, 500));
     return String(translation).trim();
+  },
+
+  async _translateDeepLXSelfhosted(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("DeepLX 自建服务翻译文本为空");
+    // 用户可能填 base URL（如 http://127.0.0.1:1188）也可能直接填完整 /translate 地址
+    let base = (api.baseUrl || "").trim().replace(/\/+$/, "");
+    if (!base) throw new Error("DeepLX 自建服务 URL 未配置");
+    const url = /\/translate$/.test(base) ? base : base + "/translate";
+    const headers = { "Content-Type": "application/json" };
+    if (api.apiKey) {
+      // 自建 DLX 服务若开启了 -token 鉴权，使用 Bearer 或 DeepL-Auth-Key 均可，服务端兼容两种
+      headers["Authorization"] = "Bearer " + api.apiKey;
+    }
+    const body = JSON.stringify({
+      text: source,
+      source_lang: "EN",
+      target_lang: "ZH",
+    });
+    this._debugLog("DeepLX 自建服务 request URL: " + url + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, {
+      headers,
+      body,
+      responseType: "json",
+    });
+    const data = this._parseJsonResponse(resp, "DeepLX 自建服务");
+    if (data && data.code === 200 && data.data) {
+      return String(data.data).trim();
+    }
+    // 非 200：HTTP 状态或业务 code 错误；DLX 错误响应为 {code, message}
+    const detail = (data && data.message) || (data && data.error && (data.error.message || data.error)) || resp.statusText || "";
+    throw new Error("DeepLX 自建服务错误(" + (resp.status || (data && data.code) || "?") + "): " + detail);
   },
 
   async _translateYoudaoZhiyun(text, api) {
