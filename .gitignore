@@ -18,3 +18,5 @@ api_request_lab/docs/_deeplx_*_tmp.*
 # === 鎿嶄綔绯荤粺 ===
 Thumbs.db
 .DS_Store
+# === 打包产物 ===
+*.xpi
