@@ -11,6 +11,7 @@ var WordTranslatorStorage = {
   _root: null,          // nsIFile: <profile>/wordtranslator
   _wordsDir: null,      // nsIFile: <profile>/wordtranslator/words
   _timers: {},          // 防抖定时器 map
+  _tmpCleanDone: false, // 启动后只清理一次 .tmp 残留
 
   // ---------- 路径 ----------
   getProfileDir() {
@@ -75,23 +76,27 @@ var WordTranslatorStorage = {
     }
     this._root = root;
     this._wordsDir = words;
-    // 启动时清理上一次写入失败留下的 .tmp 残留，避免后续读盘失败
-    try {
-      const cleanTmp = (dir) => {
-        if (!dir || !dir.exists()) return;
-        const entries = dir.directoryEntries;
-        while (entries.hasMoreElements()) {
-          const f = entries.getNext().QueryInterface(Components.interfaces.nsIFile);
-          if (!f.isFile()) continue;
-          const name = f.leafName || "";
-          if (name.endsWith(".tmp")) {
-            try { f.remove(false); } catch (e) {}
+    // 启动后首次调用时清一次 .tmp 残留（崩溃/中断写入留下的废文件），
+    // 之后跳过，避免热路径每次遍历目录。
+    if (!this._tmpCleanDone) {
+      this._tmpCleanDone = true;
+      try {
+        const cleanTmp = (dir) => {
+          if (!dir || !dir.exists()) return;
+          const entries = dir.directoryEntries;
+          while (entries.hasMoreElements()) {
+            const f = entries.getNext().QueryInterface(Components.interfaces.nsIFile);
+            if (!f.isFile()) continue;
+            const name = f.leafName || "";
+            if (name.endsWith(".tmp")) {
+              try { f.remove(false); } catch (e) {}
+            }
           }
-        }
-      };
-      cleanTmp(root);
-      cleanTmp(words);
-    } catch (e) {}
+        };
+        cleanTmp(root);
+        cleanTmp(words);
+      } catch (e) {}
+    }
     return words;
   },
 
@@ -121,29 +126,33 @@ var WordTranslatorStorage = {
     return dir + (dir.indexOf("\\") >= 0 ? "\\" : "/") + String(itemID) + ".json";
   },
 
-  // ---------- 原子写 ----------
-    _writeFileAtomically(file, text) {
-    // 优先 Zotero.File.putContents（官方实现，使用 UTF-8 ConverterOutputStream，0x20 = TRUNCATE）。
-    if (typeof Zotero !== "undefined" && Zotero.File && typeof Zotero.File.putContents === "function") {
-      try { Zotero.File.putContents(file, text); return; } catch (e) {}
-    }
-    // 回退：直接 XPCOM 实现（与 Zotero.File.putContents 行为一致）。
+  // ---------- 原子写（tmp + rename：崩溃/中断时目标文件保持完整）----------
+  _writeFileAtomically(file, text) {
+    const tmp = file.clone();
+    tmp.leafName = file.leafName + ".tmp";
     try {
-      if (file.exists()) { try { file.remove(false); } catch (e) {} }
+      // 1) 完整写入同目录临时文件
+      if (tmp.exists()) { try { tmp.remove(false); } catch (e) {} }
       const fos = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
-      fos.init(file, 0x02 | 0x08 | 0x20, 0o664, 0); // WRONLY | CREATE | TRUNCATE
+      fos.init(tmp, 0x02 | 0x08 | 0x10, 0o664, 0); // WRONLY | CREATE | APPEND
       const os = Components.classes["@mozilla.org/intl/converter-output-stream;1"].createInstance(Components.interfaces.nsIConverterOutputStream);
       os.init(fos, "UTF-8", 4096, "?".charCodeAt(0));
       os.writeString(text);
       os.close();
       fos.close();
-    } catch (e2) {
+      // 2) 原子替换目标（moveTo 第三参 true = replace 已存在目标）
+      const parent = file.parent || null;
       try {
-        const tmp2 = file.clone();
-        tmp2.leafName = file.leafName + ".tmp";
-        if (tmp2.exists()) tmp2.remove(false);
-      } catch (e3) {}
-      throw e2;
+        tmp.moveTo(parent, file.leafName, true);
+      } catch (eMove) {
+        // 个别平台 moveTo 覆盖行为差异：先删目标再移动（仍保留 tmp 完整写入的优势）
+        if (file.exists()) { try { file.remove(false); } catch (e) {} }
+        tmp.moveTo(parent, file.leafName, false);
+      }
+    } catch (e) {
+      // 失败时清理 tmp，保留旧目标文件
+      try { if (tmp.exists()) tmp.remove(false); } catch (e2) {}
+      throw e;
     }
   },
 
