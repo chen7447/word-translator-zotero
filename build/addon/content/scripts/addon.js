@@ -3597,57 +3597,62 @@ _configVersion: 0,
     const url = base + "/chat/completions";
     this._debugLog("request URL: " + url + " | model=" + (api.model || "(none)"));
     let responseData;
-    if (typeof onChunk === "function") {
-      // 流式输出：使用 fetch + SSE 逐行解析（LLM 场景）
-      const fetchResp = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-      });
-      if (!fetchResp.ok) {
-        const errText = await fetchResp.text().catch(() => "");
-        throw new Error("API 错误(" + fetchResp.status + "): " + errText.slice(0, 200));
-      }
-      const reader = fetchResp.body.getReader();
-      const decoder = new TextDecoder();
-      let accumulated = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6).trim();
-            if (data === "[DONE]") break;
-            try {
-              const parsed = JSON.parse(data);
-              const delta = parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content;
-              if (delta) {
-                accumulated += delta;
-                try { onChunk(accumulated); } catch (e) {}
+        let respStatus = 200;
+        let respStatusText = "";
+        if (typeof onChunk === "function") {
+          // 流式输出：使用 fetch + SSE 逐行解析（LLM 场景）
+          const fetchResp = await fetch(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+          });
+          respStatus = fetchResp.status;
+          if (!fetchResp.ok) {
+            const errText = await fetchResp.text().catch(() => "");
+            throw new Error("API 错误(" + fetchResp.status + "): " + errText.slice(0, 200));
+          }
+          const reader = fetchResp.body.getReader();
+          const decoder = new TextDecoder();
+          let accumulated = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split("\\n");
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                const data = line.slice(6).trim();
+                if (data === "[DONE]") break;
+                try {
+                  const parsed = JSON.parse(data);
+                  const delta = parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content;
+                  if (delta) {
+                    accumulated += delta;
+                    try { onChunk(accumulated); } catch (e) {}
+                  }
+                } catch (e) {}
               }
-            } catch (e) {}
+            }
+          }
+          responseData = { choices: [{ message: { content: accumulated } }] };
+        } else {
+          const resp = await Zotero.HTTP.request("POST", url, {
+            headers,
+            body: JSON.stringify(body),
+            responseType: "json",
+          });
+          respStatus = resp.status;
+          respStatusText = resp.statusText;
+          responseData = resp.response;
+          if (typeof responseData === "string") {
+            try { responseData = JSON.parse(responseData); }
+            catch (e) { throw new Error("API 返回的不是有效 JSON：" + responseData.slice(0, 200)); }
           }
         }
-      }
-      responseData = { choices: [{ message: { content: accumulated } }] };
-    } else {
-      const resp = await Zotero.HTTP.request("POST", url, {
-        headers,
-        body: JSON.stringify(body),
-        responseType: "json",
-      });
-      responseData = resp.response;
-      if (typeof responseData === "string") {
-        try { responseData = JSON.parse(responseData); }
-        catch (e) { throw new Error("API 返回的不是有效 JSON：" + responseData.slice(0, 200)); }
-      }
-    }
-    if (resp.status < 200 || resp.status >= 300) {
-      const detail = responseData && responseData.error && (responseData.error.message || responseData.error) || responseData && responseData.message || resp.statusText || "";
-      throw new Error("API 错误(" + resp.status + "): " + detail);
-    }
+        if (respStatus < 200 || respStatus >= 300) {
+          const detail = responseData && responseData.error && (responseData.error.message || responseData.error) || responseData && responseData.message || respStatusText || "";
+          throw new Error("API 错误(" + respStatus + "): " + detail);
+        }
     const content = (responseData && responseData.choices && responseData.choices[0] && responseData.choices[0].message && responseData.choices[0].message.content) || "";
     if (!content) {
       throw new Error("API 返回中没有 choices[0].message.content：" + JSON.stringify(responseData).slice(0, 500));
