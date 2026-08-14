@@ -1885,6 +1885,7 @@ _configVersion: 0,
           baseUrl: api.baseUrl, model: api.model, hasKey: !!api.apiKey
         } : null)
       );
+      const result = await this.translate(word);
       card.translation = result || "翻译失败";
       this._debugLog("translate success: " + JSON.stringify(card.translation));
             this._debugLog("translate success: " + JSON.stringify(card.translation));
