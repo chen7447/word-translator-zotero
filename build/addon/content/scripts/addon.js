@@ -1279,7 +1279,7 @@ _configVersion: 0,
       textarea.style.overflowY = "hidden";
       textarea.addEventListener("input", () => this._resizeTempEditArea(textarea));
       btn.replaceWith(textarea);
-            btn.replaceWith(textarea);
+      this._resizeTempEditArea(textarea);
       this._tempEditState = {
         doc: doc,
         btn: btn,

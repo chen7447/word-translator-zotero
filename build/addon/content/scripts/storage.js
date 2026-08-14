@@ -126,31 +126,29 @@ var WordTranslatorStorage = {
     return dir + (dir.indexOf("\\") >= 0 ? "\\" : "/") + String(itemID) + ".json";
   },
 
-  // ---------- 原子写（tmp + rename：崩溃/中断时目标文件保持完整）----------
+  // ---------- 原子写（优先 Zotero.File.putContents，它本身采用 tmp+rename 原子写入）----------
   _writeFileAtomically(file, text) {
+    // 优先 Zotero.File.putContents（官方 API，内部使用 tmp+rename 原子写入）
+    if (typeof Zotero !== "undefined" && Zotero.File && typeof Zotero.File.putContents === "function") {
+      try { Zotero.File.putContents(file, text); return; } catch (e) {}
+    }
+    // 回退：直接 XPCOM 实现（WRONLY | CREATE | TRUNCATE）
     const tmp = file.clone();
     tmp.leafName = file.leafName + ".tmp";
     try {
-      // 1) 完整写入同目录临时文件
       if (tmp.exists()) { try { tmp.remove(false); } catch (e) {} }
       const fos = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
-      fos.init(tmp, 0x02 | 0x08 | 0x10, 0o664, 0); // WRONLY | CREATE | APPEND
+      fos.init(tmp, 0x02 | 0x08 | 0x20, 0o664, 0); // WRONLY | CREATE | TRUNCATE
       const os = Components.classes["@mozilla.org/intl/converter-output-stream;1"].createInstance(Components.interfaces.nsIConverterOutputStream);
       os.init(fos, "UTF-8", 4096, "?".charCodeAt(0));
       os.writeString(text);
       os.close();
       fos.close();
-      // 2) 原子替换目标（moveTo 第三参 true = replace 已存在目标）
+      // 替换目标：先删目标，再 rename（避免 Zotero 9 中 moveTo 第三参不支持覆盖）
       const parent = file.parent || null;
-      try {
-        tmp.moveTo(parent, file.leafName, true);
-      } catch (eMove) {
-        // 个别平台 moveTo 覆盖行为差异：先删目标再移动（仍保留 tmp 完整写入的优势）
-        if (file.exists()) { try { file.remove(false); } catch (e) {} }
-        tmp.moveTo(parent, file.leafName, false);
-      }
+      if (file.exists()) { try { file.remove(false); } catch (e) {} }
+      tmp.moveTo(parent, file.leafName, false);
     } catch (e) {
-      // 失败时清理 tmp，保留旧目标文件
       try { if (tmp.exists()) tmp.remove(false); } catch (e2) {}
       throw e;
     }
