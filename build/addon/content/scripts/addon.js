@@ -1885,11 +1885,9 @@ _configVersion: 0,
           baseUrl: api.baseUrl, model: api.model, hasKey: !!api.apiKey
         } : null)
       );
-      const result = await this.translate(word, null, (partial) => {
-        // 流式/增量翻译时实时更新文本框（LLM 逐字输出、Google 等一次性调用也会回调）
-        this._updateTempEditArea(normWord, partial);
-      });
+      card.translation = result || "翻译失败";
       this._debugLog("translate success: " + JSON.stringify(card.translation));
+            this._debugLog("translate success: " + JSON.stringify(card.translation));
     } catch (e) {
       card.translation = "翻译失败";
       this._debugLog("translate ERROR: " + (e && (e.stack || e.message || String(e))));
