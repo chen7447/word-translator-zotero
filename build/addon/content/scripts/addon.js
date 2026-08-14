@@ -1980,12 +1980,28 @@ _configVersion: 0,
     try {
       const result = await this.translate(currentCard.word);
       currentCard.translation = result || "翻译失败";
+      this._debugLog("retry translate success: " + JSON.stringify(currentCard.translation));
     } catch (e) {
       currentCard.translation = "翻译失败";
+      this._debugLog("retry translate ERROR: " + (e && (e.stack || e.message || String(e))));
     } finally {
       currentCard.pending = false;
       this._flushAndPersistWords();
       this._applyWordBookView(id, { source: "retry-translate-finish" });
+      try {
+        this._updateTempEditArea(currentCard.word, currentCard.translation);
+      } catch (e) {
+        this._debugLog("_updateTempEditArea ERROR in retry finally: " + (e && (e.message || String(e))));
+      }
+      try {
+        const win = Zotero.getMainWindow();
+        const doc = win && win.document;
+        const zp = doc && doc.getElementById && doc.getElementById("zotero-item-pane");
+        const curItemId = zp && zp.getAttribute && zp.getAttribute("data-itemid");
+        if (curItemId && Number(curItemId) === id) {
+          await this._rerenderCurrentItemPane("retry-translate-finish");
+        }
+      } catch (e2) {}
     }
   },
 
