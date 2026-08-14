@@ -284,15 +284,15 @@
     {
       group: "国际翻译平台",
       options: [
-        { value: "deepl", label: "DeepL", enabled: true, managedConfig: true, baseUrl: "https://api-free.deepl.com/v2", requiresModel: false },
+        { value: "deepl", label: "DeepL（免费 API 调用量有限）", enabled: true, managedConfig: true, baseUrl: "https://api-free.deepl.com/v2", requiresModel: false },
         { value: "microsoft", label: "微软翻译", enabled: true, managedConfig: true, baseUrl: "https://api.cognitive.microsofttranslator.com/translate", requiresModel: false },
       ],
     },
     {
       group: "免费翻译",
       options: [
-        { value: "google", label: "Google 翻译", enabled: true, managedConfig: true, baseUrl: "https://translate.googleapis.com/translate_a/single", noCredentials: true, requiresModel: false },
-        { value: "deeplx", label: "DeepL 免费", enabled: true, managedConfig: true, baseUrl: "https://www2.deepl.com/jsonrpc", noCredentials: true, requiresModel: false },
+        { value: "google", label: "Google 翻译（非官方逆向接口，可能随时失效）", enabled: true, managedConfig: true, baseUrl: "https://translate.googleapis.com/translate_a/single", noCredentials: true, requiresModel: false },
+        { value: "deeplx", label: "DeepL 免费（非官方逆向接口，可能随时失效）", enabled: true, managedConfig: true, baseUrl: "https://www2.deepl.com/jsonrpc", noCredentials: true, requiresModel: false },
       ],
     },
     {
