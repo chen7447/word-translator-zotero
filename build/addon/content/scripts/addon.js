@@ -1885,8 +1885,10 @@ _configVersion: 0,
           baseUrl: api.baseUrl, model: api.model, hasKey: !!api.apiKey
         } : null)
       );
-      const result = await this.translate(word);
-      card.translation = result || "翻译失败";
+      const result = await this.translate(word, null, (partial) => {
+        // 流式/增量翻译时实时更新文本框（LLM 逐字输出、Google 等一次性调用也会回调）
+        this._updateTempEditArea(normWord, partial);
+      });
       this._debugLog("translate success: " + JSON.stringify(card.translation));
     } catch (e) {
       card.translation = "翻译失败";
@@ -3531,13 +3533,18 @@ _configVersion: 0,
     return translation;
   },
 
-  async translate(text, apiOverride) {
+  async translate(text, apiOverride, onChunk) {
     const api = apiOverride || this.getActiveApi();
     if (!api) throw new Error("未配置 API（请到设置->单词翻译 中添加 API）");
     const provider = api.provider || (api.type === "deepseek" ? "deepseek" : "openai");
     const adapterMethod = this._translateAdapters.get(provider);
     if (adapterMethod && typeof this[adapterMethod] === "function") {
-      return this[adapterMethod](text, api);
+      // 非流式适配器（Google/DeepL 等）一次性返回；若传入 onChunk 则返回后回调一次完整结果
+      const result = await this[adapterMethod](text, api);
+      if (typeof onChunk === "function" && result) {
+        try { onChunk(String(result)); } catch (e) {}
+      }
+      return result;
     }
     const promptMode = (this._data && this._data.promptMode) || "split";
     let messages = [];
@@ -3560,7 +3567,7 @@ _configVersion: 0,
       model: api.model,
       messages,
       temperature: 0.3,
-      stream: false,
+      stream: !!onChunk,
     };
     const headers = {
       "Content-Type": "application/json",
@@ -3576,15 +3583,53 @@ _configVersion: 0,
     }
     const url = base + "/chat/completions";
     this._debugLog("request URL: " + url + " | model=" + (api.model || "(none)"));
-    const resp = await Zotero.HTTP.request("POST", url, {
-      headers,
-      body: JSON.stringify(body),
-      responseType: "json",
-    });
-    let responseData = resp.response;
-    if (typeof responseData === "string") {
-      try { responseData = JSON.parse(responseData); }
-      catch (e) { throw new Error("API 返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+    let responseData;
+    if (typeof onChunk === "function") {
+      // 流式输出：使用 fetch + SSE 逐行解析（LLM 场景）
+      const fetchResp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+      if (!fetchResp.ok) {
+        const errText = await fetchResp.text().catch(() => "");
+        throw new Error("API 错误(" + fetchResp.status + "): " + errText.slice(0, 200));
+      }
+      const reader = fetchResp.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulated = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") break;
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content;
+              if (delta) {
+                accumulated += delta;
+                try { onChunk(accumulated); } catch (e) {}
+              }
+            } catch (e) {}
+          }
+        }
+      }
+      responseData = { choices: [{ message: { content: accumulated } }] };
+    } else {
+      const resp = await Zotero.HTTP.request("POST", url, {
+        headers,
+        body: JSON.stringify(body),
+        responseType: "json",
+      });
+      responseData = resp.response;
+      if (typeof responseData === "string") {
+        try { responseData = JSON.parse(responseData); }
+        catch (e) { throw new Error("API 返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+      }
     }
     if (resp.status < 200 || resp.status >= 300) {
       const detail = responseData && responseData.error && (responseData.error.message || responseData.error) || responseData && responseData.message || resp.statusText || "";
