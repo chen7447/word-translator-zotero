@@ -2764,51 +2764,8 @@ _configVersion: 0,
   },
 
   _normalize(raw) {
-    const base = {
-      contextMenuLabel: "添加单词并翻译",
-      enabled: true,
-      autoTranslate: false,
-      selectionMode: "word",
-      hotkeyEnabled: false,
-      hotkeyModifier: "ctrl",
-      customHotkeyEnabled: false,
-      customHotkey: "",
-      addWordHotkeyEnabled: true,
-      addWordHotkey: "",
-      addWordHotkeyMode: "ctrl",
-      selectionFirstEnabled: true,
-      promptSystem:
-        "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。",
-      promptUser: "请将以下英文单词或短语翻译为专业中文：{{word}}",
-      promptMode: "split",
-      promptGlobal:
-        "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}",
-      fontSize: 13,
-      pageSize: 10, // 单词本每页显示单词数
-      apis: [],
-      activeApiIndex: 0,
-      sortMode: "reverse",
-      searchStrategy: "prefix",
-    };
-    if (!raw || typeof raw !== "object") return base;
-    return {
-      ...base,
-      ...raw,
-      apis: Array.isArray(raw.apis) ? raw.apis : [],
-      activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
-      sortMode: typeof raw.sortMode === "string" ? raw.sortMode : "reverse",
-      searchStrategy: typeof raw.searchStrategy === "string" ? raw.searchStrategy : "prefix",
-      pageSize: Number.isFinite(Number(raw.pageSize)) && Number(raw.pageSize) >= 1 ? Math.floor(Number(raw.pageSize)) : 10,
-      selectionMode: raw.selectionMode === "sentence" ? "sentence" : "word",
-      // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）
-      addWordHotkeyEnabled: typeof raw.addWordHotkeyEnabled === "boolean" ? raw.addWordHotkeyEnabled : true,
-      addWordHotkeyMode: (raw.addWordHotkeyMode === "ctrl" || raw.addWordHotkeyMode === "alt" ||
-        raw.addWordHotkeyMode === "shift" || raw.addWordHotkeyMode === "custom")
-        ? raw.addWordHotkeyMode : "ctrl",
-      selectionFirstEnabled: typeof raw.selectionFirstEnabled === "boolean" ? raw.selectionFirstEnabled : true,
-      hotkeyModifier: (raw.hotkeyModifier === "shift" || raw.hotkeyModifier === "ctrl+shift" || raw.hotkeyModifier === "alt+shift")
-        ? "ctrl" : (raw.hotkeyModifier || "ctrl"),
-    };
+    // 配置 schema 单源化：默认值与校验逻辑统一在 config-schema.js
+    return WordTranslatorConfig.normalize(raw);
   },
 
   getActiveApi() {

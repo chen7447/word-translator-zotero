@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 // Word Translator 偏好面板脚本（在偏好窗口全局作用域执行）
 // 由 preferences.xhtml 的 onload -> Zotero.WordTranslator.hooks.onPrefsLoad -> loadSubScript(this) 载入。
 
@@ -334,46 +334,10 @@
     select.value = selected;
   }
 
-  const DEFAULTS = {
-    contextMenuLabel: "添加单词并翻译",
-    enabled: true,
-    autoTranslate: false,
-    selectionMode: "word",
-    hotkeyEnabled: false,
-    hotkeyModifier: "ctrl",
-    customHotkeyEnabled: false,
-    customHotkey: "",
-    addWordHotkeyEnabled: true,
-    addWordHotkey: "",
-    addWordHotkeyMode: "ctrl", // "ctrl" | "alt" | "shift" | "custom"
-    promptMode: "split",
-    promptSystem: DEFAULT_PROMPT_SYSTEM,
-    promptUser: DEFAULT_PROMPT_USER,
-    promptGlobal: DEFAULT_PROMPT_GLOBAL,
-    apis: [],
-    activeApiIndex: 0,
-    fontSize: 13,
-    pageSize: 10, // 单词本每页显示单词数（默认 10）
-    searchStrategy: "prefix", // 搜索匹配策略（默认前缀匹配）
-  };
+  const DEFAULTS = Zotero.WordTranslatorConfig.DEFAULTS;
 
   function normalize(raw) {
-    const base = JSON.parse(JSON.stringify(DEFAULTS));
-    if (!raw || typeof raw !== "object") return base;
-    return {
-      ...base,
-      ...raw,
-      apis: Array.isArray(raw.apis) ? raw.apis : [],
-      activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
-      pageSize: Number.isFinite(Number(raw.pageSize)) && Number(raw.pageSize) >= 1 ? Math.floor(Number(raw.pageSize)) : 10,
-      searchStrategy: typeof raw.searchStrategy === "string" ? raw.searchStrategy : "prefix",
-      selectionMode: raw.selectionMode === "sentence" ? "sentence" : "word",
-      // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）
-      addWordHotkeyEnabled: typeof raw.addWordHotkeyEnabled === "boolean" ? raw.addWordHotkeyEnabled : true,
-      addWordHotkeyMode: (raw.addWordHotkeyMode === "ctrl" || raw.addWordHotkeyMode === "alt" ||
-        raw.addWordHotkeyMode === "shift" || raw.addWordHotkeyMode === "custom")
-        ? raw.addWordHotkeyMode : "ctrl",
-    };
+    return Zotero.WordTranslatorConfig.normalize(raw);
   }
 
   function setStatus(text) {
