@@ -1308,15 +1308,33 @@ _configVersion: 0,
   _resizeTempEditArea(textarea) {
     try {
       if (!textarea) return;
+      // 双保险：先强制按内容自然高度，再逐次读取 scrollHeight
       textarea.style.height = "auto";
+      textarea.style.overflowY = "hidden";
       const view = textarea.ownerDocument && textarea.ownerDocument.defaultView;
       const style = view && view.getComputedStyle ? view.getComputedStyle(textarea) : null;
       const lineHeight = parseFloat(style && style.lineHeight) || 18;
-      const maxHeight = lineHeight * 3.2;
+      // 长句原文 + "-- 正在翻译"/译文可能超过单行；最大放宽到 10 行，避免内容被截断
+      const maxHeight = lineHeight * 10;
       const minHeight = lineHeight * 1.35;
       const next = Math.max(minHeight, Math.min(textarea.scrollHeight || minHeight, maxHeight));
       textarea.style.height = next + "px";
       textarea.style.overflowY = (textarea.scrollHeight || 0) > maxHeight ? "auto" : "hidden";
+      // PDF.js 沙箱中 scrollHeight 在第一次设置 height=auto 时可能尚未重排，
+      // 下一帧再校正一次（仅当高度确实偏小时）
+      try {
+        const win = view || (textarea.ownerDocument && textarea.ownerDocument.defaultView);
+        if (win && typeof win.requestAnimationFrame === "function") {
+          win.requestAnimationFrame(() => {
+            if (!textarea || !textarea.isConnected) return;
+            const h = Math.max(minHeight, Math.min(textarea.scrollHeight || minHeight, maxHeight));
+            if (h > parseFloat(textarea.style.height || "0") * 0.9) {
+              textarea.style.height = h + "px";
+              textarea.style.overflowY = (textarea.scrollHeight || 0) > maxHeight ? "auto" : "hidden";
+            }
+          });
+        }
+      } catch (e) {}
     } catch (e) {}
   },
 
