@@ -1839,34 +1839,48 @@ _configVersion: 0,
       return c && String(c.word || "").toLowerCase() === normWord.toLowerCase();
     });
     if (existingCard) {
-      this._debugLog("_addWordForReader skip (duplicate): " + JSON.stringify(normWord));
-      // 重复选中视为一次最近使用：保留同一个 card，不重复调用 API，
-      // 但将其移动到原始数组末尾，交由当前 sortMode 重新计算显示位置。
-      try {
-        const existingTranslation = String(existingCard.translation || "").trim();
-        if (existingTranslation && existingTranslation !== "翻译中…") {
-          this._updateTempEditArea(normWord, existingTranslation);
+          const existingTranslation = String(existingCard.translation || "").trim();
+          // 已有真实翻译 → 视为最近使用，不重复调用 API
+          if (existingTranslation && existingTranslation !== "翻译中…") {
+            this._debugLog("_addWordForReader skip (duplicate): " + JSON.stringify(normWord));
+            try {
+              this._updateTempEditArea(normWord, existingTranslation);
+              const existingIndex = list.indexOf(existingCard);
+              if (existingIndex >= 0 && existingIndex !== list.length - 1) {
+                list.splice(existingIndex, 1);
+                list.push(existingCard);
+                this._itemWords.set(Number(paneID), list);
+                this._persistWords();
+                this._applyWordBookView(Number(paneID), { source: "duplicate-reorder" });
+              }
+            } catch (e) {
+              this._debugLog("duplicate recent-use update ERROR: " + (e && (e.message || String(e))));
+            }
+            return;
+          }
+          // 翻译中…残留 → 复用 existingCard 重新翻译
+          this._debugLog("_addWordForReader re-translate (stale '翻译中…'): " + JSON.stringify(normWord));
+          existingCard.translation = "正在翻译…";
+          existingCard.pending = true;
+          // 移动到末尾（最近使用）
+          const existingIndex = list.indexOf(existingCard);
+          if (existingIndex >= 0 && existingIndex !== list.length - 1) {
+            list.splice(existingIndex, 1);
+            list.push(existingCard);
+            this._itemWords.set(Number(paneID), list);
+            this._persistWords();
+            this._applyWordBookView(Number(paneID), { source: "duplicate-reorder" });
+          }
+          // 复用 existingCard，跳过下面 card 创建
+          // 复用 existingCard，跳过下面 card 创建
+          var card = existingCard;
         }
-        const existingIndex = list.indexOf(existingCard);
-        if (existingIndex >= 0 && existingIndex !== list.length - 1) {
-          list.splice(existingIndex, 1);
-          list.push(existingCard);
-          this._itemWords.set(Number(paneID), list);
-          this._persistWords();
-          this._applyWordBookView(Number(paneID), { source: "duplicate-reorder" });
-        }
-      } catch (e) {
-        this._debugLog("duplicate recent-use update ERROR: " + (e && (e.message || String(e))));
-      }
-      return;
+    if (typeof card === "undefined") {
+      var card = { word: normWord, translation: "翻译中…", pending: true };
+      list.push(card);
+      this._itemWords.set(Number(paneID), list);
+      this._persistWords();
     }
-    const card = { word: normWord, translation: "翻译中…", pending: true };
-    list.push(card);
-    this._itemWords.set(Number(paneID), list);
-    this._persistWords();
-    this._debugLog("_addWordForReader added: paneID=" + paneID + ", count=" + list.length);
-
-    // 新单词加入后回到第 1 页，便于用户确认刚加入的词（保留搜索词）
     try {
       const st = this._getWordBookViewState(Number(paneID));
       if (st && st.page !== 1) {
