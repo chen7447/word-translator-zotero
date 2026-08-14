@@ -15,6 +15,7 @@ WordTranslatorConfig.DEFAULTS = {
   pageSize: 10, // 单词本每页显示单词数
   sortMode: "reverse",
   searchStrategy: "prefix",
+  debugLog: false, // 是否写 wordtranslator-debug.log（默认关，排障时在偏好页打开）
   // 快捷键-划词翻译
   hotkeyEnabled: false,
   hotkeyModifier: "ctrl",

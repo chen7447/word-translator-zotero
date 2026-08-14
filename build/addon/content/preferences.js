@@ -856,6 +856,10 @@
         (() => { const c = el("input", { type: "checkbox", id: "wt-auto-translate" }); return c; })(),
         el("label", { for: "wt-auto-translate" }, [txt("选中文本后自动翻译并加入单词本")]),
       ]),
+      el("div", { class: "wt-row-inline" }, [
+        (() => { const c = el("input", { type: "checkbox", id: "wt-debug-log" }); return c; })(),
+        el("label", { for: "wt-debug-log" }, [txt("启用调试日志（写入 wordtranslator-debug.log，默认关闭）")]),
+      ]),
       el("div", { class: "wt-row-inline", style: "margin-top:6px;" }, [
         (() => { const c = el("input", { type: "checkbox", id: "wt-addword-hotkey-enabled" }); return c; })(),
         (() => {
@@ -1284,6 +1288,8 @@
     if (en) en.addEventListener("change", () => { data.enabled = en.checked; save(false); });
     const at = get("wt-auto-translate");
     if (at) at.addEventListener("change", () => { data.autoTranslate = at.checked; save(false); });
+    const dbgLog = get("wt-debug-log");
+    if (dbgLog) dbgLog.addEventListener("change", () => { data.debugLog = dbgLog.checked; save(false); });
     const hkEn = get("wt-hotkey-enabled");
     if (hkEn) hkEn.addEventListener("change", () => {
       // 互斥：开启“快捷键-划词翻译”必须先关闭“自定义快捷键”
@@ -1413,6 +1419,8 @@
     try { syncContextLabelRefs(); } catch (e) {}
     if (enabled) enabled.checked = !!data.enabled;
     if (autoTranslate) autoTranslate.checked = !!data.autoTranslate;
+    const debugLogCb = get("wt-debug-log");
+    if (debugLogCb) debugLogCb.checked = !!data.debugLog;
     if (hotkeyEnabled) hotkeyEnabled.checked = !!data.hotkeyEnabled;
     if (hotkeyMod) {
       let hv = data.hotkeyModifier || "ctrl";

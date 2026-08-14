@@ -108,6 +108,13 @@ var WordTranslator = {
       var wfile = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
       try { wfile.initWithFile(profileDir); } catch (e1) { wfile.initWithPath(profileDir.path || String(profileDir)); }
       wfile.append("wordtranslator-debug.log");
+      // 超过 2MB 时轮转：删除旧 .1，重命名当前文件为 .1（保留最近 2 份）
+      if (wfile.exists() && wfile.fileSize > 2 * 1024 * 1024) {
+        var bak = wfile.clone();
+        bak.leafName = "wordtranslator-debug.log.1";
+        if (bak.exists()) { try { bak.remove(false); } catch (e) {} }
+        try { wfile.moveTo(null, "wordtranslator-debug.log.1"); } catch (e) {}
+      }
       var wout = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
       wout.init(wfile, 0x02 | 0x08 | 0x10, 0o666, 0);
       var wconv = Components.classes["@mozilla.org/intl/converter-output-stream;1"].createInstance(Components.interfaces.nsIConverterOutputStream);
@@ -122,7 +129,10 @@ var WordTranslator = {
 
   _debugLog(msg) {
     try { Zotero.debug("[WordTranslator] " + msg); } catch (e) {}
-    this._debugWriteToFile(msg);
+    // 写文件受 debugLog 开关控制（默认关）；Zotero.debug 控制台输出不受影响
+    if (this._data && this._data.debugLog) {
+      this._debugWriteToFile(msg);
+    }
   },
 
   _openExternalURL(url) {
@@ -155,7 +165,6 @@ var WordTranslator = {
       return false;
     }
   },
-
   _openInOS(path) {
     try {
       if (!path) return false;
@@ -207,8 +216,6 @@ _configVersion: 0,
       this._debugLog("_onConfigChange ERROR: " + (e && (e.stack || e.message || String(e))));
     }
   },
-
-
 
   shutdown(reason) {
     try {
@@ -1163,7 +1170,6 @@ _configVersion: 0,
     this._lastSelectionPopup = { doc, reader, button: mountedButton, text, time: Date.now() };
   },
 
-
   // 快捷键-划词翻译：组合键按下时触发翻译
   _getHotkeyTargetWindow(reader) {
     try {
@@ -1198,7 +1204,6 @@ _configVersion: 0,
     } catch (e) {}
     return fallbackDoc || null;
   },
-
 
   // 创建"添加单词并翻译"按钮（带 SVG 图标）
   _createAddWordButton(doc, reader, text, btnHTML) {
@@ -2878,7 +2883,6 @@ _configVersion: 0,
     try { Zotero.Prefs.clear && Zotero.Prefs.clear(this._wordsPrefKey, true); } catch (e) {}
     this._itemWords = new Map();
   },
-
 
   _saveData() {
     try {
