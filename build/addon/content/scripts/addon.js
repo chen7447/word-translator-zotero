@@ -1277,8 +1277,9 @@ _configVersion: 0,
       textarea.style.whiteSpace = "pre-wrap";
       textarea.style.overflowWrap = "anywhere";
       textarea.style.overflowY = "hidden";
-      this._resizeTempEditArea(textarea);
+      textarea.addEventListener("input", () => this._resizeTempEditArea(textarea));
       btn.replaceWith(textarea);
+            btn.replaceWith(textarea);
       this._tempEditState = {
         doc: doc,
         btn: btn,
