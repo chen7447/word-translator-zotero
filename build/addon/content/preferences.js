@@ -594,12 +594,12 @@
 
       const title = document.createElementNS(HTML_NS, "div");
       title.style.cssText = "font-weight:600;font-size:14px;margin-bottom:8px;color:CanvasText;";
-      title.textContent = "Found " + ids.length + " models. Click to select. Use the search box to filter.";
+      title.textContent = "找到 " + ids.length + " 个模型。点击选择，搜索框可筛选。";
       dlg.appendChild(title);
 
       const search = document.createElementNS(HTML_NS, "input");
       search.type = "text";
-      search.placeholder = "Search model id...";
+      search.placeholder = "搜索模型 ID...";
       search.style.cssText = "width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid ThreeDShadow;border-radius:6px;margin-bottom:8px;font-size:13px;background:Field;color:FieldText;";
       dlg.appendChild(search);
 
@@ -614,7 +614,7 @@
         if (matched.length === 0) {
           const empty = document.createElementNS(HTML_NS, "div");
           empty.style.cssText = "padding:20px;color:GrayText;text-align:center;font-size:13px;";
-          empty.textContent = "No matches";
+          empty.textContent = "无匹配结果";
           listBox.appendChild(empty);
           return;
         }
@@ -629,7 +629,7 @@
         });
         const note = document.createElementNS(HTML_NS, "div");
         note.style.cssText = "padding:6px 12px;color:GrayText;font-size:12px;text-align:right;";
-        note.textContent = "Showing " + matched.length + " / " + ids.length;
+        note.textContent = "显示 " + matched.length + " / " + ids.length;
         listBox.appendChild(note);
       }
       renderList("");
@@ -677,34 +677,34 @@
     const prov = get("wt-api-provider").value;
     const baseUrl = (get("wt-api-baseurl").value || "").trim().replace(/\/+$/, "");
     const apiKey = (get("wt-api-key").value || "").trim();
-    if (!baseUrl) { setStatus("Please fill in API URL first"); return; }
-    if (!apiKey) { setStatus("Please fill in API Key first"); return; }
+    if (!baseUrl) { setStatus("请先填写 API 地址"); return; }
+    if (!apiKey) { setStatus("请先填写 API Key"); return; }
     let url = baseUrl + "/models";
-    setStatus("Fetching model list...");
+    setStatus("正在获取模型列表…");
     try {
       const resp = await Zotero.HTTP.request("GET", url, {
         headers: { Authorization: "Bearer " + apiKey },
         responseType: "json",
       });
       if (resp.status !== 200) {
-        setStatus("Fetch failed (" + resp.status + ")");
+        setStatus("获取失败（" + resp.status + "）");
         return;
       }
       const list = (resp.response && (resp.response.data || resp.response)) || [];
       const ids = Array.isArray(list) ? list.map((x) => x && (x.id || x)).filter(Boolean) : [];
       if (ids.length === 0) {
-        setStatus("No models found in response");
+        setStatus("响应中未找到模型");
         return;
       }
       const picked = await showModelPicker(ids);
       if (picked && picked.trim()) {
         get("wt-api-model").value = picked.trim();
-        setStatus("Filled model: " + picked.trim());
+        setStatus("已填入模型: " + picked.trim());
       } else {
         setStatus("已取消");
       }
     } catch (e) {
-      setStatus("Fetch failed: " + (e && e.message || e));
+      setStatus("获取失败: " + (e && e.message || e));
     }
   }
 
