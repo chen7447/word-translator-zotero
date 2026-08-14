@@ -448,7 +448,7 @@
         if (!confirm("确认删除 API “" + (api.name || "(未命名)") + "”？")) return;
         data.apis.splice(i, 1);
         if (data.activeApiIndex >= data.apis.length) data.activeApiIndex = Math.max(0, data.apis.length - 1);
-        if (data.activeApiIndex === i) data.activeApiIndex = Math.min(i, data.apis.length - 1);
+        if (data.activeApiIndex === i && data.apis.length > 0) data.activeApiIndex = Math.min(i, data.apis.length - 1);
         if (editingIndex === i) closeEditor();
         save(true);
         renderApis();
@@ -660,7 +660,7 @@
       const btnBar = document.createElementNS(HTML_NS, "div");
       btnBar.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:10px;";
       const cancel = document.createElementNS(HTML_NS, "button");
-      cancel.textContent = "Cancel";
+      cancel.textContent = "取消";
       cancel.style.cssText = "padding:5px 16px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;color:ButtonText;";
       cancel.addEventListener("click", () => cleanup(null));
       btnBar.appendChild(cancel);
@@ -701,7 +701,7 @@
         get("wt-api-model").value = picked.trim();
         setStatus("Filled model: " + picked.trim());
       } else {
-        setStatus("Cancelled");
+        setStatus("已取消");
       }
     } catch (e) {
       setStatus("Fetch failed: " + (e && e.message || e));
