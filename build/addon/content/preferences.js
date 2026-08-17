@@ -240,7 +240,7 @@
             .then(p => p.wait())
             .then(() => { stepTo(3, "校验安装状态…"); return pollInstallation(30); })
             .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
-            .catch(err => { stepTo(0, "安装失败: " + (err.message || String(err)), true); });
+            .catch(err => { stepTo(0, "安装失败: " + (err.message || String(err)), true); autoExpandMirrorsOnFailure(); });
         }
     function stepTo(step, msg, isError) {
       const el = get("wt-powertoys-progress");
@@ -255,6 +255,79 @@
     function checkRegistryKey() {
           try { const wrk = Components.classes["@mozilla.org/windows-registry-key;1"].createInstance(Components.interfaces.nsIWindowsRegKey); wrk.open(wrk.ROOT_KEY_CURRENT_USER, "Software\\Microsoft\\PowerToys", wrk.ACCESS_READ); const ok = wrk.valueNames.length > 0; wrk.close(); return ok; } catch (e) { return false; }
         }
+    function buildMirrorListUI() {
+      const c = get("wt-powertoys-mirrors");
+      if (!c) return;
+      let prefs = { custom: [], hiddenDefaults: [] };
+      try { const s = Zotero.Prefs.get("extensions.zotero.wordtranslator.powertoysMirrors", true); if (s) { try { prefs = JSON.parse(s); } catch (e) {} } } catch (e) {}
+      const hidden = new Set(prefs.hiddenDefaults || []);
+      const MIRRORS = [
+        { id: "ms-store-cn", name: "微软商店（中国版）", url: "https://www.microsoft.com/zh-cn/p/microsoft-powertoys/9p0wshd1kwrc" },
+        { id: "ghproxy", name: "GitHub 代理 (ghproxy.com)", url: "https://ghproxy.com/https://github.com/microsoft/PowerToys/releases/latest" },
+        { id: "gh-proxy", name: "GitHub 代理 (gh-proxy.com)", url: "https://gh-proxy.com/https://github.com/microsoft/PowerToys/releases/latest" },
+      ];
+      const rows = [];
+      rows.push(el("p", { class: "wt-hint", style: "margin:8px 0 4px;" }, [txt("国内下载慢？选镜像或自定义：")]));
+      for (const m of MIRRORS) {
+        if (hidden.has(m.id)) continue;
+        rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" }, [
+          txt("\u25CB " + m.name),
+          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { window.openWebLinkIn(m.url); } catch (e) { window.open(m.url, "_blank"); } }); return b;})(),
+          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("隐藏")]); b.addEventListener("click", () => { hidden.add(m.id); prefs.hiddenDefaults = Array.from(hidden); try { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } catch (e) {} buildMirrorListUI(); }); return b;})(),
+        ]));
+      }
+      if (prefs.custom && prefs.custom.length > 0) {
+        rows.push(el("p", { class: "wt-hint", style: "margin:4px 0;" }, [txt("我的镜像：")]));
+        for (const cm of prefs.custom) {
+          rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" }, [
+            txt("\u25CF " + cm.name),
+            (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { window.openWebLinkIn(cm.url); } catch (e) { window.open(cm.url, "_blank"); } }); return b;})(),
+            (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;color:firebrick;" }, [txt("删除")]); b.addEventListener("click", () => { prefs.custom = prefs.custom.filter(x => x.id !== cm.id); try { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } catch (e) {} buildMirrorListUI(); }); return b;})(),
+          ]));
+        }
+      }
+      const hiddenVisible = MIRRORS.filter(m => hidden.has(m.id));
+      if (hiddenVisible.length > 0) {
+        const expandId = "wt-powertoys-hidden-mirrors";
+        rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;margin-top:4px;" }, [
+          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;", id: "wt-powertoys-toggle-hidden" }, [txt("\u25B8 已隐藏的默认镜像 (" + hiddenVisible.length + ")")]); b.addEventListener("click", () => {
+            const area = get(expandId);
+            if (area) { area.style.display = area.style.display === "none" ? "" : "none"; b.textContent = area.style.display === "none" ? "\u25B8 已隐藏的默认镜像 (" + hiddenVisible.length + ")" : "\u25BE 已隐藏的默认镜像 (" + hiddenVisible.length + ")"; }
+          }); return b;})(),
+        ]));
+        rows.push(el("div", { id: expandId, style: "display:none;" }, [
+          (() => {
+            const items = [];
+            for (const hm of hiddenVisible) {
+              items.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;margin:2px 0;" }, [
+                txt("\u25CB " + hm.name),
+                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("恢复")]); b.addEventListener("click", () => { hidden.delete(hm.id); prefs.hiddenDefaults = Array.from(hidden); try { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } catch (e) {} buildMirrorListUI(); }); return b;})(),
+              ]));
+            }
+            return items;
+          })(),
+        ]));
+      }
+      rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;margin-top:6px;" }, [
+        txt("+ 自定义镜像："),
+        (() => { const inp = el("input", { type: "text", class: "wt-input", id: "wt-powertoys-custom-url", style: "width:300px;", placeholder: "https://example.com/PowerToysSetup.exe" }); return inp;})(),
+        (() => { const b = el("button", { type: "button", class: "wt-test-btn", style: "padding:2px 12px;font-size:12px;" }, [txt("添加")]); b.addEventListener("click", () => {
+          const inp = get("wt-powertoys-custom-url");
+          if (!inp || !inp.value.trim()) return;
+          if (!prefs.custom) prefs.custom = [];
+          prefs.custom.push({ id: "u-" + Date.now(), name: inp.value.trim().replace(/^https?:\/\//, "").substring(0, 40), url: inp.value.trim() });
+          try { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } catch (e) {}
+          inp.value = "";
+          buildMirrorListUI();
+        }); return b;})(),
+      ]));
+      c.replaceChildren(...rows);
+    }
+    function autoExpandMirrorsOnFailure() {
+      const c = get("wt-powertoys-mirrors");
+      if (c) c.style.display = "";
+      buildMirrorListUI();
+    }
 
     // 通用按键录制器：双击输入框进入录制，捕获键盘组合键或鼠标侧键，写入规范字符串
   function makeHotkeyRecorder(inputId, onRecord) {
@@ -989,6 +1062,7 @@
                 ]),
                 el("div", { id: "wt-powertoys-status", class: "wt-row", style: "font-family:monospace;line-height:1.6;" }, [txt("检测中…")]),
                 el("div", { id: "wt-powertoys-progress", class: "wt-row", style: "font-family:monospace;line-height:1.6;margin-top:6px;" }, [txt("")]),
+                el("div", { id: "wt-powertoys-mirrors", class: "wt-row", style: "margin-top:8px;display:none;" }, [txt("")]),
                 el("div", { class: "wt-row-inline", style: "gap:8px;margin-top:8px;" }, [
                   (() => { const b = el("button", { type: "button", class: "wt-fetch-btn" }, [txt("🔄 刷新检测")]); b.addEventListener("click", runPowertoysStatusRefresh); return b; })(),
                   (() => { const b = el("button", { type: "button", class: "wt-test-btn", id: "wt-powertoys-install-btn" }, [txt("🛠 一键安装 PowerToys")]); b.addEventListener("click", runWingetInstall); return b; })(),
