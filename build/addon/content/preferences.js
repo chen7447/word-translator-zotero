@@ -166,7 +166,7 @@
     function detectPowertoysInstalled(cb) {
           if (!isWindowsHost()) { cb({ installed: false, reason: "non-windows" }); return; }
           try {
-            const S = (typeof ChromeUtils !== "undefined" ? ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess : Components.utils.import("resource://gre/modules/Subprocess.jsm", {}).Subprocess);
+            const S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess);
             S.call({ command: "where.exe", arguments: ["PowerToys.exe"] }).then(p => p.wait()).then(() => {
               cb({ installed: true, version: null });
             }).catch(() => { cb({ installed: false, reason: "not-found" }); });
@@ -175,7 +175,7 @@
         function detectWingetAvailable(cb) {
           if (!isWindowsHost()) { cb({ available: false, reason: "non-windows" }); return; }
           try {
-            const S = (typeof ChromeUtils !== "undefined" ? ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess : Components.utils.import("resource://gre/modules/Subprocess.jsm", {}).Subprocess);
+            const S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess);
             S.call({ command: "where.exe", arguments: ["winget.exe"] }).then(p => p.wait()).then(() => {
               cb({ available: true, version: null });
             }).catch(() => { cb({ available: false, reason: "not-found" }); });
@@ -229,7 +229,7 @@
     function runWingetInstall() {
           stepTo(1, "准备安装环境…");
           let S;
-          try { S = (typeof ChromeUtils !== "undefined" ? ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess : Components.utils.import("resource://gre/modules/Subprocess.jsm", {}).Subprocess); } catch (e) { stepTo(0, "无法启动系统进程", true); return; }
+          try { S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess); } catch (e) { stepTo(0, "无法启动系统进程", true); return; }
           const env = [];
           try { if (typeof Services !== "undefined" && Services.env) {
             if (Services.env.exists("HTTP_PROXY")) env.push("HTTP_PROXY=" + Services.env.get("HTTP_PROXY"));
@@ -259,7 +259,7 @@
       const c = get("wt-powertoys-mirrors");
       if (!c) return;
       let prefs = { custom: [], hiddenDefaults: [] };
-      try { const s = Zotero.Prefs.get("extensions.zotero.wordtranslator.powertoysMirrors", true); if (s) { try { prefs = JSON.parse(s); } catch (e) {} } } catch (e) {}
+      try { let s; if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.get === "function") { s = Zotero.Prefs.get("extensions.zotero.wordtranslator.powertoysMirrors", true); } else if (typeof Services !== "undefined" && Services.prefs) { try { s = Services.prefs.getStringPref("extensions.zotero.wordtranslator.powertoysMirrors", ""); if (!s) s = null; } catch (e) { s = null; } } if (s) { try { prefs = JSON.parse(s); } catch (e) {} } } catch (e) {}
       const hidden = new Set(prefs.hiddenDefaults || []);
       const MIRRORS = [
         { id: "ms-store-cn", name: "微软商店（中国版）", url: "https://www.microsoft.com/zh-cn/p/microsoft-powertoys/9p0wshd1kwrc" },
@@ -272,8 +272,8 @@
         if (hidden.has(m.id)) continue;
         rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" }, [
           txt("\u25CB " + m.name),
-          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { window.openWebLinkIn(m.url); } catch (e) { window.open(m.url, "_blank"); } }); return b;})(),
-          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("隐藏")]); b.addEventListener("click", () => { hidden.add(m.id); prefs.hiddenDefaults = Array.from(hidden); try { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } catch (e) {} buildMirrorListUI(); }); return b;})(),
+          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { if (typeof window.openWebLinkIn === "function") window.openWebLinkIn(m.url); else window.open(m.url, "_blank"); } catch (e) { try { window.open(m.url, "_blank"); } catch (e2) {} } }); return b;})(),
+          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("隐藏")]); b.addEventListener("click", () => { hidden.add(m.id); prefs.hiddenDefaults = Array.from(hidden); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
         ]));
       }
       if (prefs.custom && prefs.custom.length > 0) {
@@ -282,7 +282,7 @@
           rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" }, [
             txt("\u25CF " + cm.name),
             (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { window.openWebLinkIn(cm.url); } catch (e) { window.open(cm.url, "_blank"); } }); return b;})(),
-            (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;color:firebrick;" }, [txt("删除")]); b.addEventListener("click", () => { prefs.custom = prefs.custom.filter(x => x.id !== cm.id); try { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } catch (e) {} buildMirrorListUI(); }); return b;})(),
+            (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;color:firebrick;" }, [txt("删除")]); b.addEventListener("click", () => { prefs.custom = prefs.custom.filter(x => x.id !== cm.id); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
           ]));
         }
       }
@@ -301,7 +301,7 @@
             for (const hm of hiddenVisible) {
               items.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;margin:2px 0;" }, [
                 txt("\u25CB " + hm.name),
-                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("恢复")]); b.addEventListener("click", () => { hidden.delete(hm.id); prefs.hiddenDefaults = Array.from(hidden); try { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } catch (e) {} buildMirrorListUI(); }); return b;})(),
+                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("恢复")]); b.addEventListener("click", () => { hidden.delete(hm.id); prefs.hiddenDefaults = Array.from(hidden); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
               ]));
             }
             return items;
