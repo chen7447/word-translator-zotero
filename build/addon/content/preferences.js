@@ -164,23 +164,23 @@
       catch (e) { return false; }
     }
     function detectPowertoysInstalled(cb) {
-      if (!isWindowsHost()) { cb({ installed: false, reason: "non-windows" }); return; }
-      try {
-        const S = ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess;
-        S.call({ command: "where.exe", arguments: ["PowerToys.exe"] }).then(p => p.wait()).then(() => {
-          cb({ installed: true, version: null });
-        }).catch(() => { cb({ installed: false, reason: "not-found" }); });
-      } catch (e) { cb({ installed: false, reason: "subprocess-unavailable" }); }
-    }
-    function detectWingetAvailable(cb) {
-      if (!isWindowsHost()) { cb({ available: false, reason: "non-windows" }); return; }
-      try {
-        const S = ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess;
-        S.call({ command: "where.exe", arguments: ["winget.exe"] }).then(p => p.wait()).then(() => {
-          cb({ available: true, version: null });
-        }).catch(() => { cb({ available: false, reason: "not-found" }); });
-      } catch (e) { cb({ available: false, reason: "subprocess-unavailable" }); }
-    }
+          if (!isWindowsHost()) { cb({ installed: false, reason: "non-windows" }); return; }
+          try {
+            const S = (typeof ChromeUtils !== "undefined" ? ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess : Components.utils.import("resource://gre/modules/Subprocess.jsm", {}).Subprocess);
+            S.call({ command: "where.exe", arguments: ["PowerToys.exe"] }).then(p => p.wait()).then(() => {
+              cb({ installed: true, version: null });
+            }).catch(() => { cb({ installed: false, reason: "not-found" }); });
+          } catch (e) { cb({ installed: false, reason: "subprocess-unavailable" }); }
+        }
+        function detectWingetAvailable(cb) {
+          if (!isWindowsHost()) { cb({ available: false, reason: "non-windows" }); return; }
+          try {
+            const S = (typeof ChromeUtils !== "undefined" ? ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess : Components.utils.import("resource://gre/modules/Subprocess.jsm", {}).Subprocess);
+            S.call({ command: "where.exe", arguments: ["winget.exe"] }).then(p => p.wait()).then(() => {
+              cb({ available: true, version: null });
+            }).catch(() => { cb({ available: false, reason: "not-found" }); });
+          } catch (e) { cb({ available: false, reason: "subprocess-unavailable" }); }
+        }
     function detectProxyConfigured() {
       let httpProxy = null, httpsProxy = null;
       try {
@@ -227,21 +227,21 @@
       detectNetworkReachable((r) => { state.network = r; tick(); });
     }
     function runWingetInstall() {
-      stepTo(1, "准备安装环境…");
-      let S;
-      try { S = ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess; } catch (e) { stepTo(0, "无法启动系统进程", true); return; }
-      const env = {};
-      try { if (typeof Services !== "undefined" && Services.env) {
-        if (Services.env.exists("HTTP_PROXY")) env.HTTP_PROXY = Services.env.get("HTTP_PROXY");
-        if (Services.env.exists("HTTPS_PROXY")) env.HTTPS_PROXY = Services.env.get("HTTPS_PROXY");
-      }} catch (e) {}
-      stepTo(2, "下载 PowerToys 安装包（约 220 MB）…");
-      S.call({ command: "C:\Windows\System32\winget.exe", arguments: ["install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: Object.keys(env).length > 0 ? env : undefined, stderr: "stdout" })
-        .then(p => p.wait())
-        .then(() => { stepTo(3, "校验安装状态…"); return pollInstallation(30); })
-        .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
-        .catch(err => { stepTo(0, "安装失败: " + (err.message || String(err)), true); });
-    }
+          stepTo(1, "准备安装环境…");
+          let S;
+          try { S = (typeof ChromeUtils !== "undefined" ? ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess : Components.utils.import("resource://gre/modules/Subprocess.jsm", {}).Subprocess); } catch (e) { stepTo(0, "无法启动系统进程", true); return; }
+          const env = [];
+          try { if (typeof Services !== "undefined" && Services.env) {
+            if (Services.env.exists("HTTP_PROXY")) env.push("HTTP_PROXY=" + Services.env.get("HTTP_PROXY"));
+            if (Services.env.exists("HTTPS_PROXY")) env.push("HTTPS_PROXY=" + Services.env.get("HTTPS_PROXY"));
+          }} catch (e) {}
+          stepTo(2, "下载 PowerToys 安装包（约 220 MB）…");
+          S.call({ command: "C:\\Windows\\System32\\winget.exe", arguments: ["install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: env.length > 0 ? env : undefined, stderr: "stdout" })
+            .then(p => p.wait())
+            .then(() => { stepTo(3, "校验安装状态…"); return pollInstallation(30); })
+            .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
+            .catch(err => { stepTo(0, "安装失败: " + (err.message || String(err)), true); });
+        }
     function stepTo(step, msg, isError) {
       const el = get("wt-powertoys-progress");
       if (!el) return;
@@ -253,8 +253,8 @@
       return new Promise((resolve) => { let w = 0; const ck = () => { w += 2; if (checkRegistryKey()) resolve(true); else if (w >= maxSec) resolve(false); else setTimeout(ck, 2000); }; ck(); });
     }
     function checkRegistryKey() {
-      try { const wrk = Cc["@mozilla.org/windows-registry-key;1"].createInstance(Ci.nsIWindowsRegKey); wrk.open(wrk.ROOT_KEY_CURRENT_USER, "Software\Microsoft\PowerToys", wrk.ACCESS_READ); const ok = wrk.valueNames.length > 0; wrk.close(); return ok; } catch (e) { return false; }
-    }
+          try { const wrk = Components.classes["@mozilla.org/windows-registry-key;1"].createInstance(Components.interfaces.nsIWindowsRegKey); wrk.open(wrk.ROOT_KEY_CURRENT_USER, "Software\\Microsoft\\PowerToys", wrk.ACCESS_READ); const ok = wrk.valueNames.length > 0; wrk.close(); return ok; } catch (e) { return false; }
+        }
 
     // 通用按键录制器：双击输入框进入录制，捕获键盘组合键或鼠标侧键，写入规范字符串
   function makeHotkeyRecorder(inputId, onRecord) {
