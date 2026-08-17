@@ -104,9 +104,11 @@
         if (hint) hint.textContent = "开启后：先选中单词，再按下绑定按键，立即执行「添加单词并翻译」。";
         return;
       }
-      // 兼容旧数据：none / mouse3 / mouse4 / mouse5 自动迁移到 custom，避免全部未选
+      // 兼容旧数据：none / mouse1~mouse5 自动迁移到 custom
+      // 鼠标录制已废弃：左/右键无意义、中键与 PDF 冲突、侧键无浏览器级接口。
+      // 侧键绑定请用 PowerToys Mouse Utilities 把 XButton1/XButton2 映射为键盘组合键（如 Ctrl+Alt+T）。
       let mode = data.addWordHotkeyMode || "custom";
-      if (mode === "none" || mode === "mouse3" || mode === "mouse4" || mode === "mouse5") mode = "custom";
+      if (["none","mouse1","mouse2","mouse3","mouse4","mouse5"].includes(mode)) mode = "custom";
       data.addWordHotkeyMode = mode;
       const ids = ["ctrl", "alt", "shift", "custom"];
       for (const id of ids) {
@@ -183,61 +185,20 @@
       inp.dataset.prev = spec;
       if (onRecord) onRecord(spec);
       document.removeEventListener("keydown", keyHandler, true);
-      document.removeEventListener("mousedown", mouseHandler, true);
       inp.blur();
     };
-    // 鼠标按键 → spec 映射
-    // Firefox/Zotero 中侧键可能默认是浏览器前进/后退，需要在最早的事件阶段（pointerdown）
-    // 就 preventDefault 抢占，否则浏览器可能已经消费了事件。
-    const buttonToSpec = (b) => {
-      if (b === 0) return "mouse1"; // 左键
-      if (b === 1) return "mouse3"; // 中键（滚轮按下）
-      if (b === 2) return "mouse2"; // 右键
-      if (b === 3) return "mouse4"; // 侧键 1 / xbutton1 / 后退
-      if (b === 4) return "mouse5"; // 侧键 2 / xbutton2 / 前进
-      return null;
-    };
+    // 鼠标录制 → spec 映射（已废弃：见顶部"鼠标录制废弃说明"）
+    // 鼠标录制已废弃：左/右键无意义、中键与 PDF 冲突、侧键无浏览器级接口。
+    // 侧键绑定请用 PowerToys Mouse Utilities 把 XButton1/XButton2 映射为键盘组合键（如 Ctrl+Alt+T），本输入框录到的是组合键。
     const clearRecorder = () => {
       recording = false;
       document.removeEventListener("keydown", keyHandler, true);
-      document.removeEventListener("mousedown", mouseHandler, true);
-      document.removeEventListener("mouseup", mouseHandler, true);
-      document.removeEventListener("pointerdown", pointerHandler, true);
-      document.removeEventListener("auxclick", auxHandler, true);
-    };
-    const commit = (ev, spec) => {
-      try { ev.preventDefault(); ev.stopPropagation(); } catch (e2) {}
-      recording = false;
-      inp.value = spec;
-      inp.dataset.prev = spec;
-      if (onRecord) onRecord(spec);
-      clearRecorder();
-      try { inp.blur(); } catch (e2) {}
-    };
-    const tryHandleFromButton = (ev) => {
-      if (!recording) return;
-      const b = ev.button;
-      const spec = buttonToSpec(b);
-      if (spec) commit(ev, spec);
-    };
-    const mouseHandler = (ev) => { tryHandleFromButton(ev); };
-    const pointerHandler = (ev) => {
-      // pointerdown 是最先触发的事件，必须抢占浏览器前进/后退默认行为
-      tryHandleFromButton(ev);
-    };
-    const auxHandler = (ev) => {
-      // 侧键通常触发 auxclick（非主按钮点击）；即使 mousedown 被浏览器吃掉，这里也能兜住
-      tryHandleFromButton(ev);
     };
     inp.addEventListener("dblclick", () => {
       recording = true;
       inp.value = "请按键…";
+      // 只录键盘组合键；鼠标录制已废弃（见顶部说明）。
       document.addEventListener("keydown", keyHandler, true);
-      // 同时监听 mousedown、mouseup、pointerdown、auxclick，覆盖浏览器差异
-      document.addEventListener("mousedown", mouseHandler, true);
-      document.addEventListener("mouseup", mouseHandler, true);
-      document.addEventListener("pointerdown", pointerHandler, true);
-      document.addEventListener("auxclick", auxHandler, true);
     });
     inp.addEventListener("blur", () => {
       if (recording) {
@@ -1431,9 +1392,9 @@
     if (hotkeyCustom) { hotkeyCustom.value = data.customHotkey || ""; hotkeyCustom.dataset.prev = data.customHotkey || ""; }
     if (addWordHotkeyEnabled) addWordHotkeyEnabled.checked = !!data.addWordHotkeyEnabled;
     if (addWordHotkey) { addWordHotkey.value = data.addWordHotkey || ""; addWordHotkey.dataset.prev = data.addWordHotkey || ""; }
-    // 兼容旧数据：none / mouse3 / mouse4 / mouse5 自动迁移到 custom，避免全部未选
-    if (!data.addWordHotkeyMode || data.addWordHotkeyMode === "none" ||
-        data.addWordHotkeyMode === "mouse3" || data.addWordHotkeyMode === "mouse4" || data.addWordHotkeyMode === "mouse5") {
+    // 兼容旧数据：none / mouse1~mouse5 自动迁移到 custom
+    // 鼠标录制已废弃：左/右键无意义、中键与 PDF 冲突、侧键无浏览器级接口。
+    if (!data.addWordHotkeyMode || ["none","mouse1","mouse2","mouse3","mouse4","mouse5"].includes(data.addWordHotkeyMode)) {
       data.addWordHotkeyMode = "custom";
     }
     applyAddWordHotkeyUI();
