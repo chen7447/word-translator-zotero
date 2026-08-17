@@ -158,7 +158,66 @@
   function txt(s) { return document.createTextNode(String(s ?? "")); }
   function get(id) { return document.getElementById(id); }
 
-  // 通用按键录制器：双击输入框进入录制，捕获键盘组合键或鼠标侧键，写入规范字符串
+    // ===== PowerToys / 侧键绑定依赖检测（B-1：仅静态检测 + UI 状态显示 =====
+    function isWindowsHost() {
+      try { return typeof Services !== "undefined" && Services.appinfo && Services.appinfo.OS === "WINNT"; }
+      catch (e) { return false; }
+    }
+    function detectPowertoysInstalled(cb) {
+      if (!isWindowsHost()) { cb({ installed: false, reason: "non-windows" }); return; }
+      cb({ installed: false, reason: "deferred-to-b2" });
+    }
+    function detectWingetAvailable(cb) {
+      if (!isWindowsHost()) { cb({ available: false, reason: "non-windows" }); return; }
+      cb({ available: false, reason: "deferred-to-b2" });
+    }
+    function detectProxyConfigured() {
+      let httpProxy = null, httpsProxy = null;
+      try {
+        if (typeof Services !== "undefined" && Services.env) {
+          httpProxy = Services.env.get("HTTP_PROXY");
+          httpsProxy = Services.env.get("HTTPS_PROXY");
+        }
+      } catch (e) {}
+      const url = httpsProxy || httpProxy || null;
+      return { configured: !!url, url: url };
+    }
+    function detectNetworkReachable(cb) {
+      try {
+        const xhr = new XMLHttpRequest();
+        let done = false;
+        const finish = (r) => { if (!done) { done = true; cb(r); } };
+        xhr.open("HEAD", "https://github.com", true);
+        xhr.timeout = 5000;
+        xhr.onload = () => finish({ reachable: true });
+        xhr.onerror = () => finish({ reachable: false, error: "xhr" });
+        xhr.ontimeout = () => finish({ reachable: false, error: "timeout" });
+        xhr.send(null);
+      } catch (e) { cb({ reachable: false, error: String(e) }); }
+    }
+    function setPowertoysStatusText(state) {
+      const box = get("wt-powertoys-status");
+      if (!box) return;
+      const tag = (ok, label, detail) => (ok ? "●" : "○") + " " + label + (detail ? "(" + detail + ")" : "");
+      box.textContent = [
+        tag(state.powertoys.installed, "PowerToys", state.powertoys.installed ? null : (state.powertoys.reason || "未安装")),
+        tag(state.winget.available, "winget    ", state.winget.available ? null : (state.winget.reason || "不可用")),
+        tag(state.proxy.configured, "系统代理  ", state.proxy.configured ? state.proxy.url : "未配置"),
+        tag(state.network.reachable, "网络连通  ", state.network.reachable ? null : (state.network.error || "不可达")),
+      ].join("\n");
+    }
+    function runPowertoysStatusRefresh() {
+      const box = get("wt-powertoys-status");
+      if (box) box.textContent = "检测中…";
+      const state = { powertoys: {}, winget: {}, proxy: detectProxyConfigured(), network: {} };
+      let pending = 3;
+      const tick = () => { if (--pending <= 0) setPowertoysStatusText(state); };
+      detectPowertoysInstalled((r) => { state.powertoys = r; tick(); });
+      detectWingetAvailable((r) => { state.winget = r; tick(); });
+      detectNetworkReachable((r) => { state.network = r; tick(); });
+    }
+
+    // 通用按键录制器：双击输入框进入录制，捕获键盘组合键或鼠标侧键，写入规范字符串
   function makeHotkeyRecorder(inputId, onRecord) {
     const inp = get(inputId);
     if (!inp) return;
@@ -880,8 +939,22 @@
           })(),
         ]),
         el("p", { class: "wt-hint", id: "wt-addword-mode-hint", style: "width:100%;margin-top:4px;" }, [txt("先选中单词，再按下绑定按键，立即执行「添加单词并翻译」。")]),
-      ]),
-      // —— 快捷键-划词翻译（二选一，互斥）——
+              ]),
+              // —— PowerToys / 侧键绑定依赖检测（B-1） ——
+              el("section", { class: "wt-section" }, [
+                el("h3", {}, [txt("鼠标侧键绑定（PowerToys 检测）")]),
+                el("p", { class: "wt-hint" }, [
+                  txt("「添加单词并翻译」快捷键的鼠标侧键绑定需要安装 PowerToys。"),
+                  el("br", {}, []),
+                  txt("一键安装功能将在下一版本提供。"),
+                ]),
+                el("div", { id: "wt-powertoys-status", class: "wt-row", style: "font-family:monospace;line-height:1.6;" }, [txt("检测中…")]),
+                el("div", { class: "wt-row-inline", style: "gap:8px;margin-top:8px;" }, [
+                  (() => { const b = el("button", { type: "button", class: "wt-fetch-btn" }, [txt("🔄 刷新检测")]); b.addEventListener("click", runPowertoysStatusRefresh); return b; })(),
+                  (() => { const b = el("button", { type: "button", class: "wt-test-btn", disabled: "disabled", title: "计划在下一版本实现" }, [txt("🛠 一键安装")]); return b; })(),
+                ]),
+              ]),
+              // —— 快捷键-划词翻译（二选一，互斥） ——
       el("div", { class: "wt-row-inline", style: "gap:16px;margin-top:6px;" }, [
         (() => {
           const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
@@ -1463,7 +1536,8 @@
           renderForm();
           renderApis();
           setStatus("就绪");
-          debugLog("prefs pane built OK");
+                    runPowertoysStatusRefresh();
+                    debugLog("prefs pane built OK");
         } catch (e2) {
           debugLog("build ERROR: " + (e2 && e2.stack || e2.message || e2));
           showFatal(e2);
