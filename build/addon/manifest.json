@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "单词翻译",
-  "version": "6.8.2b6",
+  "version": "6.8.2b7",
   "description": "专业英文单词划词翻译，生成 [单词--译文] 单词卡片，支持多 API 配置与自定义提示词。",
   "author": "chen7447",
   "homepage_url": "https://github.com/chen7447/word-translator-zotero",

@@ -218,18 +218,21 @@
                   // 方案 A 兜底：异步 where.exe（兼容 App Execution Alias）
                   try {
                     const S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess);
-                    S.call({ command: "where.exe", arguments: ["winget.exe"], stderr: "stdout" })
-                      .then(proc => {
-                        const chunks = [];
-                        try { proc.stdout.addListener("data", d => chunks.push(d)); } catch (e) {}
-                        return proc.wait().then(() => chunks.join(""));
-                      })
-                      .then(out => {
-                        const line = (out || "").trim().split(/\r?\n/)[0];
-                        if (line) cb({ available: true, path: line });
-                        else cb({ available: false, reason: "not-found" });
-                      })
-                      .catch(() => cb({ available: false, reason: "not-found" }));
+                    S.call({ command: "C:\\Windows\\System32\\where.exe", arguments: ["winget.exe"], stderr: "stdout" })
+                                          .then(proc => {
+                                            try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe spawned (A)"); } catch (e) {}
+                                            return proc.wait().then(() => {
+                                              try {
+                                                const raw = proc.stdout.readString();
+                                                try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe stdout=" + raw.substring(0, 200)); } catch (e) {}
+                                                const line = (raw || "").trim().split(/\
+?\\n/)[0];
+                                                if (line) { cb({ available: true, path: line }); return; }
+                                              } catch (e2) { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe read error: " + e2); } catch (e3) {} }
+                                              cb({ available: false, reason: "not-found" });
+                                            });
+                                          })
+                                          .catch(err => { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe failed: " + (err.message || err)); } catch (e) {} cb({ available: false, reason: "not-found" }); });
                   } catch (e) { cb({ available: false, reason: "subprocess-unavailable" }); }
                 }
                 function detectWingetAvailableB(cb) {
@@ -237,18 +240,21 @@
                   // 方案 B：纯 where.exe，不用 nsIFile.exists()
                   try {
                     const S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess);
-                    S.call({ command: "where.exe", arguments: ["winget.exe"], stderr: "stdout" })
-                      .then(proc => {
-                        const chunks = [];
-                        try { proc.stdout.addListener("data", d => chunks.push(d)); } catch (e) {}
-                        return proc.wait().then(() => chunks.join(""));
-                      })
-                      .then(out => {
-                        const line = (out || "").trim().split(/\r?\n/)[0];
-                        if (line) cb({ available: true, path: line, method: "B" });
-                        else cb({ available: false, reason: "not-found", method: "B" });
-                      })
-                      .catch(() => cb({ available: false, reason: "not-found", method: "B" }));
+                    S.call({ command: "C:\\Windows\\System32\\where.exe", arguments: ["winget.exe"], stderr: "stdout" })
+                                          .then(proc => {
+                                            try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe spawned (B)"); } catch (e) {}
+                                            return proc.wait().then(() => {
+                                              try {
+                                                const raw = proc.stdout.readString();
+                                                try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe stdout=" + raw.substring(0, 200)); } catch (e) {}
+                                                const line = (raw || "").trim().split(/\
+?\\n/)[0];
+                                                if (line) { cb({ available: true, path: line, method: "B" }); return; }
+                                              } catch (e2) { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe read error: " + e2); } catch (e3) {} }
+                                              cb({ available: false, reason: "not-found", method: "B" });
+                                            });
+                                          })
+                                          .catch(err => { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe failed: " + (err.message || err)); } catch (e) {} cb({ available: false, reason: "not-found", method: "B" }); });
                   } catch (e) { cb({ available: false, reason: "subprocess-unavailable", method: "B" }); }
                 }
     function detectProxyConfigured() {
@@ -340,18 +346,21 @@
           } catch (e) {}
           try {
             stepTo(3, "同步检测未找到 winget，尝试 where.exe…");
-            S.call({ command: "where.exe", arguments: ["winget.exe"], stderr: "stdout" })
-              .then(proc => {
-                const chunks = [];
-                try { proc.stdout.addListener("data", d => chunks.push(d)); } catch (e) {}
-                return proc.wait().then(() => chunks.join(""));
-              })
-              .then(out => {
-                const line = (out || "").trim().split(/\r?\n/)[0];
-                if (line) runWith(line);
-                else { stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure(); }
-              })
-              .catch(() => { stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure(); });
+            S.call({ command: "C:\\Windows\\System32\\where.exe", arguments: ["winget.exe"], stderr: "stdout" })
+                          .then(proc => {
+                            try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe spawned (install)"); } catch (e) {}
+                            return proc.wait().then(() => {
+                              try {
+                                const raw = proc.stdout.readString();
+                                try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe stdout=" + raw.substring(0, 200)); } catch (e) {}
+                                const line = (raw || "").trim().split(/\
+?\\n/)[0];
+                                if (line) { runWith(line); return; }
+                              } catch (e2) { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe read error: " + e2); } catch (e3) {} }
+                              stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure();
+                            });
+                          })
+                          .catch(err => { const msg = "未找到 winget.exe: " + (err.message || String(err)); stepTo(0, msg, true); try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe error: " + msg); } catch (e) {} autoExpandMirrorsOnFailure(); });
           } catch (e) { stepTo(0, "无法启动系统进程", true); }
         }
     function stepTo(step, msg, isError) {
