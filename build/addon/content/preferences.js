@@ -165,33 +165,50 @@
     }
     function detectPowertoysInstalled(cb) {
           if (!isWindowsHost()) { cb({ installed: false, reason: "non-windows" }); return; }
-          // 1. 检查用户手动指定的路径 (prefs)
+          const dbg = (m) => { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: PT detect: " + m); } catch (e) {} };
+          // 1. 检查用户手动指定的路径 (prefs, 双重读取)
+          let manual = null;
           try {
-            const mp = Zotero.Prefs.get("extensions.zotero.wordtranslator.powertoysManualPath", true);
-            if (mp) {
-              try {
-                const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-                f.initWithPath(mp);
-                if (f.exists() && !f.isDirectory()) { cb({ installed: true, path: mp }); return; }
-              } catch (e) {}
+            const k = "extensions.zotero.wordtranslator.powertoysManualPath";
+            if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.get === "function") {
+              try { manual = Zotero.Prefs.get(k, true); } catch (e) {}
+            }
+            if (!manual && typeof Services !== "undefined" && Services.prefs) {
+              try { manual = Services.prefs.getStringPref(k, ""); if (!manual) manual = null; } catch (e) {}
             }
           } catch (e) {}
-          // 2. 检查常见安装位置 (IOUtils.exists 直接读文件系统)
+          if (manual) {
+            dbg("manual path from prefs: " + manual);
+            try {
+              const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+              f.initWithPath(manual);
+              if (f.exists() && !f.isDirectory()) { dbg("manual path exists, installed"); cb({ installed: true, path: manual }); return; }
+              dbg("manual path does NOT exist: " + manual);
+            } catch (e) { dbg("manual path check error: " + String(e)); }
+          }
+          // 2. 检查常见安装位置
           const paths = [];
           try {
             const ds = Components.classes["@mozilla.org/file/directory_service;1"].getService(Components.interfaces.nsIProperties);
             try { const la = ds.get("LocAppData", Components.interfaces.nsIFile); paths.push(la.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
             try { const pf = ds.get("ProgFiles", Components.interfaces.nsIFile); paths.push(pf.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
-            try { const pf86 = ds.get("ProgFiles64", Components.interfaces.nsIFile); paths.push(pf86.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
+            try { const pf64 = ds.get("ProgFiles64", Components.interfaces.nsIFile); paths.push(pf64.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
+            try { const pf86 = ds.get("ProgFiles6432", Components.interfaces.nsIFile); paths.push(pf86.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
           } catch (e) {}
-          // 3. 逐项 IOUtils 检查
+          try {
+            if (typeof Services !== "undefined" && Services.env && Services.env.exists("LOCALAPPDATA")) {
+              paths.push(Services.env.get("LOCALAPPDATA") + "\\PowerToys\\PowerToys.exe");
+            }
+          } catch (e) {}
+          dbg("checking " + paths.length + " candidate paths");
+          // 3. 逐项检查
           const checkNext = (idx) => {
-            if (idx >= paths.length) { cb({ installed: false, reason: "not-found" }); return; }
+            if (idx >= paths.length) { dbg("all candidates failed, not-found"); cb({ installed: false, reason: "not-found" }); return; }
             const c = paths[idx];
             try {
               const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
               f.initWithPath(c);
-              if (f.exists() && !f.isDirectory()) { cb({ installed: true, path: c }); return; }
+              if (f.exists() && !f.isDirectory()) { dbg("found at: " + c); cb({ installed: true, path: c }); return; }
             } catch (e) {}
             checkNext(idx + 1);
           };
@@ -311,16 +328,29 @@
     }
     function promptManualPath(which) {
       const key = "extensions.zotero.wordtranslator." + (which === "powertoys" ? "powertoysManualPath" : "wingetManualPath");
-      let cur = "";
-      try { cur = Zotero.Prefs.get(key, true) || ""; } catch (e) {}
-      let result = { value: cur };
+      let val = null;
       try {
-        const ok = Services.prompt.prompt(null, "手动指定路径", which === "powertoys" ? "请输入 PowerToys.exe 的完整路径：" : "请输入 winget.exe 的完整路径：", result, null, { value: "" });
-        if (!ok) return;
-      } catch (e) { return; }
-      const val = (result.value || "").trim();
+        const fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(Components.interfaces.nsIFilePicker);
+        fp.init(window, "选择 " + (which === "powertoys" ? "PowerToys.exe" : "winget.exe"), fp.modeOpen);
+        fp.appendFilters(fp.filterApps);
+        if (fp.show() !== fp.returnOK) return;   // 用户取消
+        const file = fp.file;
+        if (!file) return;
+        val = file.path;
+      } catch (e) {
+        try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: filepicker error: " + String(e)); } catch (e2) {}
+        return;
+      }
       if (!val) return;
-      try { Zotero.Prefs.set(key, val, true); } catch (e) {}
+      try {
+        if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") {
+          Zotero.Prefs.set(key, val, true);
+        } else if (typeof Services !== "undefined" && Services.prefs) {
+          Services.prefs.setStringPref(key, val);
+        }
+      } catch (e) {
+        try { if (typeof Services !== "undefined" && Services.prefs) Services.prefs.setStringPref(key, val); } catch (e2) {}
+      }
       try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: manual path set " + key + " = " + val); } catch (e) {}
       runPowertoysStatusRefresh();
     }
