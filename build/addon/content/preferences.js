@@ -172,15 +172,34 @@
             }).catch(() => { cb({ installed: false, reason: "not-found" }); });
           } catch (e) { cb({ installed: false, reason: "subprocess-unavailable" }); }
         }
-        function detectWingetAvailable(cb) {
-          if (!isWindowsHost()) { cb({ available: false, reason: "non-windows" }); return; }
-          try {
-            const S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess);
-            S.call({ command: "where.exe", arguments: ["winget.exe"] }).then(p => p.wait()).then(() => {
-              cb({ available: true, version: null });
-            }).catch(() => { cb({ available: false, reason: "not-found" }); });
-          } catch (e) { cb({ available: false, reason: "subprocess-unavailable" }); }
-        }
+        function findWingetPath() {
+                  try {
+                    const candidates = [
+                      Services.env.get("LOCALAPPDATA") + "\\Microsoft\\WindowsApps\\winget.exe",
+                      "C:\\Windows\\System32\\winget.exe",
+                      "C:\\Windows\\SysWOW64\\winget.exe",
+                    ];
+                    for (const c of candidates) {
+                      try {
+                        const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+                        f.initWithPath(c);
+                        if (f.exists() && !f.isDirectory()) return c;
+                      } catch (e) {}
+                    }
+                  } catch (e) {}
+                  return null;
+                }
+                function detectWingetAvailable(cb) {
+                  if (!isWindowsHost()) { cb({ available: false, reason: "non-windows" }); return; }
+                  try {
+                    const path = findWingetPath();
+                    if (path) {
+                      cb({ available: true, path: path });
+                    } else {
+                      cb({ available: false, reason: "not-found" });
+                    }
+                  } catch (e) { cb({ available: false, reason: "subprocess-unavailable" }); }
+                }
     function detectProxyConfigured() {
       let httpProxy = null, httpsProxy = null;
       try {
@@ -227,21 +246,24 @@
       detectNetworkReachable((r) => { state.network = r; tick(); });
     }
     function runWingetInstall() {
-          stepTo(1, "准备安装环境…");
-          let S;
-          try { S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess); } catch (e) { stepTo(0, "无法启动系统进程", true); return; }
-          const env = [];
-          try { if (typeof Services !== "undefined" && Services.env) {
-            if (Services.env.exists("HTTP_PROXY")) env.push("HTTP_PROXY=" + Services.env.get("HTTP_PROXY"));
-            if (Services.env.exists("HTTPS_PROXY")) env.push("HTTPS_PROXY=" + Services.env.get("HTTPS_PROXY"));
-          }} catch (e) {}
-          stepTo(2, "下载 PowerToys 安装包（约 220 MB）…");
-          S.call({ command: "C:\\Windows\\System32\\winget.exe", arguments: ["install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: env.length > 0 ? env : undefined, stderr: "stdout" })
-            .then(p => p.wait())
-            .then(() => { stepTo(3, "校验安装状态…"); return pollInstallation(30); })
-            .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
-            .catch(err => { stepTo(0, "安装失败: " + (err.message || String(err)), true); autoExpandMirrorsOnFailure(); });
-        }
+              stepTo(1, "准备安装环境…");
+              let S;
+              try { S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess); } catch (e) { stepTo(0, "无法启动系统进程", true); return; }
+              const env = [];
+              try { if (typeof Services !== "undefined" && Services.env) {
+                if (Services.env.exists("HTTP_PROXY")) env.push("HTTP_PROXY=" + Services.env.get("HTTP_PROXY"));
+                if (Services.env.exists("HTTPS_PROXY")) env.push("HTTPS_PROXY=" + Services.env.get("HTTPS_PROXY"));
+              }} catch (e) {}
+              const wingetPath = findWingetPath();
+              if (!wingetPath) { stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure(); try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: winget.exe not found"); } catch (e) {} return; }
+              stepTo(2, "下载 PowerToys 安装包（约 220 MB）…");
+              try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: running winget at " + wingetPath); } catch (e) {}
+              S.call({ command: wingetPath, arguments: ["install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: env.length > 0 ? env : undefined, stderr: "stdout" })
+                .then(p => p.wait())
+                .then(() => { stepTo(3, "校验安装状态…"); return pollInstallation(30); })
+                .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
+                .catch(err => { const msg = "安装失败: " + (err.message || String(err)); stepTo(0, msg, true); try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: winget error: " + msg); } catch (e) {} autoExpandMirrorsOnFailure(); });
+            }
     function stepTo(step, msg, isError) {
       const el = get("wt-powertoys-progress");
       if (!el) return;
@@ -266,22 +288,27 @@
         { id: "ghproxy", name: "GitHub 代理 (ghproxy.com)", url: "https://ghproxy.com/https://github.com/microsoft/PowerToys/releases/latest" },
         { id: "gh-proxy", name: "GitHub 代理 (gh-proxy.com)", url: "https://gh-proxy.com/https://github.com/microsoft/PowerToys/releases/latest" },
       ];
-      const rows = [];
-      rows.push(el("p", { class: "wt-hint", style: "margin:8px 0 4px;" }, [txt("国内下载慢？选镜像或自定义：")]));
-      for (const m of MIRRORS) {
-        if (hidden.has(m.id)) continue;
-        rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" }, [
-          txt("\u25CB " + m.name),
-          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { if (typeof window.openWebLinkIn === "function") window.openWebLinkIn(m.url); else window.open(m.url, "_blank"); } catch (e) { try { window.open(m.url, "_blank"); } catch (e2) {} } }); return b;})(),
-          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("隐藏")]); b.addEventListener("click", () => { hidden.add(m.id); prefs.hiddenDefaults = Array.from(hidden); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
-        ]));
-      }
+      let selId = "";
+            try { const selEl = get("wt-powertoys-selected-mirror"); if (selEl) selId = selEl.value; } catch (e) {}
+            const rows = [];
+            rows.push(el("p", { class: "wt-hint", style: "margin:8px 0 4px;" }, [txt("选一个镜像下载，或直接用 winget 安装：")]));
+            for (const m of MIRRORS) {
+              if (hidden.has(m.id)) continue;
+              const isSelected = (selId === m.id);
+              rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" + (isSelected ? "background:#e0f0ff;padding:2px 4px;border-radius:4px;" : "") }, [
+                (() => { const r = el("input", { type: "radio", name: "wt-mirror-select", id: "wt-mirror-" + m.id, value: m.id, dataset: { url: m.url, name: m.name } }); if (isSelected) r.checked = true; r.addEventListener("change", () => { if (r.checked) { try { const s = get("wt-powertoys-selected-mirror"); if (s) s.value = m.id; } catch (e) {} updateInstallButtonText(); } }); return r; })(),
+                el("label", { for: "wt-mirror-" + m.id }, [txt(m.name)]),
+                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { window.open(m.url, "_blank"); } catch (e) {} }); return b;})(),
+                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("隐藏")]); b.addEventListener("click", () => { hidden.add(m.id); prefs.hiddenDefaults = Array.from(hidden); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
+              ]));
+            }
       if (prefs.custom && prefs.custom.length > 0) {
-        rows.push(el("p", { class: "wt-hint", style: "margin:4px 0;" }, [txt("我的镜像：")]));
-        for (const cm of prefs.custom) {
-          rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" }, [
-            txt("\u25CF " + cm.name),
-            (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { window.openWebLinkIn(cm.url); } catch (e) { window.open(cm.url, "_blank"); } }); return b;})(),
+              rows.push(el("p", { class: "wt-hint", style: "margin:4px 0;" }, [txt("我的镜像：")]));
+              for (const cm of prefs.custom) {
+                const isSelected = (selId === cm.id);
+                rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" + (isSelected ? "background:#e0f0ff;padding:2px 4px;border-radius:4px;" : "") }, [
+                  (() => { const r = el("input", { type: "radio", name: "wt-mirror-select", id: "wt-mirror-" + cm.id, value: cm.id, dataset: { url: cm.url, name: cm.name } }); if (isSelected) r.checked = true; r.addEventListener("change", () => { if (r.checked) { try { const s = get("wt-powertoys-selected-mirror"); if (s) s.value = cm.id; } catch (e) {} updateInstallButtonText(); } }); return r; })(),
+                  el("label", { for: "wt-mirror-" + cm.id }, [txt(cm.name)]),
             (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;color:firebrick;" }, [txt("删除")]); b.addEventListener("click", () => { prefs.custom = prefs.custom.filter(x => x.id !== cm.id); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
           ]));
         }
@@ -324,10 +351,25 @@
       c.replaceChildren(...rows);
     }
     function autoExpandMirrorsOnFailure() {
-      const c = get("wt-powertoys-mirrors");
-      if (c) c.style.display = "";
-      buildMirrorListUI();
-    }
+          const c = get("wt-powertoys-mirrors");
+          if (c) c.style.display = "";
+          buildMirrorListUI();
+        }
+        function updateInstallButtonText() {
+          const btn = get("wt-powertoys-install-btn");
+          if (!btn) return;
+          let selId = "";
+          try { const s = get("wt-powertoys-selected-mirror"); if (s) selId = s.value; } catch (e) {}
+          if (selId) {
+            let selName = "选中镜像";
+            try { const r = document.querySelector("input[name='wt-mirror-select']:checked"); if (r && r.dataset && r.dataset.name) selName = r.dataset.name; } catch (e) {}
+            btn.textContent = "\uD83D\uDCE5 下载 " + selName;
+            btn._mode = "mirror";
+          } else {
+            btn.textContent = "\uD83D\uDEE0 \u4E00\u952E\u5B89\u88C5 PowerToys";
+            btn._mode = "winget";
+          }
+        }
 
     // 通用按键录制器：双击输入框进入录制，捕获键盘组合键或鼠标侧键，写入规范字符串
   function makeHotkeyRecorder(inputId, onRecord) {
@@ -1062,10 +1104,11 @@
                 ]),
                 el("div", { id: "wt-powertoys-status", class: "wt-row", style: "font-family:monospace;line-height:1.6;" }, [txt("检测中…")]),
                 el("div", { id: "wt-powertoys-progress", class: "wt-row", style: "font-family:monospace;line-height:1.6;margin-top:6px;" }, [txt("")]),
+                el("input", { type: "hidden", id: "wt-powertoys-selected-mirror", value: "" }),
                 el("div", { id: "wt-powertoys-mirrors", class: "wt-row", style: "margin-top:8px;display:none;" }, [txt("")]),
                 el("div", { class: "wt-row-inline", style: "gap:8px;margin-top:8px;" }, [
                   (() => { const b = el("button", { type: "button", class: "wt-fetch-btn" }, [txt("🔄 刷新检测")]); b.addEventListener("click", runPowertoysStatusRefresh); return b; })(),
-                  (() => { const b = el("button", { type: "button", class: "wt-test-btn", id: "wt-powertoys-install-btn" }, [txt("🛠 一键安装 PowerToys")]); b.addEventListener("click", runWingetInstall); return b; })(),
+                  (() => { const b = el("button", { type: "button", class: "wt-test-btn", id: "wt-powertoys-install-btn" }, [txt("🛠 一键安装 PowerToys")]); b.addEventListener("click", () => { if (b._mode === "mirror") { let selUrl = ""; try { const r = document.querySelector("input[name='wt-mirror-select']:checked"); if (r && r.dataset && r.dataset.url) selUrl = r.dataset.url; } catch (e) {} if (selUrl) { try { window.open(selUrl, "_blank"); } catch (e) {} } } else { runWingetInstall(); } }); return b;})(),
                 ]),
               ]),
               // —— 快捷键-划词翻译（二选一，互斥） ——
