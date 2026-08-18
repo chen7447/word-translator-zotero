@@ -295,10 +295,10 @@
             for (const m of MIRRORS) {
               if (hidden.has(m.id)) continue;
               const isSelected = (selId === m.id);
-              rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" + (isSelected ? "background:#e0f0ff;padding:2px 4px;border-radius:4px;" : "") }, [
+              rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" + (isSelected ? "outline:2px solid Highlight;outline-offset:2px;padding:2px 4px;border-radius:4px;" : "") }, [
                 (() => { const r = el("input", { type: "radio", name: "wt-mirror-select", id: "wt-mirror-" + m.id, value: m.id, dataset: { url: m.url, name: m.name } }); if (isSelected) r.checked = true; r.addEventListener("change", () => { if (r.checked) { try { const s = get("wt-powertoys-selected-mirror"); if (s) s.value = m.id; } catch (e) {} updateInstallButtonText(); } }); return r; })(),
                 el("label", { for: "wt-mirror-" + m.id }, [txt(m.name)]),
-                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { window.open(m.url, "_blank"); } catch (e) {} }); return b;})(),
+                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { launchUrl(m.url); } catch (e) {} }); return b;})(),
                 (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("隐藏")]); b.addEventListener("click", () => { hidden.add(m.id); prefs.hiddenDefaults = Array.from(hidden); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
               ]));
             }
@@ -306,9 +306,10 @@
               rows.push(el("p", { class: "wt-hint", style: "margin:4px 0;" }, [txt("我的镜像：")]));
               for (const cm of prefs.custom) {
                 const isSelected = (selId === cm.id);
-                rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" + (isSelected ? "background:#e0f0ff;padding:2px 4px;border-radius:4px;" : "") }, [
+                rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" + (isSelected ? "outline:2px solid Highlight;outline-offset:2px;padding:2px 4px;border-radius:4px;" : "") }, [
                   (() => { const r = el("input", { type: "radio", name: "wt-mirror-select", id: "wt-mirror-" + cm.id, value: cm.id, dataset: { url: cm.url, name: cm.name } }); if (isSelected) r.checked = true; r.addEventListener("change", () => { if (r.checked) { try { const s = get("wt-powertoys-selected-mirror"); if (s) s.value = cm.id; } catch (e) {} updateInstallButtonText(); } }); return r; })(),
                   el("label", { for: "wt-mirror-" + cm.id }, [txt(cm.name)]),
+                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { launchUrl(cm.url); } catch (e) {} }); return b;})(),
             (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;color:firebrick;" }, [txt("删除")]); b.addEventListener("click", () => { prefs.custom = prefs.custom.filter(x => x.id !== cm.id); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
           ]));
         }
@@ -367,9 +368,24 @@
             btn._mode = "mirror";
           } else {
             btn.textContent = "\uD83D\uDEE0 \u4E00\u952E\u5B89\u88C5 PowerToys";
-            btn._mode = "winget";
-          }
-        }
+                        btn._mode = "winget";
+                      }
+                    }
+                function launchUrl(url) {
+                  try {
+                    if (typeof Zotero !== "undefined" && typeof Zotero.launchURL === "function") {
+                      Zotero.launchURL(url);
+                      return;
+                    }
+                  } catch (e) {}
+                  try {
+                    const w = window.open(url, "_blank");
+                    if (w) return;
+                  } catch (e) {}
+                  try {
+                    if (typeof window.openWebLinkIn === "function") window.openWebLinkIn(url);
+                  } catch (e) {}
+                }
 
     // 通用按键录制器：双击输入框进入录制，捕获键盘组合键或鼠标侧键，写入规范字符串
   function makeHotkeyRecorder(inputId, onRecord) {
@@ -1108,7 +1124,7 @@
                 el("div", { id: "wt-powertoys-mirrors", class: "wt-row", style: "margin-top:8px;display:none;" }, [txt("")]),
                 el("div", { class: "wt-row-inline", style: "gap:8px;margin-top:8px;" }, [
                   (() => { const b = el("button", { type: "button", class: "wt-fetch-btn" }, [txt("🔄 刷新检测")]); b.addEventListener("click", runPowertoysStatusRefresh); return b; })(),
-                  (() => { const b = el("button", { type: "button", class: "wt-test-btn", id: "wt-powertoys-install-btn" }, [txt("🛠 一键安装 PowerToys")]); b.addEventListener("click", () => { if (b._mode === "mirror") { let selUrl = ""; try { const r = document.querySelector("input[name='wt-mirror-select']:checked"); if (r && r.dataset && r.dataset.url) selUrl = r.dataset.url; } catch (e) {} if (selUrl) { try { window.open(selUrl, "_blank"); } catch (e) {} } } else { runWingetInstall(); } }); return b;})(),
+                  (() => { const b = el("button", { type: "button", class: "wt-test-btn", id: "wt-powertoys-install-btn" }, [txt("🛠 一键安装 PowerToys")]); b.addEventListener("click", () => { if (b._mode === "mirror") { let selUrl = ""; try { const r = document.querySelector("input[name='wt-mirror-select']:checked"); if (r && r.dataset && r.dataset.url) selUrl = r.dataset.url; } catch (e) {} if (selUrl) { try { launchUrl(selUrl); } catch (e) {} } } else { runWingetInstall(); } }); return b;})(),
                 ]),
               ]),
               // —— 快捷键-划词翻译（二选一，互斥） ——
