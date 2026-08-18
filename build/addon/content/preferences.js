@@ -225,8 +225,7 @@
                                               try {
                                                 const raw = proc.stdout.readString();
                                                 try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe stdout=" + raw.substring(0, 200)); } catch (e) {}
-                                                const line = (raw || "").trim().split(/\
-?\\n/)[0];
+                                                const line = (raw || "").trim().split(/\\r?\\n/)[0];
                                                 if (line) { cb({ available: true, path: line }); return; }
                                               } catch (e2) { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe read error: " + e2); } catch (e3) {} }
                                               cb({ available: false, reason: "not-found" });
@@ -247,8 +246,7 @@
                                               try {
                                                 const raw = proc.stdout.readString();
                                                 try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe stdout=" + raw.substring(0, 200)); } catch (e) {}
-                                                const line = (raw || "").trim().split(/\
-?\\n/)[0];
+                                                const line = (raw || "").trim().split(/\\r?\\n/)[0];
                                                 if (line) { cb({ available: true, path: line, method: "B" }); return; }
                                               } catch (e2) { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe read error: " + e2); } catch (e3) {} }
                                               cb({ available: false, reason: "not-found", method: "B" });
@@ -353,8 +351,7 @@
                               try {
                                 const raw = proc.stdout.readString();
                                 try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe stdout=" + raw.substring(0, 200)); } catch (e) {}
-                                const line = (raw || "").trim().split(/\
-?\\n/)[0];
+                                const line = (raw || "").trim().split(/\\r?\\n/)[0];
                                 if (line) { runWith(line); return; }
                               } catch (e2) { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe read error: " + e2); } catch (e3) {} }
                               stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure();
