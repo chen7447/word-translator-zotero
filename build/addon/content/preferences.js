@@ -284,9 +284,8 @@
       try { let s; if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.get === "function") { s = Zotero.Prefs.get("extensions.zotero.wordtranslator.powertoysMirrors", true); } else if (typeof Services !== "undefined" && Services.prefs) { try { s = Services.prefs.getStringPref("extensions.zotero.wordtranslator.powertoysMirrors", ""); if (!s) s = null; } catch (e) { s = null; } } if (s) { try { prefs = JSON.parse(s); } catch (e) {} } } catch (e) {}
       const hidden = new Set(prefs.hiddenDefaults || []);
       const MIRRORS = [
-        { id: "ms-store-cn", name: "微软商店（中国版）", url: "https://www.microsoft.com/zh-cn/p/microsoft-powertoys/9p0wshd1kwrc" },
-        { id: "ghproxy", name: "GitHub 代理 (ghproxy.com)", url: "https://ghproxy.com/https://github.com/microsoft/PowerToys/releases/latest" },
-        { id: "gh-proxy", name: "GitHub 代理 (gh-proxy.com)", url: "https://gh-proxy.com/https://github.com/microsoft/PowerToys/releases/latest" },
+        { id: "ms-store", name: "微软商店", url: "https://apps.microsoft.com/detail/xp89dcgq3k6vld" },
+        { id: "github", name: "GitHub 发布页", url: "https://github.com/microsoft/PowerToys/releases" },
       ];
       let selId = "";
             try { const selEl = get("wt-powertoys-selected-mirror"); if (selEl) selId = selEl.value; } catch (e) {}
