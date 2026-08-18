@@ -342,12 +342,39 @@
         try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: manual path set " + key + " = " + val); } catch (e) {}
         runPowertoysStatusRefresh();
       };
+      // 主方案: nsIFilePicker + browsingContext (Zotero 9 / Gecko 140 官方用法)
+      try {
+        const fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(Components.interfaces.nsIFilePicker);
+        let bc = null;
+        try { bc = window.docShell && window.docShell.browsingContext; } catch (e) {}
+        if (!bc) {
+          try {
+            const wm = Services.wm.getMostRecentWindow(null);
+            if (wm && wm.docShell) bc = wm.docShell.browsingContext;
+          } catch (e) {}
+        }
+        if (bc) {
+          fp.init(bc, "选择 " + (which === "powertoys" ? "PowerToys.exe" : "winget.exe"), fp.modeOpen);
+          fp.appendFilters(fp.filterApps);
+          const rv = fp.show();
+          if (rv === fp.returnOK || rv === fp.returnReplace) {
+            const f = fp.file;
+            if (f && f.path) saveAndRefresh(f.path);
+            return;
+          }
+          // 用户取消也返回，不降级
+          return;
+        }
+      } catch (e) {
+        try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: filepicker bc error: " + String(e)); } catch (e2) {}
+      }
+      // 兜底方案: <input type=file>，挂载到 documentElement（避免 body 为 null）
       try {
         const input = document.createElement("input");
         input.type = "file";
         input.accept = ".exe";
         input.style.display = "none";
-        document.body.appendChild(input);
+        (document.body || document.documentElement).appendChild(input);
         input.addEventListener("change", () => {
           try {
             if (input.files && input.files[0]) {
@@ -356,7 +383,7 @@
           } catch (e) {
             try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: file input change error: " + String(e)); } catch (e2) {}
           }
-          try { document.body.removeChild(input); } catch (e) {}
+          try { (document.body || document.documentElement).removeChild(input); } catch (e) {}
         });
         input.click();
       } catch (e) {
