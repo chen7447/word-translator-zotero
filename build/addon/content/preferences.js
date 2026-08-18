@@ -331,7 +331,10 @@
       let val = null;
       try {
         const fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(Components.interfaces.nsIFilePicker);
-        fp.init(null, "选择 " + (which === "powertoys" ? "PowerToys.exe" : "winget.exe"), fp.modeOpen);
+        let parentWin = null;
+        try { parentWin = window.docShell.chromeEventHandler.ownerGlobal; } catch (e) {}
+        if (!parentWin) { try { parentWin = Services.wm.getMostRecentWindow(null); } catch (e) {} }
+        fp.init(parentWin, "选择 " + (which === "powertoys" ? "PowerToys.exe" : "winget.exe"), fp.modeOpen);
         fp.appendFilters(fp.filterApps);
         if (fp.show() !== fp.returnOK) return;   // 用户取消
         const file = fp.file;
