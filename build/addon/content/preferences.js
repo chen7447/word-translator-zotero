@@ -165,12 +165,37 @@
     }
     function detectPowertoysInstalled(cb) {
           if (!isWindowsHost()) { cb({ installed: false, reason: "non-windows" }); return; }
+          // 1. 检查用户手动指定的路径 (prefs)
           try {
-            const S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess);
-            S.call({ command: "where.exe", arguments: ["PowerToys.exe"] }).then(p => p.wait()).then(() => {
-              cb({ installed: true, version: null });
-            }).catch(() => { cb({ installed: false, reason: "not-found" }); });
-          } catch (e) { cb({ installed: false, reason: "subprocess-unavailable" }); }
+            const mp = Zotero.Prefs.get("extensions.zotero.wordtranslator.powertoysManualPath", true);
+            if (mp) {
+              try {
+                const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+                f.initWithPath(mp);
+                if (f.exists() && !f.isDirectory()) { cb({ installed: true, path: mp }); return; }
+              } catch (e) {}
+            }
+          } catch (e) {}
+          // 2. 检查常见安装位置 (IOUtils.exists 直接读文件系统)
+          const paths = [];
+          try {
+            const ds = Components.classes["@mozilla.org/file/directory_service;1"].getService(Components.interfaces.nsIProperties);
+            try { const la = ds.get("LocAppData", Components.interfaces.nsIFile); paths.push(la.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
+            try { const pf = ds.get("ProgFiles", Components.interfaces.nsIFile); paths.push(pf.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
+            try { const pf86 = ds.get("ProgFiles64", Components.interfaces.nsIFile); paths.push(pf86.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
+          } catch (e) {}
+          // 3. 逐项 IOUtils 检查
+          const checkNext = (idx) => {
+            if (idx >= paths.length) { cb({ installed: false, reason: "not-found" }); return; }
+            const c = paths[idx];
+            try {
+              const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+              f.initWithPath(c);
+              if (f.exists() && !f.isDirectory()) { cb({ installed: true, path: c }); return; }
+            } catch (e) {}
+            checkNext(idx + 1);
+          };
+          checkNext(0);
         }
         function findWingetPath() {
                   const paths = [];
@@ -261,14 +286,43 @@
     function setPowertoysStatusText(state) {
       const box = get("wt-powertoys-status");
       if (!box) return;
-      const tag = (ok, label, detail) => (ok ? "●" : "○") + " " + label + (detail ? "(" + detail + ")" : "");
+      const rows = [];
       const w = state.winget || {};
-      box.textContent = [
-        tag(state.powertoys.installed, "PowerToys", state.powertoys.installed ? null : (state.powertoys.reason || "未安装")),
-        tag(w.available, "winget    ", w.available ? w.path : (w.reason || "不可用")),
-        tag(state.proxy.configured, "系统代理  ", state.proxy.configured ? state.proxy.url : "未配置"),
-        tag(state.network.reachable, "网络连通  ", state.network.reachable ? null : (state.network.error || "不可达")),
-      ].join("\n");
+      // 状态行生成器: ○ 名称 [路径/状态] [?手动目录]
+      const statusRow = (ok, label, detail, manualKey) => {
+        const row = el("div", { class: "wt-row-inline", style: "gap:8px;align-items:center;min-height:24px;" }, [
+          txt((ok ? "●" : "○") + " " + label + " "),
+          el("span", { style: "font-family:monospace;font-size:12px;word-break:break-all;" + (ok ? "" : "color:gray;") }, [txt("[" + (detail || "-") + "]")]),
+        ]);
+        if (manualKey) {
+          const btn = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:1px 8px;font-size:11px;margin-left:auto;" }, [txt("手动目录")]);
+          btn.addEventListener("click", () => { promptManualPath(manualKey); });
+          row.append(btn);
+        }
+        return row;
+      };
+      const ptDetail = state.powertoys.installed ? (state.powertoys.path || "已安装") : (state.powertoys.reason || "未安装");
+      const wDetail = w.available ? (w.path || "可用") : (w.reason || "不可用");
+      rows.push(statusRow(state.powertoys.installed, "PowerToys", ptDetail, "powertoys"));
+      rows.push(statusRow(w.available, "winget", wDetail, "winget"));
+      rows.push(statusRow(state.proxy.configured, "系统代理", state.proxy.configured ? state.proxy.url : "未配置", null));
+      rows.push(statusRow(state.network.reachable, "网络连通", state.network.reachable ? "" : (state.network.error || "不可达"), null));
+      box.replaceChildren(...rows);
+    }
+    function promptManualPath(which) {
+      const key = "extensions.zotero.wordtranslator." + (which === "powertoys" ? "powertoysManualPath" : "wingetManualPath");
+      let cur = "";
+      try { cur = Zotero.Prefs.get(key, true) || ""; } catch (e) {}
+      let result = { value: cur };
+      try {
+        const ok = Services.prompt.prompt(null, "手动指定路径", which === "powertoys" ? "请输入 PowerToys.exe 的完整路径：" : "请输入 winget.exe 的完整路径：", result, null, { value: "" });
+        if (!ok) return;
+      } catch (e) { return; }
+      const val = (result.value || "").trim();
+      if (!val) return;
+      try { Zotero.Prefs.set(key, val, true); } catch (e) {}
+      try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: manual path set " + key + " = " + val); } catch (e) {}
+      runPowertoysStatusRefresh();
     }
     function runPowertoysStatusRefresh() {
       const box = get("wt-powertoys-status");
