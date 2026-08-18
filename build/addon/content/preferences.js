@@ -210,14 +210,46 @@
                 }
                 function detectWingetAvailable(cb) {
                   if (!isWindowsHost()) { cb({ available: false, reason: "non-windows" }); return; }
+                  // 方案 A：先同步检测文件路径
                   try {
                     const path = findWingetPath();
-                    if (path) {
-                      cb({ available: true, path: path });
-                    } else {
-                      cb({ available: false, reason: "not-found" });
-                    }
+                    if (path) { cb({ available: true, path: path }); return; }
+                  } catch (e) {}
+                  // 方案 A 兜底：异步 where.exe（兼容 App Execution Alias）
+                  try {
+                    const S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess);
+                    S.call({ command: "where.exe", arguments: ["winget.exe"], stderr: "stdout" })
+                      .then(proc => {
+                        const chunks = [];
+                        try { proc.stdout.addListener("data", d => chunks.push(d)); } catch (e) {}
+                        return proc.wait().then(() => chunks.join(""));
+                      })
+                      .then(out => {
+                        const line = (out || "").trim().split(/\r?\n/)[0];
+                        if (line) cb({ available: true, path: line });
+                        else cb({ available: false, reason: "not-found" });
+                      })
+                      .catch(() => cb({ available: false, reason: "not-found" }));
                   } catch (e) { cb({ available: false, reason: "subprocess-unavailable" }); }
+                }
+                function detectWingetAvailableB(cb) {
+                  if (!isWindowsHost()) { cb({ available: false, reason: "non-windows" }); return; }
+                  // 方案 B：纯 where.exe，不用 nsIFile.exists()
+                  try {
+                    const S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess);
+                    S.call({ command: "where.exe", arguments: ["winget.exe"], stderr: "stdout" })
+                      .then(proc => {
+                        const chunks = [];
+                        try { proc.stdout.addListener("data", d => chunks.push(d)); } catch (e) {}
+                        return proc.wait().then(() => chunks.join(""));
+                      })
+                      .then(out => {
+                        const line = (out || "").trim().split(/\r?\n/)[0];
+                        if (line) cb({ available: true, path: line, method: "B" });
+                        else cb({ available: false, reason: "not-found", method: "B" });
+                      })
+                      .catch(() => cb({ available: false, reason: "not-found", method: "B" }));
+                  } catch (e) { cb({ available: false, reason: "subprocess-unavailable", method: "B" }); }
                 }
     function detectProxyConfigured() {
       let httpProxy = null, httpsProxy = null;
@@ -247,9 +279,12 @@
       const box = get("wt-powertoys-status");
       if (!box) return;
       const tag = (ok, label, detail) => (ok ? "●" : "○") + " " + label + (detail ? "(" + detail + ")" : "");
+      const wA = state.wingetA || {};
+      const wB = state.wingetB || {};
       box.textContent = [
         tag(state.powertoys.installed, "PowerToys", state.powertoys.installed ? null : (state.powertoys.reason || "未安装")),
-        tag(state.winget.available, "winget    ", state.winget.available ? null : (state.winget.reason || "不可用")),
+        tag(wA.available, "winget-A  ", wA.available ? wA.path : (wA.reason || "不可用")),
+        tag(wB.available, "winget-B  ", wB.available ? wB.path : (wB.reason || "不可用")),
         tag(state.proxy.configured, "系统代理  ", state.proxy.configured ? state.proxy.url : "未配置"),
         tag(state.network.reachable, "网络连通  ", state.network.reachable ? null : (state.network.error || "不可达")),
       ].join("\n");
@@ -257,11 +292,12 @@
     function runPowertoysStatusRefresh() {
       const box = get("wt-powertoys-status");
       if (box) box.textContent = "检测中…";
-      const state = { powertoys: {}, winget: {}, proxy: detectProxyConfigured(), network: {} };
-      let pending = 3;
+      const state = { powertoys: {}, wingetA: {}, wingetB: {}, proxy: detectProxyConfigured(), network: {} };
+      let pending = 4;
       const tick = () => { if (--pending <= 0) setPowertoysStatusText(state); };
       detectPowertoysInstalled((r) => { state.powertoys = r; tick(); });
-      detectWingetAvailable((r) => { state.winget = r; tick(); });
+      detectWingetAvailable((r) => { state.wingetA = r; tick(); });
+      detectWingetAvailableB((r) => { state.wingetB = r; tick(); });
       detectNetworkReachable((r) => { state.network = r; tick(); });
     }
     function runWingetInstall() {
@@ -273,9 +309,7 @@
                 if (Services.env.exists("HTTP_PROXY")) env.push("HTTP_PROXY=" + Services.env.get("HTTP_PROXY"));
                 if (Services.env.exists("HTTPS_PROXY")) env.push("HTTPS_PROXY=" + Services.env.get("HTTPS_PROXY"));
               }} catch (e) {}
-              const wingetPath = findWingetPath();
-              if (!wingetPath) { stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure(); try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: winget.exe not found"); } catch (e) {} return; }
-              stepTo(2, "下载 PowerToys 安装包（约 220 MB）…");
+              runWingetInstallWithPath();
               try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: running winget at " + wingetPath); } catch (e) {}
               S.call({ command: wingetPath, arguments: ["install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: env.length > 0 ? env : undefined, stderr: "stdout" })
                 .then(p => p.wait())
@@ -283,6 +317,43 @@
                 .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
                 .catch(err => { const msg = "安装失败: " + (err.message || String(err)); stepTo(0, msg, true); try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: winget error: " + msg); } catch (e) {} autoExpandMirrorsOnFailure(); });
             }
+    function runWingetInstallWithPath() {
+          let S;
+          try { S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess); } catch (e) { stepTo(0, "无法启动系统进程", true); return; }
+          const env = [];
+          try { if (typeof Services !== "undefined" && Services.env) {
+            if (Services.env.exists("HTTP_PROXY")) env.push("HTTP_PROXY=" + Services.env.get("HTTP_PROXY"));
+            if (Services.env.exists("HTTPS_PROXY")) env.push("HTTPS_PROXY=" + Services.env.get("HTTPS_PROXY"));
+          }} catch (e) {}
+          const runWith = (wingetPath) => {
+            stepTo(2, "下载 PowerToys 安装包（约 220 MB）…");
+            try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: running winget at " + wingetPath); } catch (e) {}
+            S.call({ command: wingetPath, arguments: ["install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: env.length > 0 ? env : undefined, stderr: "stdout" })
+              .then(pp => pp.wait())
+              .then(() => { stepTo(3, "校验安装状态…"); return pollInstallation(30); })
+              .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
+              .catch(err => { const msg = "安装失败: " + (err.message || String(err)); stepTo(0, msg, true); try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: winget error: " + msg); } catch (e) {} autoExpandMirrorsOnFailure(); });
+          };
+          try {
+            const wp = findWingetPath();
+            if (wp) { runWith(wp); return; }
+          } catch (e) {}
+          try {
+            stepTo(3, "同步检测未找到 winget，尝试 where.exe…");
+            S.call({ command: "where.exe", arguments: ["winget.exe"], stderr: "stdout" })
+              .then(proc => {
+                const chunks = [];
+                try { proc.stdout.addListener("data", d => chunks.push(d)); } catch (e) {}
+                return proc.wait().then(() => chunks.join(""));
+              })
+              .then(out => {
+                const line = (out || "").trim().split(/\r?\n/)[0];
+                if (line) runWith(line);
+                else { stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure(); }
+              })
+              .catch(() => { stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure(); });
+          } catch (e) { stepTo(0, "无法启动系统进程", true); }
+        }
     function stepTo(step, msg, isError) {
       const el = get("wt-powertoys-progress");
       if (!el) return;
