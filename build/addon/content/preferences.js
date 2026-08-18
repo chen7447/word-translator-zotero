@@ -173,20 +173,39 @@
           } catch (e) { cb({ installed: false, reason: "subprocess-unavailable" }); }
         }
         function findWingetPath() {
+                  const paths = [];
+                  // 1. XPCOM 目录服务 LocAppData（最可靠，不依赖环境变量）
                   try {
-                    const candidates = [
-                      Services.env.get("LOCALAPPDATA") + "\\Microsoft\\WindowsApps\\winget.exe",
-                      "C:\\Windows\\System32\\winget.exe",
-                      "C:\\Windows\\SysWOW64\\winget.exe",
-                    ];
-                    for (const c of candidates) {
-                      try {
-                        const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-                        f.initWithPath(c);
-                        if (f.exists() && !f.isDirectory()) return c;
-                      } catch (e) {}
+                    const ds = Components.classes["@mozilla.org/file/directory_service;1"].getService(Components.interfaces.nsIProperties);
+                    const la = ds.get("LocAppData", Components.interfaces.nsIFile);
+                    paths.push(la.path + "\\Microsoft\\WindowsApps\\winget.exe");
+                  } catch (e) {}
+                  // 2. 环境变量 LOCALAPPDATA
+                  try {
+                    if (typeof Services !== "undefined" && Services.env && Services.env.exists("LOCALAPPDATA")) {
+                      paths.push(Services.env.get("LOCALAPPDATA") + "\\Microsoft\\WindowsApps\\winget.exe");
                     }
                   } catch (e) {}
+                  // 3. Home 目录构造 %USERPROFILE%\AppData\Local\...
+                  try {
+                    const ds = Components.classes["@mozilla.org/file/directory_service;1"].getService(Components.interfaces.nsIProperties);
+                    const home = ds.get("Home", Components.interfaces.nsIFile);
+                    paths.push(home.path + "\\AppData\\Local\\Microsoft\\WindowsApps\\winget.exe");
+                  } catch (e) {}
+                  // 4. 标准系统路径
+                  paths.push("C:\\Windows\\System32\\winget.exe");
+                  paths.push("C:\\Windows\\SysWOW64\\winget.exe");
+                  // 逐项检查（独立 try-catch，一项失败不影响其他项）
+                  const seen = new Set();
+                  for (const c of paths) {
+                    if (!c || seen.has(c)) continue;
+                    seen.add(c);
+                    try {
+                      const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+                      f.initWithPath(c);
+                      if (f.exists() && !f.isDirectory()) return c;
+                    } catch (e) {}
+                  }
                   return null;
                 }
                 function detectWingetAvailable(cb) {
