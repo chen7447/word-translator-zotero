@@ -328,34 +328,40 @@
     }
     function promptManualPath(which) {
       const key = "extensions.zotero.wordtranslator." + (which === "powertoys" ? "powertoysManualPath" : "wingetManualPath");
-      let val = null;
-      try {
-        const fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(Components.interfaces.nsIFilePicker);
-        let parentWin = null;
-        try { parentWin = window.docShell.chromeEventHandler.ownerGlobal; } catch (e) {}
-        if (!parentWin) { try { parentWin = Services.wm.getMostRecentWindow(null); } catch (e) {} }
-        fp.init(parentWin, "选择 " + (which === "powertoys" ? "PowerToys.exe" : "winget.exe"), fp.modeOpen);
-        fp.appendFilters(fp.filterApps);
-        if (fp.show() !== fp.returnOK) return;   // 用户取消
-        const file = fp.file;
-        if (!file) return;
-        val = file.path;
-      } catch (e) {
-        try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: filepicker error: " + String(e)); } catch (e2) {}
-        return;
-      }
-      if (!val) return;
-      try {
-        if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") {
-          Zotero.Prefs.set(key, val, true);
-        } else if (typeof Services !== "undefined" && Services.prefs) {
-          Services.prefs.setStringPref(key, val);
+      const saveAndRefresh = (val) => {
+        if (!val) return;
+        try {
+          if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") {
+            Zotero.Prefs.set(key, val, true);
+          } else if (typeof Services !== "undefined" && Services.prefs) {
+            Services.prefs.setStringPref(key, val);
+          }
+        } catch (e) {
+          try { if (typeof Services !== "undefined" && Services.prefs) Services.prefs.setStringPref(key, val); } catch (e2) {}
         }
+        try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: manual path set " + key + " = " + val); } catch (e) {}
+        runPowertoysStatusRefresh();
+      };
+      try {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".exe";
+        input.style.display = "none";
+        document.body.appendChild(input);
+        input.addEventListener("change", () => {
+          try {
+            if (input.files && input.files[0]) {
+              saveAndRefresh(input.files[0].path);
+            }
+          } catch (e) {
+            try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: file input change error: " + String(e)); } catch (e2) {}
+          }
+          try { document.body.removeChild(input); } catch (e) {}
+        });
+        input.click();
       } catch (e) {
-        try { if (typeof Services !== "undefined" && Services.prefs) Services.prefs.setStringPref(key, val); } catch (e2) {}
+        try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: file input error: " + String(e)); } catch (e2) {}
       }
-      try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: manual path set " + key + " = " + val); } catch (e) {}
-      runPowertoysStatusRefresh();
     }
     function runPowertoysStatusRefresh() {
       const box = get("wt-powertoys-status");
