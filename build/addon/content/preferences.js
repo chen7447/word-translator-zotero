@@ -331,8 +331,8 @@
           }} catch (e) {}
           const runWith = (wingetPath) => {
                       stepTo(2, "下载 PowerToys 安装包（约 220 MB）…");
-                      try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: running winget (via PATH, found at " + wingetPath + ")"); } catch (e) {}
-                      S.call({ command: "winget", arguments: ["install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: env.length > 0 ? env : undefined, stderr: "stdout" })
+                      try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: running winget via cmd.exe /c (found at " + wingetPath + ")"); } catch (e) {}
+                                            S.call({ command: "C:\\Windows\\System32\\cmd.exe", arguments: ["/c", "winget", "install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: env.length > 0 ? env : undefined, stderr: "stdout" })
               .then(pp => pp.wait())
               .then(() => { stepTo(3, "校验安装状态…"); return pollInstallation(30); })
               .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
