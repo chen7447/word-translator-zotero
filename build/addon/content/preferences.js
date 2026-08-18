@@ -331,7 +331,7 @@
       let val = null;
       try {
         const fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(Components.interfaces.nsIFilePicker);
-        fp.init(window, "选择 " + (which === "powertoys" ? "PowerToys.exe" : "winget.exe"), fp.modeOpen);
+        fp.init(null, "选择 " + (which === "powertoys" ? "PowerToys.exe" : "winget.exe"), fp.modeOpen);
         fp.appendFilters(fp.filterApps);
         if (fp.show() !== fp.returnOK) return;   // 用户取消
         const file = fp.file;
