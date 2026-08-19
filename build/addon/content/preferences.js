@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 // Word Translator 偏好面板脚本（在偏好窗口全局作用域执行）
 // 由 preferences.xhtml 的 onload -> Zotero.WordTranslator.hooks.onPrefsLoad -> loadSubScript(this) 载入。
 
@@ -105,12 +105,12 @@
         return;
       }
       // 兼容旧数据：none / mouse1~mouse5 自动迁移到 custom
-      // 鼠标录制已废弃：左/右键无意义、中键与 PDF 冲突、侧键无浏览器级接口。
-      // 侧键绑定请用 PowerToys Mouse Utilities 把 XButton1/XButton2 映射为键盘组合键（如 Ctrl+Alt+T）。
+      // 鼠标录制已废弃：左/右键无意义、中键与 PDF 冲突、浏览器层收不到侧键事件。
+      // 侧键现在走「鼠标侧键桥接」的 WH_MOUSE_LL 系统层钩子直接触发；
       let mode = data.addWordHotkeyMode || "custom";
       if (["none","mouse1","mouse2","mouse3","mouse4","mouse5"].includes(mode)) mode = "custom";
       data.addWordHotkeyMode = mode;
-      const ids = ["ctrl", "alt", "shift", "custom"];
+      const ids = ["ctrl", "alt", "shift", "custom", "xbutton1", "xbutton2", "xbutton-both"];
       for (const id of ids) {
         const r = get("wt-addword-mode-" + id);
         if (r) r.checked = (mode === id);
@@ -122,6 +122,7 @@
         if (mode === "ctrl") hint.textContent = "先选中单词，再按下 Ctrl 键，立即执行「添加单词并翻译」。";
         else if (mode === "alt") hint.textContent = "先选中单词，再按下 Alt 键，立即执行「添加单词并翻译」。";
         else if (mode === "shift") hint.textContent = "先选中单词，再按下 Shift 键，立即执行「添加单词并翻译」。";
+        else if (mode === "xbutton1" || mode === "xbutton2" || mode === "xbutton-both") hint.textContent = "先选中单词，再按下绑定按键，立即执行「添加单词并翻译」。";
         else hint.textContent = "请在下方输入框双击录制键盘组合键（如 Ctrl+Enter、Alt+Z）。";
       }
     } catch (e) {}
@@ -158,458 +159,6 @@
   function txt(s) { return document.createTextNode(String(s ?? "")); }
   function get(id) { return document.getElementById(id); }
 
-    // ===== PowerToys / 侧键绑定依赖检测（B-1：仅静态检测 + UI 状态显示 =====
-    function isWindowsHost() {
-      try { return typeof Services !== "undefined" && Services.appinfo && Services.appinfo.OS === "WINNT"; }
-      catch (e) { return false; }
-    }
-    function detectPowertoysInstalled(cb) {
-          if (!isWindowsHost()) { cb({ installed: false, reason: "non-windows" }); return; }
-          const dbg = (m) => { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: PT detect: " + m); } catch (e) {} };
-          // 1. 检查用户手动指定的路径 (prefs, 双重读取)
-          let manual = null;
-          try {
-            const k = "extensions.zotero.wordtranslator.powertoysManualPath";
-            if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.get === "function") {
-              try { manual = Zotero.Prefs.get(k, true); } catch (e) {}
-            }
-            if (!manual && typeof Services !== "undefined" && Services.prefs) {
-              try { manual = Services.prefs.getStringPref(k, ""); if (!manual) manual = null; } catch (e) {}
-            }
-          } catch (e) {}
-          if (manual) {
-            dbg("manual path from prefs: " + manual);
-            try {
-              const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-              f.initWithPath(manual);
-              if (f.exists() && !f.isDirectory()) { dbg("manual path exists, installed"); cb({ installed: true, path: manual }); return; }
-              dbg("manual path does NOT exist: " + manual);
-            } catch (e) { dbg("manual path check error: " + String(e)); }
-          }
-          // 2. 检查常见安装位置
-          const paths = [];
-          try {
-            const ds = Components.classes["@mozilla.org/file/directory_service;1"].getService(Components.interfaces.nsIProperties);
-            try { const la = ds.get("LocAppData", Components.interfaces.nsIFile); paths.push(la.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
-            try { const pf = ds.get("ProgFiles", Components.interfaces.nsIFile); paths.push(pf.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
-            try { const pf64 = ds.get("ProgFiles64", Components.interfaces.nsIFile); paths.push(pf64.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
-            try { const pf86 = ds.get("ProgFiles6432", Components.interfaces.nsIFile); paths.push(pf86.path + "\\PowerToys\\PowerToys.exe"); } catch (e) {}
-          } catch (e) {}
-          try {
-            if (typeof Services !== "undefined" && Services.env && Services.env.exists("LOCALAPPDATA")) {
-              paths.push(Services.env.get("LOCALAPPDATA") + "\\PowerToys\\PowerToys.exe");
-            }
-          } catch (e) {}
-          dbg("checking " + paths.length + " candidate paths");
-          // 3. 逐项检查
-          const checkNext = (idx) => {
-            if (idx >= paths.length) { dbg("all candidates failed, not-found"); cb({ installed: false, reason: "not-found" }); return; }
-            const c = paths[idx];
-            try {
-              const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-              f.initWithPath(c);
-              if (f.exists() && !f.isDirectory()) { dbg("found at: " + c); cb({ installed: true, path: c }); return; }
-            } catch (e) {}
-            checkNext(idx + 1);
-          };
-          checkNext(0);
-        }
-        function findWingetPath() {
-                  const paths = [];
-                  // 1. XPCOM 目录服务 LocAppData（最可靠，不依赖环境变量）
-                  try {
-                    const ds = Components.classes["@mozilla.org/file/directory_service;1"].getService(Components.interfaces.nsIProperties);
-                    const la = ds.get("LocAppData", Components.interfaces.nsIFile);
-                    paths.push(la.path + "\\Microsoft\\WindowsApps\\winget.exe");
-                  } catch (e) {}
-                  // 2. 环境变量 LOCALAPPDATA
-                  try {
-                    if (typeof Services !== "undefined" && Services.env && Services.env.exists("LOCALAPPDATA")) {
-                      paths.push(Services.env.get("LOCALAPPDATA") + "\\Microsoft\\WindowsApps\\winget.exe");
-                    }
-                  } catch (e) {}
-                  // 3. Home 目录构造 %USERPROFILE%\AppData\Local\...
-                  try {
-                    const ds = Components.classes["@mozilla.org/file/directory_service;1"].getService(Components.interfaces.nsIProperties);
-                    const home = ds.get("Home", Components.interfaces.nsIFile);
-                    paths.push(home.path + "\\AppData\\Local\\Microsoft\\WindowsApps\\winget.exe");
-                  } catch (e) {}
-                  // 4. 标准系统路径
-                  paths.push("C:\\Windows\\System32\\winget.exe");
-                  paths.push("C:\\Windows\\SysWOW64\\winget.exe");
-                  // 逐项检查（独立 try-catch，一项失败不影响其他项）
-                  const seen = new Set();
-                  for (const c of paths) {
-                    if (!c || seen.has(c)) continue;
-                    seen.add(c);
-                    try {
-                      const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-                      f.initWithPath(c);
-                      if (f.exists() && !f.isDirectory()) return c;
-                    } catch (e) {}
-                  }
-                  return null;
-                }
-                function detectWingetAvailable(cb) {
-                  if (!isWindowsHost()) { cb({ available: false, reason: "non-windows" }); return; }
-                  // 方案 A：先同步检测文件路径
-                  try {
-                    const path = findWingetPath();
-                    if (path) { cb({ available: true, path: path }); return; }
-                  } catch (e) {}
-                  // 方案 A 兜底：异步 where.exe（兼容 App Execution Alias）
-                  try {
-                    const S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess);
-                    S.call({ command: "C:\\Windows\\System32\\where.exe", arguments: ["winget.exe"], stderr: "stdout" })
-                                          .then(proc => {
-                                            try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe spawned (A)"); } catch (e) {}
-                                            return proc.wait().then(() => {
-                                              return proc.wait().then(() => proc.stdout.readString()).then(raw => {
-                                                try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe stdout=" + raw.substring(0, 200)); } catch (e) {}
-                                                const line = (raw || "").trim().split(/\\r?\\n/)[0];
-                                                if (line) { cb({ available: true, path: line }); return; }
-                                                cb({ available: false, reason: "not-found" });
-                                              }).catch(e2 => { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe read error: " + e2); } catch (e3) {} cb({ available: false, reason: "not-found" }); });
-                                              cb({ available: false, reason: "not-found" });
-                                            });
-                                          })
-                                          .catch(err => { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe failed: " + (err.message || err)); } catch (e) {} cb({ available: false, reason: "not-found" }); });
-                  } catch (e) { cb({ available: false, reason: "subprocess-unavailable" }); }
-                }
-    function detectProxyConfigured() {
-      let httpProxy = null, httpsProxy = null;
-      try {
-        if (typeof Services !== "undefined" && Services.env) {
-          httpProxy = Services.env.get("HTTP_PROXY");
-          httpsProxy = Services.env.get("HTTPS_PROXY");
-        }
-      } catch (e) {}
-      const url = httpsProxy || httpProxy || null;
-      return { configured: !!url, url: url };
-    }
-    function detectNetworkReachable(cb) {
-      try {
-        const xhr = new XMLHttpRequest();
-        let done = false;
-        const finish = (r) => { if (!done) { done = true; cb(r); } };
-        xhr.open("HEAD", "https://github.com", true);
-        xhr.timeout = 5000;
-        xhr.onload = () => finish({ reachable: true });
-        xhr.onerror = () => finish({ reachable: false, error: "xhr" });
-        xhr.ontimeout = () => finish({ reachable: false, error: "timeout" });
-        xhr.send(null);
-      } catch (e) { cb({ reachable: false, error: String(e) }); }
-    }
-    function setPowertoysStatusText(state) {
-      const box = get("wt-powertoys-status");
-      if (!box) return;
-      const rows = [];
-      const w = state.winget || {};
-      // 状态行生成器: ○ 名称 [路径/状态] [?手动目录]
-      const statusRow = (ok, label, detail, manualKey) => {
-        const row = el("div", { class: "wt-row-inline", style: "gap:8px;align-items:center;min-height:24px;" }, [
-          txt((ok ? "●" : "○") + " " + label + " "),
-          el("span", { style: "font-family:monospace;font-size:12px;word-break:break-all;" + (ok ? "" : "color:gray;") }, [txt("[" + (detail || "-") + "]")]),
-        ]);
-        if (manualKey) {
-          const btn = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:1px 8px;font-size:11px;margin-left:auto;" }, [txt("手动目录")]);
-          btn.addEventListener("click", () => { promptManualPath(manualKey); });
-          row.append(btn);
-        }
-        return row;
-      };
-      const ptDetail = state.powertoys.installed ? (state.powertoys.path || "已安装") : (state.powertoys.reason || "未安装");
-      const wDetail = w.available ? (w.path || "可用") : (w.reason || "不可用");
-      rows.push(statusRow(state.powertoys.installed, "PowerToys", ptDetail, "powertoys"));
-      rows.push(statusRow(w.available, "winget", wDetail, "winget"));
-      rows.push(statusRow(state.proxy.configured, "系统代理", state.proxy.configured ? state.proxy.url : "未配置", null));
-      rows.push(statusRow(state.network.reachable, "网络连通", state.network.reachable ? "" : (state.network.error || "不可达"), null));
-      box.replaceChildren(...rows);
-    }
-    function promptManualPath(which) {
-      const key = "extensions.zotero.wordtranslator." + (which === "powertoys" ? "powertoysManualPath" : "wingetManualPath");
-      const saveAndRefresh = (val) => {
-        if (!val) return;
-        try {
-          if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") {
-            Zotero.Prefs.set(key, val, true);
-          } else if (typeof Services !== "undefined" && Services.prefs) {
-            Services.prefs.setStringPref(key, val);
-          }
-        } catch (e) {
-          try { if (typeof Services !== "undefined" && Services.prefs) Services.prefs.setStringPref(key, val); } catch (e2) {}
-        }
-        try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: manual path set " + key + " = " + val); } catch (e) {}
-        runPowertoysStatusRefresh();
-      };
-      // 主方案: nsIFilePicker + browsingContext (Zotero 9 / Gecko 140 官方用法)
-      try {
-        const fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(Components.interfaces.nsIFilePicker);
-        let bc = null;
-        try { bc = window.docShell && window.docShell.browsingContext; } catch (e) {}
-        if (!bc) {
-          try {
-            const wm = Services.wm.getMostRecentWindow(null);
-            if (wm && wm.docShell) bc = wm.docShell.browsingContext;
-          } catch (e) {}
-        }
-        if (bc) {
-          fp.init(bc, "选择 " + (which === "powertoys" ? "PowerToys.exe" : "winget.exe"), fp.modeOpen);
-          fp.appendFilters(fp.filterApps);
-          const rv = fp.show();
-          if (rv === fp.returnOK || rv === fp.returnReplace) {
-            const f = fp.file;
-            if (f && f.path) saveAndRefresh(f.path);
-            return;
-          }
-          // 用户取消也返回，不降级
-          return;
-        }
-      } catch (e) {
-        try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: filepicker bc error: " + String(e)); } catch (e2) {}
-      }
-      // 兜底方案: <input type=file>，挂载到 documentElement（避免 body 为 null）
-      try {
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = ".exe";
-        input.style.display = "none";
-        (document.body || document.documentElement).appendChild(input);
-        input.addEventListener("change", () => {
-          try {
-            if (input.files && input.files[0]) {
-              saveAndRefresh(input.files[0].path);
-            }
-          } catch (e) {
-            try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: file input change error: " + String(e)); } catch (e2) {}
-          }
-          try { (document.body || document.documentElement).removeChild(input); } catch (e) {}
-        });
-        input.click();
-      } catch (e) {
-        try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: file input error: " + String(e)); } catch (e2) {}
-      }
-    }
-    function runPowertoysStatusRefresh() {
-      const box = get("wt-powertoys-status");
-      if (box) box.textContent = "检测中…";
-      const state = { powertoys: {}, winget: {}, proxy: detectProxyConfigured(), network: {} };
-      let pending = 3;
-      const tick = () => { if (--pending <= 0) setPowertoysStatusText(state); };
-      detectPowertoysInstalled((r) => { state.powertoys = r; tick(); });
-      detectWingetAvailable((r) => { state.winget = r; tick(); });
-      detectNetworkReachable((r) => { state.network = r; tick(); });
-    }
-    function runWingetInstall() {
-              stepTo(1, "准备安装环境…");
-              let S;
-              try { S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess); } catch (e) { stepTo(0, "无法启动系统进程", true); return; }
-              const env = [];
-              try { if (typeof Services !== "undefined" && Services.env) {
-                if (Services.env.exists("HTTP_PROXY")) env.push("HTTP_PROXY=" + Services.env.get("HTTP_PROXY"));
-                if (Services.env.exists("HTTPS_PROXY")) env.push("HTTPS_PROXY=" + Services.env.get("HTTPS_PROXY"));
-              }} catch (e) {}
-              runWingetInstallWithPath();
-              try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: running winget at " + wingetPath); } catch (e) {}
-              S.call({ command: wingetPath, arguments: ["install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: env.length > 0 ? env : undefined, stderr: "stdout" })
-                .then(p => p.wait())
-                .then(() => { stepTo(3, "校验安装状态…"); return pollInstallation(30); })
-                .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
-                .catch(err => { const msg = "安装失败: " + (err.message || String(err)); stepTo(0, msg, true); try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: winget error: " + msg); } catch (e) {} autoExpandMirrorsOnFailure(); });
-            }
-    function runWingetInstallWithPath() {
-          let S;
-          try { S = (typeof ChromeUtils !== "undefined" && typeof ChromeUtils.importESModule === "function" ? ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs").Subprocess : ChromeUtils.import("resource://gre/modules/Subprocess.jsm").Subprocess); } catch (e) { stepTo(0, "无法启动系统进程", true); return; }
-          const env = [];
-          try { if (typeof Services !== "undefined" && Services.env) {
-            if (Services.env.exists("HTTP_PROXY")) env.push("HTTP_PROXY=" + Services.env.get("HTTP_PROXY"));
-            if (Services.env.exists("HTTPS_PROXY")) env.push("HTTPS_PROXY=" + Services.env.get("HTTPS_PROXY"));
-          }} catch (e) {}
-          const runWith = (wingetPath) => {
-                      stepTo(2, "下载 PowerToys 安装包（约 220 MB）…");
-                      try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: running winget via cmd.exe /c (found at " + wingetPath + ")"); } catch (e) {}
-                                            S.call({ command: "C:\\Windows\\System32\\cmd.exe", arguments: ["/c", "winget", "install", "Microsoft.PowerToys", "-e", "--source", "winget"], environment: env.length > 0 ? env : undefined, stderr: "stdout" })
-              .then(pp => {
-                const startTime = Date.now();
-                let output = "";
-                const progressTimer = setInterval(() => {
-                  try {
-                    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                    if (pp.stdout && typeof pp.stdout.available === "function") {
-                      try { const avail = pp.stdout.available(); if (avail > 0) { output += pp.stdout.read(avail); } } catch (e) {}
-                    }
-                    const pctMatch = output.match(/(\d+)%/g);
-                    if (pctMatch && pctMatch.length > 0) {
-                      stepTo(2, "下载 PowerToys 安装包... " + pctMatch[pctMatch.length - 1]);
-                    } else {
-                      stepTo(2, "下载 PowerToys 安装包（约 220 MB）... 已等待 " + elapsed + "s / 120s");
-                    }
-                    if (elapsed >= 120) {
-                      clearInterval(progressTimer);
-                      try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: download timeout 120s"); } catch (e) {}
-                      try { pp.kill(); } catch (e) {}
-                      stepTo(0, "下载超时（120s），请尝试手动下载", true);
-                      autoExpandMirrorsOnFailure();
-                    }
-                  } catch (e) {}
-                }, 3000);
-                return pp.wait().then(() => {
-                  clearInterval(progressTimer);
-                  stepTo(3, "校验安装状态…");
-                  return pollInstallation(30);
-                }).catch(err => {
-                  clearInterval(progressTimer);
-                  throw err;
-                });
-              })
-              .then(done => { if (done) { stepTo(5, "✓ PowerToys 安装完成", false); runPowertoysStatusRefresh(); } else { stepTo(0, "安装超时，请手动检查", true); } })
-              .catch(err => { const msg = "安装失败: " + (err.message || String(err)); stepTo(0, msg, true); try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: winget error: " + msg); } catch (e) {} autoExpandMirrorsOnFailure(); });
-          };
-          try {
-            const wp = findWingetPath();
-            if (wp) { runWith(wp); return; }
-          } catch (e) {}
-          try {
-            stepTo(3, "同步检测未找到 winget，尝试 where.exe…");
-            S.call({ command: "C:\\Windows\\System32\\where.exe", arguments: ["winget.exe"], stderr: "stdout" })
-                          .then(proc => {
-                            try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe spawned (install)"); } catch (e) {}
-                            return proc.wait().then(() => {
-                              return proc.wait().then(() => proc.stdout.readString()).then(raw => {
-                                try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe stdout=" + raw.substring(0, 200)); } catch (e) {}
-                                const line = (raw || "").trim().split(/\\r?\\n/)[0];
-                                if (line) { runWith(line); return; }
-                                stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure();
-                              }).catch(e2 => { try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe read error: " + e2); } catch (e3) {} stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure(); });
-                              stepTo(0, "未找到 winget.exe，请从微软商店手动安装 PowerToys", true); autoExpandMirrorsOnFailure();
-                            });
-                          })
-                          .catch(err => { const msg = "未找到 winget.exe: " + (err.message || String(err)); stepTo(0, msg, true); try { if (typeof Zotero !== "undefined" && Zotero.debug) Zotero.debug("wordtranslator: where.exe error: " + msg); } catch (e) {} autoExpandMirrorsOnFailure(); });
-          } catch (e) { stepTo(0, "无法启动系统进程", true); }
-        }
-    function stepTo(step, msg, isError) {
-      const el = get("wt-powertoys-progress");
-      if (!el) return;
-      if (step === 0) { el.textContent = "❌ " + msg; el.style.color = "firebrick"; }
-      else if (step === 5) { el.textContent = "✅ " + msg; el.style.color = "green"; }
-      else { el.textContent = "⏳ [" + step + "/5] " + msg; el.style.color = ""; }
-    }
-    function pollInstallation(maxSec) {
-      return new Promise((resolve) => { let w = 0; const ck = () => { w += 2; if (checkRegistryKey()) resolve(true); else if (w >= maxSec) resolve(false); else setTimeout(ck, 2000); }; ck(); });
-    }
-    function checkRegistryKey() {
-          try { const wrk = Components.classes["@mozilla.org/windows-registry-key;1"].createInstance(Components.interfaces.nsIWindowsRegKey); wrk.open(wrk.ROOT_KEY_CURRENT_USER, "Software\\Microsoft\\PowerToys", wrk.ACCESS_READ); const ok = wrk.valueNames.length > 0; wrk.close(); return ok; } catch (e) { return false; }
-        }
-    function buildMirrorListUI() {
-      const c = get("wt-powertoys-mirrors");
-      if (!c) return;
-      let prefs = { custom: [], hiddenDefaults: [] };
-      try { let s; if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.get === "function") { s = Zotero.Prefs.get("extensions.zotero.wordtranslator.powertoysMirrors", true); } else if (typeof Services !== "undefined" && Services.prefs) { try { s = Services.prefs.getStringPref("extensions.zotero.wordtranslator.powertoysMirrors", ""); if (!s) s = null; } catch (e) { s = null; } } if (s) { try { prefs = JSON.parse(s); } catch (e) {} } } catch (e) {}
-      const hidden = new Set(prefs.hiddenDefaults || []);
-      const MIRRORS = [
-        { id: "ms-store", name: "微软商店", url: "https://apps.microsoft.com/detail/xp89dcgq3k6vld" },
-        { id: "github", name: "GitHub 发布页", url: "https://github.com/microsoft/PowerToys/releases" },
-      ];
-      let selId = "";
-            try { const selEl = get("wt-powertoys-selected-mirror"); if (selEl) selId = selEl.value; } catch (e) {}
-            const rows = [];
-            rows.push(el("p", { class: "wt-hint", style: "margin:8px 0 4px;" }, [txt("选一个镜像下载，或直接用 winget 安装：")]));
-            for (const m of MIRRORS) {
-              if (hidden.has(m.id)) continue;
-              const isSelected = (selId === m.id);
-              rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" + (isSelected ? "outline:2px solid Highlight;outline-offset:2px;padding:2px 4px;border-radius:4px;" : "") }, [
-                (() => { const r = el("input", { type: "radio", name: "wt-mirror-select", id: "wt-mirror-" + m.id, value: m.id, dataset: { url: m.url, name: m.name } }); if (isSelected) r.checked = true; r.addEventListener("change", () => { if (r.checked) { try { const s = get("wt-powertoys-selected-mirror"); if (s) s.value = m.id; } catch (e) {} updateInstallButtonText(); } }); return r; })(),
-                el("label", { for: "wt-mirror-" + m.id }, [txt(m.name)]),
-                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { launchUrl(m.url); } catch (e) {} }); return b;})(),
-                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("隐藏")]); b.addEventListener("click", () => { hidden.add(m.id); prefs.hiddenDefaults = Array.from(hidden); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
-              ]));
-            }
-      if (prefs.custom && prefs.custom.length > 0) {
-              rows.push(el("p", { class: "wt-hint", style: "margin:4px 0;" }, [txt("我的镜像：")]));
-              for (const cm of prefs.custom) {
-                const isSelected = (selId === cm.id);
-                rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;" + (isSelected ? "outline:2px solid Highlight;outline-offset:2px;padding:2px 4px;border-radius:4px;" : "") }, [
-                  (() => { const r = el("input", { type: "radio", name: "wt-mirror-select", id: "wt-mirror-" + cm.id, value: cm.id, dataset: { url: cm.url, name: cm.name } }); if (isSelected) r.checked = true; r.addEventListener("change", () => { if (r.checked) { try { const s = get("wt-powertoys-selected-mirror"); if (s) s.value = cm.id; } catch (e) {} updateInstallButtonText(); } }); return r; })(),
-                  el("label", { for: "wt-mirror-" + cm.id }, [txt(cm.name)]),
-                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("打开")]); b.addEventListener("click", () => { try { launchUrl(cm.url); } catch (e) {} }); return b;})(),
-            (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;color:firebrick;" }, [txt("删除")]); b.addEventListener("click", () => { prefs.custom = prefs.custom.filter(x => x.id !== cm.id); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
-          ]));
-        }
-      }
-      const hiddenVisible = MIRRORS.filter(m => hidden.has(m.id));
-      if (hiddenVisible.length > 0) {
-        const expandId = "wt-powertoys-hidden-mirrors";
-        rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;margin-top:4px;" }, [
-          (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;", id: "wt-powertoys-toggle-hidden" }, [txt("\u25B8 已隐藏的默认镜像 (" + hiddenVisible.length + ")")]); b.addEventListener("click", () => {
-            const area = get(expandId);
-            if (area) { area.style.display = area.style.display === "none" ? "" : "none"; b.textContent = area.style.display === "none" ? "\u25B8 已隐藏的默认镜像 (" + hiddenVisible.length + ")" : "\u25BE 已隐藏的默认镜像 (" + hiddenVisible.length + ")"; }
-          }); return b;})(),
-        ]));
-        rows.push(el("div", { id: expandId, style: "display:none;" }, [
-          (() => {
-            const items = [];
-            for (const hm of hiddenVisible) {
-              items.push(el("div", { class: "wt-row-inline", style: "gap:6px;align-items:center;margin:2px 0;" }, [
-                txt("\u25CB " + hm.name),
-                (() => { const b = el("button", { type: "button", class: "wt-fetch-btn", style: "padding:2px 8px;font-size:12px;" }, [txt("恢复")]); b.addEventListener("click", () => { hidden.delete(hm.id); prefs.hiddenDefaults = Array.from(hidden); try { if (typeof Zotero !== "undefined" && Zotero.Prefs && typeof Zotero.Prefs.set === "function") { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } else if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e) { try { if (typeof Services !== "undefined" && Services.prefs) { Services.prefs.setStringPref("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs)); } } catch (e2) {} } buildMirrorListUI(); }); return b;})(),
-              ]));
-            }
-            return items;
-          })(),
-        ]));
-      }
-      rows.push(el("div", { class: "wt-row-inline", style: "gap:6px;margin-top:6px;" }, [
-        txt("+ 自定义镜像："),
-        (() => { const inp = el("input", { type: "text", class: "wt-input", id: "wt-powertoys-custom-url", style: "width:300px;", placeholder: "https://example.com/PowerToysSetup.exe" }); return inp;})(),
-        (() => { const b = el("button", { type: "button", class: "wt-test-btn", style: "padding:2px 12px;font-size:12px;" }, [txt("添加")]); b.addEventListener("click", () => {
-          const inp = get("wt-powertoys-custom-url");
-          if (!inp || !inp.value.trim()) return;
-          if (!prefs.custom) prefs.custom = [];
-          prefs.custom.push({ id: "u-" + Date.now(), name: inp.value.trim().replace(/^https?:\/\//, "").substring(0, 40), url: inp.value.trim() });
-          try { Zotero.Prefs.set("extensions.zotero.wordtranslator.powertoysMirrors", JSON.stringify(prefs), true); } catch (e) {}
-          inp.value = "";
-          buildMirrorListUI();
-        }); return b;})(),
-      ]));
-      c.replaceChildren(...rows);
-    }
-    function autoExpandMirrorsOnFailure() {
-          const c = get("wt-powertoys-mirrors");
-          if (c) c.style.display = "";
-          buildMirrorListUI();
-        }
-        function updateInstallButtonText() {
-          const btn = get("wt-powertoys-install-btn");
-          if (!btn) return;
-          let selId = "";
-          try { const s = get("wt-powertoys-selected-mirror"); if (s) selId = s.value; } catch (e) {}
-          if (selId) {
-            let selName = "选中镜像";
-            try { const r = document.querySelector("input[name='wt-mirror-select']:checked"); if (r && r.dataset && r.dataset.name) selName = r.dataset.name; } catch (e) {}
-            btn.textContent = "\uD83D\uDCE5 下载 " + selName;
-            btn._mode = "mirror";
-          } else {
-            btn.textContent = "\uD83D\uDEE0 \u4E00\u952E\u5B89\u88C5 PowerToys";
-                        btn._mode = "winget";
-                      }
-                    }
-                function launchUrl(url) {
-                  try {
-                    if (typeof Zotero !== "undefined" && typeof Zotero.launchURL === "function") {
-                      Zotero.launchURL(url);
-                      return;
-                    }
-                  } catch (e) {}
-                  try {
-                    const w = window.open(url, "_blank");
-                    if (w) return;
-                  } catch (e) {}
-                  try {
-                    if (typeof window.openWebLinkIn === "function") window.openWebLinkIn(url);
-                  } catch (e) {}
-                }
-
-    // 通用按键录制器：双击输入框进入录制，捕获键盘组合键或鼠标侧键，写入规范字符串
   function makeHotkeyRecorder(inputId, onRecord) {
     const inp = get(inputId);
     if (!inp) return;
@@ -638,9 +187,9 @@
       document.removeEventListener("keydown", keyHandler, true);
       inp.blur();
     };
-    // 鼠标录制 → spec 映射（已废弃：见顶部"鼠标录制废弃说明"）
-    // 鼠标录制已废弃：左/右键无意义、中键与 PDF 冲突、侧键无浏览器级接口。
-    // 侧键绑定请用 PowerToys Mouse Utilities 把 XButton1/XButton2 映射为键盘组合键（如 Ctrl+Alt+T），本输入框录到的是组合键。
+    // 鼠标录制 → spec 映射（鼠标即录即用已废弃：见顶部"鼠标录制废弃说明"）
+    // 侧键现在走「鼠标侧键桥接」的 WH_MOUSE_LL 系统层钩子直接触发；
+    // 本输入框录到的仍是键盘组合键。
     const clearRecorder = () => {
       recording = false;
       document.removeEventListener("keydown", keyHandler, true);
@@ -785,6 +334,10 @@
     const mode = data.addWordHotkeyMode || "custom";
     if (mode === "ctrl" || mode === "alt" || mode === "shift") {
       return mode;
+    }
+    // 侧键模式不占用键盘按键，不参与键盘冲突检测
+    if (mode === "xbutton1" || mode === "xbutton2" || mode === "xbutton-both") {
+      return "";
     }
     return String(data.addWordHotkey || "").toLowerCase();
   }
@@ -1292,7 +845,7 @@
         })(),
       ]),
       el("div", { class: "wt-row", id: "wt-addword-hotkey-wrap", style: "margin:4px 0 0 22px;" }, [
-        // 触发方式单选：Ctrl / Alt / Shift / 自定义绑定按键（Mouse4/Mouse5 在 Zotero 中无法被监听，已移除）
+        // 触发方式单选：第一行 = 键盘（Ctrl / Alt / Shift / 自定义绑定按键）
         el("div", { class: "wt-row-inline", style: "gap:14px;flex-wrap:wrap;" }, [
           (() => {
             const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
@@ -1323,6 +876,23 @@
             return l;
           })(),
         ]),
+        // 第二行 = 鼠标侧键（XButton 桥接触发）
+        el("div", { class: "wt-row-inline", style: "gap:14px;flex-wrap:wrap;margin-top:6px;" }, [
+          (() => {
+            const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+              (() => { const r = el("input", { type: "radio", name: "wt-addword-mode", id: "wt-addword-mode-xbutton1", value: "xbutton1" }); return r; })(),
+              txt("鼠标侧键 1（后退键）"),
+            ]);
+            return l;
+          })(),
+          (() => {
+            const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
+              (() => { const r = el("input", { type: "radio", name: "wt-addword-mode", id: "wt-addword-mode-xbutton2", value: "xbutton2" }); return r; })(),
+              txt("鼠标侧键 2（前进键）"),
+            ]);
+            return l;
+          })(),
+        ]),
         el("div", { class: "wt-row", id: "wt-addword-custom-wrap", style: "margin:6px 0 0 4px;display:none;" }, [
           el("label", { class: "wt-label", for: "wt-addword-hotkey" }, [txt("绑定按键")]),
           (() => {
@@ -1331,24 +901,6 @@
           })(),
         ]),
         el("p", { class: "wt-hint", id: "wt-addword-mode-hint", style: "width:100%;margin-top:4px;" }, [txt("先选中单词，再按下绑定按键，立即执行「添加单词并翻译」。")]),
-              ]),
-              // —— PowerToys / 侧键绑定依赖检测（B-1） ——
-              el("section", { class: "wt-section" }, [
-                el("h3", {}, [txt("鼠标侧键绑定（PowerToys 检测）")]),
-                el("p", { class: "wt-hint" }, [
-                  txt("「添加单词并翻译」快捷键的鼠标侧键绑定需要安装 PowerToys。"),
-                  el("br", {}, []),
-                  txt("点击下方按钮一键安装（约 220 MB，需要 Windows 管理员权限）。"),
-                ]),
-                el("div", { id: "wt-powertoys-status", class: "wt-row", style: "font-family:monospace;line-height:1.6;" }, [txt("检测中…")]),
-                el("div", { id: "wt-powertoys-progress", class: "wt-row", style: "font-family:monospace;line-height:1.6;margin-top:6px;" }, [txt("")]),
-                el("input", { type: "hidden", id: "wt-powertoys-selected-mirror", value: "" }),
-                el("div", { id: "wt-powertoys-mirrors", class: "wt-row", style: "margin-top:8px;display:none;" }, [txt("")]),
-                el("div", { class: "wt-row-inline", style: "gap:8px;margin-top:8px;" }, [
-                  (() => { const b = el("button", { type: "button", class: "wt-fetch-btn" }, [txt("🔄 刷新检测")]); b.addEventListener("click", runPowertoysStatusRefresh); return b; })(),
-                  (() => { const b = el("button", { type: "button", class: "wt-test-btn", id: "wt-powertoys-install-btn" }, [txt("🛠 一键安装 PowerToys")]); b.addEventListener("click", () => { if (b._mode === "mirror") { let selUrl = ""; try { const r = document.querySelector("input[name='wt-mirror-select']:checked"); if (r && r.dataset && r.dataset.url) selUrl = r.dataset.url; } catch (e) {} if (selUrl) { try { launchUrl(selUrl); } catch (e) {} } } else { runWingetInstall(); } }); return b;})(),
-                  (() => { const b = el("button", { type: "button", class: "wt-fetch-btn" }, [txt("📂 镜像下载")]); b.addEventListener("click", () => { const c = get("wt-powertoys-mirrors"); if (c) { c.style.display = c.style.display === "none" ? "" : "none"; if (c.style.display !== "none") buildMirrorListUI(); } }); return b;})(),
-                ]),
               ]),
               // —— 快捷键-划词翻译（二选一，互斥） ——
       el("div", { class: "wt-row-inline", style: "gap:16px;margin-top:6px;" }, [
@@ -1742,7 +1294,7 @@
       data.addWordHotkeyEnabled = awEn.checked;
       save(false); applyAddWordHotkeyUI();
     });
-    ["ctrl", "alt", "shift", "custom"].forEach((mode) => {
+    ["ctrl", "alt", "shift", "custom", "xbutton1", "xbutton2", "xbutton-both"].forEach((mode) => {
       const r = get("wt-addword-mode-" + mode);
       if (r) r.addEventListener("change", () => {
         if (r.checked) {
@@ -1759,6 +1311,7 @@
       }
       save(false); applyAddWordHotkeyUI();
     });
+
 
     const rSplit = get("wt-prompt-mode-split");
     if (rSplit) rSplit.addEventListener("change", () => { data.promptMode = "split"; save(false); applyPromptModeUI(); });
@@ -1932,7 +1485,6 @@
           renderForm();
           renderApis();
           setStatus("就绪");
-                    runPowertoysStatusRefresh();
                     debugLog("prefs pane built OK");
         } catch (e2) {
           debugLog("build ERROR: " + (e2 && e2.stack || e2.message || e2));

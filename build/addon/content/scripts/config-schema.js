@@ -24,8 +24,10 @@ WordTranslatorConfig.DEFAULTS = {
   // 快捷键翻译（先选区后按快捷键）
   addWordHotkeyEnabled: true,
   addWordHotkey: "",
-  addWordHotkeyMode: "ctrl", // "ctrl" | "alt" | "shift" | "custom"
+  addWordHotkeyMode: "ctrl", // "ctrl" | "alt" | "shift" | "custom" | "xbutton1" | "xbutton2" | "xbutton-both"
   selectionFirstEnabled: true,
+  // 鼠标侧键桥接
+  xbuttonBridgeEnabled: true,
   // 翻译提示
   promptMode: "split",
   promptSystem:
@@ -58,9 +60,12 @@ WordTranslatorConfig.normalize = function (raw) {
     // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）
     addWordHotkeyEnabled: typeof raw.addWordHotkeyEnabled === "boolean" ? raw.addWordHotkeyEnabled : true,
     addWordHotkeyMode: (raw.addWordHotkeyMode === "ctrl" || raw.addWordHotkeyMode === "alt" ||
-      raw.addWordHotkeyMode === "shift" || raw.addWordHotkeyMode === "custom")
+      raw.addWordHotkeyMode === "shift" || raw.addWordHotkeyMode === "custom" ||
+      raw.addWordHotkeyMode === "xbutton1" || raw.addWordHotkeyMode === "xbutton2" ||
+      raw.addWordHotkeyMode === "xbutton-both")
       ? raw.addWordHotkeyMode : "ctrl",
     selectionFirstEnabled: typeof raw.selectionFirstEnabled === "boolean" ? raw.selectionFirstEnabled : true,
+    xbuttonBridgeEnabled: typeof raw.xbuttonBridgeEnabled === "boolean" ? raw.xbuttonBridgeEnabled : true,
     hotkeyModifier: (raw.hotkeyModifier === "shift" || raw.hotkeyModifier === "ctrl+shift" || raw.hotkeyModifier === "alt+shift")
       ? "ctrl" : (raw.hotkeyModifier || "ctrl"),
   };

@@ -5,14 +5,14 @@
 排除规则：发布包不应包含临时验证脚本、备份文件、构建脚本、版本控制目录。
   - _chk*.js / _verify.js : 打包前的临时校验脚本
   - *.bak*                : 手动备份（如 addon.js.bak-*）
-  - *.ps1 / *.py          : 构建脚本本身
+  - *.py                  : 构建脚本本身；bridge.ps1 需要随插件打包
   - .git / __pycache__    : 版本控制与 Python 缓存
 """
 import zipfile, os, sys
 
 SKIP_PREFIXES = (".git", "__pycache__")
 SKIP_NAMES = {"_chk1.js", "_chk2.js", "_chk3.js", "_verify.js"}
-SKIP_EXTS = (".ps1", ".py")
+SKIP_EXTS = (".py",)  # 排除构建脚本；bridge.ps1 需要打包进 XPI
 
 def is_skipped(name):
     if name in SKIP_NAMES:

@@ -2,10 +2,12 @@
   "addons": {
     "wordtranslator@example.com": {
       "updates": [
-        {
-          "version": "6.7.0b6",
-          "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v6.7.0b6/wordtranslator-6.7.0b6.xpi"
-        }
+        { "version": "6.9.0b5", "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v6.9.0b5/wordtranslator-6.9.0b5.xpi" },
+        { "version": "6.9.1", "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v6.9.1/wordtranslator-6.9.1.xpi" },
+        { "version": "6.9.2", "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v6.9.2/wordtranslator-6.9.2.xpi" },
+        { "version": "6.9.3", "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v6.9.3/wordtranslator-6.9.3.xpi" },
+        { "version": "6.9.4", "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v6.9.4/wordtranslator-6.9.4.xpi" },
+        { "version": "6.9.5", "update_link": "https://github.com/chen7447/word-translator-zotero/releases/download/v6.9.5/wordtranslator-6.9.5.xpi" }
       ]
     }
   }
