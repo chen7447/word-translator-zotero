@@ -6,12 +6,12 @@ _tmp_*
 *.bak-*
 *.bak.*
 
-# === 构建脚本与产物（打包源 addon 目录内的排除由 pack_xpi.py 负责）===
+# === 构建脚本与产物（打包�?addon 目录内的排除�?pack_xpi.py 负责�?==
 __pycache__/
 *.pyc
 *.pyo
 
-# === 开发/测试工具 ===
+# === 开�?测试工具 ===
 .zcode/
 api_request_lab/docs/_deeplx_*_tmp.*
 
@@ -19,4 +19,3 @@ api_request_lab/docs/_deeplx_*_tmp.*
 Thumbs.db
 .DS_Store
 # === ������� ===
-*.xpi

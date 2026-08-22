@@ -790,9 +790,38 @@
       #wordtranslator-pref-root .wt-fetch-btn { padding: 6px 12px; }
       #wordtranslator-pref-root .wt-test-btn { padding: 6px 12px; color: Highlight; border-color: Highlight; background: Field; }
       #wordtranslator-pref-root input[type="checkbox"], #wordtranslator-pref-root input[type="radio"] { accent-color: Highlight; }
+      /* 右上角“检查更新”标签 */
+      #wordtranslator-pref-root .wt-update-check {
+        color: ButtonText; background: ButtonFace; border: 1px solid ThreeDShadow;
+        border-radius: 999px; padding: 2px 12px; font-size: 12px; cursor: pointer;
+        user-select: none; white-space: nowrap; flex-shrink: 0;
+      }
+      #wordtranslator-pref-root .wt-update-check:hover { background: color-mix(in srgb, ButtonFace 88%, ButtonText); }
+      #wordtranslator-pref-root .wt-update-check:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+      #wordtranslator-pref-root .wt-update-check[data-state="checking"] { opacity: 0.7; cursor: default; }
+      /* 有新版本：绿底变色提示 */
+      #wordtranslator-pref-root .wt-update-check.wt-update-new {
+        color: #14803a; border-color: #14803a;
+        background: color-mix(in srgb, #14803a 14%, ButtonFace); font-weight: 600;
+      }
+      /* 检查失败：不太刺眼的暗红 */
+      #wordtranslator-pref-root .wt-update-check.wt-update-error { color: #a3422e; border-color: #a3422e; }
     `)]);
 
-    const title = el("h2", {}, [txt("说明")]);
+    const header = el("div", { class: "wt-header", style: "display:flex;align-items:center;justify-content:space-between;margin:0 0 16px;gap:12px;" }, [
+      el("h2", { style: "margin:0 0 0 0;" }, [txt("说明")]),
+      // 右上角“检查更新”标签：静默自动检查；点击强制重新检查；有新版本时变色
+      (() => {
+        const span = el("span", {
+          id: "wt-check-update",
+          class: "wt-update-check",
+          role: "button",
+          tabindex: "0",
+          title: "检查插件是否有新版本（自动检查，点击可刷新）",
+        }, [txt("检查更新")]);
+        return span;
+      })(),
+    ]);
 
     const intro = el("p", { class: "wt-hint", style: "margin: -8px 0 16px;" }, [
       txt("划词后点击「添加单词并翻译」，翻译结果会追加到 PDF 右侧的单词本面板。"),
@@ -1170,8 +1199,54 @@
     ]);
     const statusBar = el("p", { id: "wt-status", class: "wt-status", style: "margin: 8px 0 0;" }, [txt("就绪")]);
 
-    root.append(style, title, intro, sectionGeneral, sectionAppearance, sectionSearch, sectionPrompt, sectionApis, sectionDictionary, statusBar, sectionSaveDir, sectionAbout, footer);
+    root.append(style, header, intro, sectionGeneral, sectionAppearance, sectionSearch, sectionPrompt, sectionApis, sectionDictionary, statusBar, sectionSaveDir, sectionAbout, footer);
     return true;
+  }
+
+  // ----- 检查更新 -----
+  // 状态：idle(初始) / checking / latest(已是最新) / update(有新版本) / error(检查失败)
+  let _updateState = "idle";
+  let _updateChecking = false; // 防止并发重复请求
+
+  function setUpdateLabel(state, text, title) {
+    const e = get("wt-check-update");
+    if (!e) return;
+    _updateState = state;
+    e.textContent = text;
+    e.className = "wt-update-check" + (state === "update" ? " wt-update-new"
+      : state === "error" ? " wt-update-error" : "");
+    e.dataset.state = state;
+    if (title) e.title = title;
+  }
+
+  async function runUpdateCheck(force) {
+    if (_updateChecking) return; // 已有一个检查在进行中
+    _updateChecking = true;
+    const prevState = _updateState;
+    setUpdateLabel("checking", "检查中…", "正在检查插件是否有新版本…");
+    try {
+      let result = null;
+      if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.checkForUpdates === "function") {
+        result = await Zotero.WordTranslator.checkForUpdates(!!force);
+      } else {
+        result = { hasUpdate: false, currentVersion: "4.0.1", latestVersion: "", updateLink: "", error: "插件核心未加载，检查不可用", list: [] };
+      }
+      if (result.error) {
+        setUpdateLabel("error", "检查更新失败", "当前版本 v" + (result.currentVersion || "?") + "\n" + result.error + "\n\n（自动检查失败时请点击重试；若点击仍失败，可能是网络无法访问 GitHub，可稍后再试）");
+      } else if (result.hasUpdate) {
+        setUpdateLabel("update", "有新版本 v" + result.latestVersion, "当前版本 v" + result.currentVersion + "，最新版本 v" + result.latestVersion + "。\n点击可重新检查。");
+        setStatus("发现新版本 v" + result.latestVersion + "，当前为 v" + result.currentVersion);
+      } else {
+        setUpdateLabel("latest", "已是最新版本", "当前已是最新版本 v" + (result.currentVersion || "?") + "。\n点击可重新检查。");
+      }
+    } catch (e) {
+      setUpdateLabel("error", "检查更新失败", "检查更新出错：" + (e && (e.message || e)) + "\n\n自动检查失败时请点击重试；若点击仍失败，可能是网络无法访问 GitHub。");
+    } finally {
+      _updateChecking = false;
+      if (prevState === "checking" || prevState === "idle") {
+        // 无需额外处理；label 已由 setUpdateLabel 置为最终态
+      }
+    }
   }
 
   function bindEvents() {
@@ -1383,6 +1458,25 @@
       applySelectionModeUI();
       save(false);
     });
+
+    // 右上角“检查更新”：点击强制重新检查；回车/空格等价（role=button）
+    const checkUpdateEl = get("wt-check-update");
+    if (checkUpdateEl) {
+      const trigger = (ev) => {
+        try {
+          if (_updateChecking) return;
+          ev && ev.preventDefault && ev.preventDefault();
+          runUpdateCheck(true);
+        } catch (e) {}
+      };
+      checkUpdateEl.addEventListener("click", trigger);
+      checkUpdateEl.addEventListener("keydown", (ev) => {
+        try {
+          const k = (ev.key || "").toLowerCase();
+          if (k === "enter" || k === " ") { trigger(ev); }
+        } catch (e) {}
+      });
+    }
   }
 
   function renderForm() {
@@ -1485,7 +1579,9 @@
           renderForm();
           renderApis();
           setStatus("就绪");
-                    debugLog("prefs pane built OK");
+          // 打开偏好页即静默检查一次更新；有新版时右上角标签会变色
+          try { runUpdateCheck(false); } catch (e) {}
+          debugLog("prefs pane built OK");
         } catch (e2) {
           debugLog("build ERROR: " + (e2 && e2.stack || e2.message || e2));
           showFatal(e2);

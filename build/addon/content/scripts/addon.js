@@ -215,6 +215,117 @@ var WordTranslator = {
 
 _configVersion: 0,
 
+  // ---------- 检查更新 ----------
+  // 更新清单 URL（首位是 GitHub raw，次位是 jsDelivr CDN 兜底，国内可达性更好）
+  _updateCheckUrls: [
+    "https://cdn.jsdelivr.net/gh/chen7447/word-translator-zotero@main/update.json",
+    "https://raw.githubusercontent.com/chen7447/word-translator-zotero/main/update.json",
+  ],
+  // 检查结果缓存 { at, result }
+  _updateCheckCache: null,
+  // 缓存有效期（毫秒），默认 10 分钟
+  _updateCheckCacheTTL: 10 * 60 * 1000,
+
+  // 比较两个版本号，返回 >0(a>b) / <0(a<b) / 0(a=b)
+  // 支持 "6.9.5" 和 "6.9.0b5" 混合比较：b 后缀 < 同级稳定版
+  _compareVersions(a, b) {
+    function _parts(v) {
+      const s = String(v || "").trim().toLowerCase();
+      // 匹配主.次.修订.补丁 以及可选的 a/b 预发布标记
+      const m = s.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?(?:([ab])(\d+))?/);
+      if (!m) return [0];
+      // 主次修订补丁的数字部分
+      const nums = [m[1] || 0, m[2] || 0, m[3] || 0, m[4] || 0].map(Number);
+      // 预发布标记：a = -2, b = -1, 稳定版 = 0
+      const pre = m[5] ? (m[5] === "a" ? -2 : -1) : 0;
+      const preN = m[6] ? Number(m[6]) : 0; // 预发布版本号
+      return [...nums, pre, preN];
+    }
+    const pa = _parts(a), pb = _parts(b);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+      const x = i < pa.length ? pa[i] : 0;
+      const y = i < pb.length ? pb[i] : 0;
+      if (x !== y) return x - y;
+    }
+    return 0;
+  },
+
+  // 检查更新核心方法
+  // 返回 { hasUpdate, currentVersion, latestVersion, updateLink, error, list }
+  // 缓存结果，force=true 跳过缓存
+  async checkForUpdates(force) {
+    const now = Date.now();
+    // 缓存命中且未过期
+    if (!force && this._updateCheckCache && (now - this._updateCheckCache.at) < this._updateCheckCacheTTL) {
+      return this._updateCheckCache.result;
+    }
+
+    const currentVer = this._addonVersion || "4.0.1";
+    const result = {
+      hasUpdate: false,
+      currentVersion: currentVer,
+      latestVersion: "",
+      updateLink: "",
+      error: null,
+      list: [],
+    };
+
+    let manifest = null;
+    // 按序尝试每个 URL，任一成功即停止
+    for (const url of this._updateCheckUrls) {
+      try {
+        const resp = await Zotero.HTTP.request("GET", url, { responseType: "json" });
+        if (resp && resp.status === 200 && resp.response) {
+          manifest = resp.response;
+          this._debugLog("checkForUpdates: fetched from " + url);
+          break;
+        }
+      } catch (e) {
+        this._debugLog("checkForUpdates: url=" + url + " FAILED: " + (e && (e.message || e)));
+        continue;
+      }
+    }
+
+    if (!manifest) {
+      result.error = "无法获取更新清单（网络不可用或链接失效）";
+      this._updateCheckCache = { at: now, result };
+      return result;
+    }
+
+    // 解析更新清单
+    const addonId = this._addonID || "wordtranslator@example.com";
+    const updates = manifest.addons && manifest.addons[addonId] && manifest.addons[addonId].updates;
+    if (!Array.isArray(updates) || updates.length === 0) {
+      result.error = "更新清单中未找到版本信息";
+      this._updateCheckCache = { at: now, result };
+      return result;
+    }
+
+    // 找出最高版本
+    let latest = null;
+    for (const entry of updates) {
+      const ver = entry && entry.version;
+      if (!ver) continue;
+      if (!latest || this._compareVersions(ver, latest.version) > 0) {
+        latest = { version: ver, link: entry.update_link || "" };
+      }
+    }
+
+    result.list = updates.map((u) => ({ version: u.version, link: u.update_link }));
+    result.latestVersion = latest ? latest.version : "";
+    result.updateLink = latest ? latest.link : "";
+
+    // 比较：latest > current 才是更新
+    if (latest && this._compareVersions(latest.version, currentVer) > 0) {
+      result.hasUpdate = true;
+    }
+
+    this._updateCheckCache = { at: now, result };
+    this._debugLog("checkForUpdates: current=" + currentVer + ", latest=" + result.latestVersion + ", hasUpdate=" + result.hasUpdate);
+    return result;
+  },
+
   _onConfigChange() {
     try {
       this._configVersion++;
