@@ -1657,7 +1657,7 @@
           renderApis();
           setStatus("就绪");
           // 打开偏好页即静默检查一次更新；有新版时右上角标签会变色
-          try { runUpdateCheck(false); } catch (e) {}
+          try { runUpdateCheck(true); } catch (e) {}
           debugLog("prefs pane built OK");
         } catch (e2) {
           debugLog("build ERROR: " + (e2 && e2.stack || e2.message || e2));
