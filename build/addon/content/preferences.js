@@ -824,21 +824,28 @@
       }
       /* 检查失败：不太刺眼的暗红 */
       #wordtranslator-pref-root .wt-update-check.wt-update-error { color: #a3422e; border-color: #a3422e; }
+      #wordtranslator-pref-root .wt-update-wrap { position: relative; flex-shrink: 0; }
+      #wordtranslator-pref-root .wt-update-tip {
+        display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+        min-width: 220px; max-width: 360px; padding: 8px 10px; font-size: 12px; font-weight: 400;
+        line-height: 1.45; white-space: pre-line; color: CanvasText; background: Canvas;
+        border: 1px solid ThreeDShadow; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+        pointer-events: none;
+      }
+      #wordtranslator-pref-root .wt-update-wrap:hover .wt-update-tip:not(:empty) { display: block; }
     `)]);
 
     const header = el("div", { class: "wt-header", style: "display:flex;align-items:center;justify-content:space-between;margin:0 0 16px;gap:12px;" }, [
       el("h2", { style: "margin:0 0 0 0;" }, [txt("说明")]),
-      // 右上角“检查更新”标签：静默自动检查；点击强制重新检查；有新版本时变色
-      (() => {
-        const span = el("span", {
+      el("div", { class: "wt-update-wrap" }, [
+        el("span", {
           id: "wt-check-update",
           class: "wt-update-check",
           role: "button",
           tabindex: "0",
-          title: "检查插件是否有新版本（自动检查，点击可刷新）",
-        }, [txt("检查更新")]);
-        return span;
-      })(),
+        }, [txt("检查更新")]),
+        el("div", { id: "wt-update-tip", class: "wt-update-tip" }, [txt("检查插件是否有新版本")]),
+      ]),
     ]);
 
     const intro = el("p", { class: "wt-hint", style: "margin: -8px 0 16px;" }, [
@@ -1234,7 +1241,8 @@
   // ----- 检查更新 -----
   // 状态：idle(初始) / checking / latest(已是最新) / update(有新版本) / error(检查失败)
   let _updateState = "idle";
-  let _updateChecking = false; // 防止并发重复请求
+  let _updateChecking = false;
+  let _lastUpdate = null;
 
   function setUpdateLabel(state, text, title) {
     const e = get("wt-check-update");
@@ -1244,7 +1252,8 @@
     e.className = "wt-update-check" + (state === "update" ? " wt-update-new"
       : state === "error" ? " wt-update-error" : "");
     e.dataset.state = state;
-    if (title) e.title = title;
+    const tip = get("wt-update-tip");
+    if (tip) tip.textContent = title || "";
   }
 
   function sourceLines(result) {
@@ -1266,11 +1275,12 @@
       } else {
         result = { hasUpdate: false, currentVersion: "4.0.1", latestVersion: "", updateLink: "", error: "插件核心未加载，检查不可用", list: [], sources: [] };
       }
+      _lastUpdate = result;
       const src = sourceLines(result);
       if (result.error) {
         setUpdateLabel("error", "检查更新失败", "当前版本 v" + (result.currentVersion || "?") + "\n" + result.error + (src ? "\n" + src : "") + "\n\n点击可重试。");
       } else if (result.hasUpdate) {
-        setUpdateLabel("update", "有新版本 v" + result.latestVersion, "当前版本 v" + result.currentVersion + "，最新版本 v" + result.latestVersion + "。\n" + src + "\n点击可重新检查。");
+        setUpdateLabel("update", "有新版本 v" + result.latestVersion, "当前版本 v" + result.currentVersion + "，最新版本 v" + result.latestVersion + "。\n" + src + "\n点击打开 GitHub Release。");
         setStatus("发现新版本 v" + result.latestVersion + "，当前为 v" + result.currentVersion);
       } else {
         setUpdateLabel("latest", "已是最新版本", "当前已是最新版本 v" + (result.currentVersion || "?") + "。\n" + src + "\n点击可重新检查。");
@@ -1502,13 +1512,20 @@
       save(false);
     });
 
-    // 右上角“检查更新”：点击强制重新检查；回车/空格等价（role=button）
+    // 有新版：打开对应 GitHub Release；否则强制再检查
     const checkUpdateEl = get("wt-check-update");
     if (checkUpdateEl) {
       const trigger = (ev) => {
         try {
           if (_updateChecking) return;
           ev && ev.preventDefault && ev.preventDefault();
+          if (_updateState === "update" && _lastUpdate && _lastUpdate.latestVersion) {
+            const url = "https://github.com/chen7447/word-translator-zotero/releases/tag/v" + _lastUpdate.latestVersion;
+            if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.openExternalURL === "function") {
+              Zotero.WordTranslator.openExternalURL(url);
+            }
+            return;
+          }
           runUpdateCheck(true);
         } catch (e) {}
       };
