@@ -15,6 +15,7 @@ WordTranslatorConfig.DEFAULTS = {
   pageSize: 10, // 单词本每页显示单词数
   sortMode: "reverse",
   searchStrategy: "prefix",
+  defaultHighlight: "amber", // 双击高亮默认色：amber | sage | blue | rose
   debugLog: false, // 是否写 wordtranslator-debug.log（默认关，排障时在偏好页打开）
   // 快捷键-划词翻译
   hotkeyEnabled: false,
@@ -55,6 +56,9 @@ WordTranslatorConfig.normalize = function (raw) {
     activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
     sortMode: typeof raw.sortMode === "string" ? raw.sortMode : "reverse",
     searchStrategy: typeof raw.searchStrategy === "string" ? raw.searchStrategy : "prefix",
+    defaultHighlight: (raw.defaultHighlight === "amber" || raw.defaultHighlight === "sage" ||
+      raw.defaultHighlight === "blue" || raw.defaultHighlight === "rose")
+      ? raw.defaultHighlight : "amber",
     pageSize: Number.isFinite(Number(raw.pageSize)) && Number(raw.pageSize) >= 1 ? Math.floor(Number(raw.pageSize)) : 10,
     selectionMode: raw.selectionMode === "sentence" ? "sentence" : "word",
     // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）

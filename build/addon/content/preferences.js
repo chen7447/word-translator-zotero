@@ -128,6 +128,18 @@
     } catch (e) {}
   }
 
+  function applyDefaultHighlightUI() {
+    try {
+      const wrap = get("wt-default-highlight");
+      if (!wrap) return;
+      const current = (data.defaultHighlight === "sage" || data.defaultHighlight === "blue" || data.defaultHighlight === "rose")
+        ? data.defaultHighlight : "amber";
+      wrap.querySelectorAll(".wt-hl-swatch").forEach((btn) => {
+        btn.classList.toggle("is-active", btn.getAttribute("data-hl") === current);
+      });
+    } catch (e) {}
+  }
+
   function applyPromptModeUI() {
     try {
       const mode = data.promptMode || "split";
@@ -790,6 +802,12 @@
       #wordtranslator-pref-root .wt-fetch-btn { padding: 6px 12px; }
       #wordtranslator-pref-root .wt-test-btn { padding: 6px 12px; color: Highlight; border-color: Highlight; background: Field; }
       #wordtranslator-pref-root input[type="checkbox"], #wordtranslator-pref-root input[type="radio"] { accent-color: Highlight; }
+      #wordtranslator-pref-root .wt-hl-swatch { width:16px; height:16px; padding:0; border:1px solid ThreeDShadow; border-radius:50%; cursor:pointer; box-sizing:border-box; }
+      #wordtranslator-pref-root .wt-hl-swatch.is-active { outline:2px solid Highlight; outline-offset:1px; }
+      #wordtranslator-pref-root .wt-hl-swatch-amber { background: color-mix(in srgb, #c4a35a 70%, Canvas); }
+      #wordtranslator-pref-root .wt-hl-swatch-sage { background: color-mix(in srgb, #6f8f72 70%, Canvas); }
+      #wordtranslator-pref-root .wt-hl-swatch-blue { background: color-mix(in srgb, #6d86a8 70%, Canvas); }
+      #wordtranslator-pref-root .wt-hl-swatch-rose { background: color-mix(in srgb, #b07a86 70%, Canvas); }
       /* 右上角“检查更新”标签 */
       #wordtranslator-pref-root .wt-update-check {
         color: ButtonText; background: ButtonFace; border: 1px solid ThreeDShadow;
@@ -984,6 +1002,16 @@
     // —— 外观 ——
     const sectionAppearance = el("section", { class: "wt-section", id: "wt-font-size-section" }, [
       el("h3", {}, [txt("外观")]),
+      el("div", { class: "wt-row-inline", style: "align-items:center;gap:8px;flex-wrap:wrap;" }, [
+        el("label", { class: "wt-label", style: "min-width:auto;" }, [txt("默认高亮色")]),
+        el("div", { id: "wt-default-highlight", style: "display:flex;align-items:center;gap:8px;" }, [
+          (() => { const b = el("button", { type: "button", class: "wt-hl-swatch wt-hl-swatch-amber", "data-hl": "amber", title: "琥珀", "aria-label": "琥珀" }); return b; })(),
+          (() => { const b = el("button", { type: "button", class: "wt-hl-swatch wt-hl-swatch-sage", "data-hl": "sage", title: "苔绿", "aria-label": "苔绿" }); return b; })(),
+          (() => { const b = el("button", { type: "button", class: "wt-hl-swatch wt-hl-swatch-blue", "data-hl": "blue", title: "雾蓝", "aria-label": "雾蓝" }); return b; })(),
+          (() => { const b = el("button", { type: "button", class: "wt-hl-swatch wt-hl-swatch-rose", "data-hl": "rose", title: "玫瑰", "aria-label": "玫瑰" }); return b; })(),
+        ]),
+      ]),
+      el("p", { class: "wt-hint" }, [txt("双击单词卡片时使用此颜色。在单词本右键选色也会更新这里。")]),
       el("div", { class: "wt-row-inline", style: "align-items:center;gap:8px;flex-wrap:wrap;" }, [
         el("label", { class: "wt-label", for: "wt-font-size", style: "min-width:auto;" }, [txt("单词本字体大小")]),
         (() => { const r = el("input", { type: "range", id: "wt-font-size-range", min: "9", max: "24", step: "1" }); r.style.width = "180px"; return r; })(),
@@ -1399,6 +1427,16 @@
     const pg = get("wt-prompt-global");
     if (pg) pg.addEventListener("input", () => { data.promptGlobal = pg.value; save(false); });
 
+    const highlightWrap = get("wt-default-highlight");
+    if (highlightWrap) highlightWrap.addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest && ev.target.closest(".wt-hl-swatch");
+      const color = btn && btn.getAttribute("data-hl");
+      if (color !== "amber" && color !== "sage" && color !== "blue" && color !== "rose") return;
+      data.defaultHighlight = color;
+      applyDefaultHighlightUI();
+      save(false);
+    });
+
     bind("wt-reset-font-size", "click", () => {
       data.fontSize = 13;
       const num = get("wt-font-size"); if (num) num.value = "13";
@@ -1520,6 +1558,7 @@
     applyPromptModeUI();
     applyHotkeyUI();
     applyAddWordHotkeyUI();
+    applyDefaultHighlightUI();
     const fontSize = get("wt-font-size");
     const fontSizeRange = get("wt-font-size-range");
     const fsVal = Number(data.fontSize) || 13;

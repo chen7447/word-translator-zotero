@@ -249,11 +249,14 @@ var WordTranslatorStorage = {
         const cleaned = [];
         for (const w of list) {
           if (!w || typeof w !== "object") continue;
-          cleaned.push({
+          const hl = String(w.highlight || "");
+          const item = {
             word: String(w.word || ""),
             translation: String(w.translation || ""),
             pending: !!w.pending,
-          });
+          };
+          if (hl === "amber" || hl === "sage" || hl === "blue" || hl === "rose") item.highlight = hl;
+          cleaned.push(item);
         }
         if (cleaned.length > 0) result.set(id, cleaned);
       }

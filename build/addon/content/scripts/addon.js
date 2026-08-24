@@ -23,7 +23,8 @@ var WordTranslator = {
   _addonID: "",
   _addonVersion: "",
   _buildTime: "",
-  _itemWords: new Map(),      // itemID -> [{word, translation, pending}]
+  _itemWords: new Map(),      // itemID -> [{word, translation, pending, highlight?}]
+  _cardMenu: null,            // 单词本卡片右键菜单 { el, doc, onDoc, onKey, onScroll }
   _wordBookViewState: new Map(), // itemID -> { page, search } 分页/搜索临时界面状态（不写盘）
   _wordBookSearchTimers: new Map(), // itemID -> debounce timer
   _wordBookSearchStrategies: new Map([
@@ -374,6 +375,7 @@ _configVersion: 0,
         }
       } catch (e0) {}
       this._prefsPaneID = null;
+      try { this._hideCardMenu(); } catch (e2) {}
       // 停止鼠标侧键桥接
       try { this._stopXButtonBridge(); } catch (e2) {}
       this._initialized = false;
@@ -2708,6 +2710,148 @@ _configVersion: 0,
     this._applyWordBookView(id, { source: "delete" });
   },
 
+  _normalizeHighlight(value) {
+    const hl = String(value || "");
+    return (hl === "amber" || hl === "sage" || hl === "blue" || hl === "rose") ? hl : "";
+  },
+
+  _getDefaultHighlight() {
+    return this._normalizeHighlight(this._data && this._data.defaultHighlight) || "amber";
+  },
+
+  _setDefaultHighlight(color) {
+    const next = this._normalizeHighlight(color);
+    if (!next || !this._data || this._data.defaultHighlight === next) return;
+    this._data.defaultHighlight = next;
+    this._saveData();
+  },
+
+  _setCardHighlight(itemID, index, color, remember) {
+    const id = Number(itemID);
+    const list = this._itemWords.get(id);
+    const card = list && list[index];
+    if (!card) return;
+    const next = this._normalizeHighlight(color);
+    if (next) {
+      card.highlight = next;
+      if (remember) this._setDefaultHighlight(next);
+    } else {
+      delete card.highlight;
+    }
+    this._persistWords();
+    this._applyWordBookView(id, { source: "highlight" });
+  },
+
+  _toggleCardHighlight(itemID, index) {
+    const id = Number(itemID);
+    const list = this._itemWords.get(id);
+    const card = list && list[index];
+    if (!card) return;
+    this._setCardHighlight(id, index, card.highlight ? "" : this._getDefaultHighlight(), false);
+  },
+
+  _hideCardMenu() {
+    const menu = this._cardMenu;
+    if (!menu) return;
+    try { if (menu.onDoc) menu.doc.removeEventListener("mousedown", menu.onDoc, true); } catch (e) {}
+    try { if (menu.onKey) menu.doc.removeEventListener("keydown", menu.onKey, true); } catch (e) {}
+    try { if (menu.onScroll) menu.doc.removeEventListener("scroll", menu.onScroll, true); } catch (e) {}
+    try { if (menu.el && menu.el.parentNode) menu.el.parentNode.removeChild(menu.el); } catch (e) {}
+    this._cardMenu = null;
+  },
+
+  _showCardMenu(ev, itemID, index, card) {
+    this._hideCardMenu();
+    try {
+      const cardEl = ev && ev.currentTarget;
+      const doc = (cardEl && cardEl.ownerDocument) || (ev.target && ev.target.ownerDocument);
+      if (!doc || !cardEl) {
+        this._debugLog("_showCardMenu abort: doc=" + !!doc + ", cardEl=" + !!cardEl);
+        return;
+      }
+      const self = this;
+      const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
+      const txt = (s) => this._createTxt(doc, s);
+      const current = this._normalizeHighlight(card && card.highlight);
+      const colors = [
+        { id: "amber", label: "琥珀" },
+        { id: "sage", label: "苔绿" },
+        { id: "blue", label: "雾蓝" },
+        { id: "rose", label: "玫瑰" },
+      ];
+
+      const menu = el("div", { class: "wt-card-menu", role: "menu" });
+      colors.forEach((c) => {
+        const btn = el("button", {
+          type: "button",
+          class: "wt-hl-swatch wt-hl-swatch-" + c.id + (current === c.id ? " is-active" : ""),
+          title: c.label,
+          "aria-label": c.label,
+        });
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          self._hideCardMenu();
+          self._setCardHighlight(itemID, index, c.id, true);
+        });
+        menu.append(btn);
+      });
+      const retryBtn = el("button", {
+        type: "button",
+        class: "wt-card-menu-btn",
+        title: "重新翻译",
+        "aria-label": "重新翻译",
+      }, [txt("↻")]);
+      retryBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        self._hideCardMenu();
+        self._retryTranslationForCard(itemID, index, card);
+      });
+      const delBtn = el("button", {
+        type: "button",
+        class: "wt-card-menu-btn",
+        title: "删除",
+        "aria-label": "删除",
+      }, [txt("✕")]);
+      delBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        self._hideCardMenu();
+        self._deleteWordForItem(itemID, index);
+      });
+      menu.append(retryBtn, delBtn);
+      cardEl.append(menu);
+
+      const cardRect = cardEl.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      let left = ev.clientX - cardRect.left;
+      let top = ev.clientY - cardRect.top;
+      if (left + menuRect.width > cardRect.width) left = Math.max(0, cardRect.width - menuRect.width);
+      if (left < 0) left = 0;
+      if (top + menuRect.height > cardRect.height) top = Math.max(0, cardRect.height - menuRect.height);
+      if (top < 0) top = 0;
+      menu.style.left = left + "px";
+      menu.style.top = top + "px";
+
+      const onDoc = (e) => {
+        if (menu.contains(e.target)) return;
+        self._hideCardMenu();
+      };
+      const onKey = (e) => {
+        if ((e.key || "").toLowerCase() === "escape") self._hideCardMenu();
+      };
+      const onScroll = () => self._hideCardMenu();
+      doc.addEventListener("mousedown", onDoc, true);
+      doc.addEventListener("keydown", onKey, true);
+      doc.addEventListener("scroll", onScroll, true);
+      this._cardMenu = { el: menu, doc, onDoc, onKey, onScroll };
+      this._debugLog("_showCardMenu: itemID=" + itemID + ", index=" + index);
+    } catch (e) {
+      this._debugLog("_showCardMenu ERROR: " + (e && (e.stack || e.message || e)));
+    }
+  },
+
   async _retryTranslationForCard(itemID, index, card) {
     const id = Number(itemID);
     const list = this._itemWords.get(id);
@@ -3254,6 +3398,7 @@ _configVersion: 0,
   },
 
   _renderPaneBody(doc, body, item) {
+    try { this._hideCardMenu(); } catch (e) {}
     // 使用 HTML 命名空间创建元素（body 是 html:div，doc 是 XUL document）
     const HTML_NS = "http://www.w3.org/1999/xhtml";
     const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
@@ -3318,7 +3463,17 @@ _configVersion: 0,
     const titleGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex:1;min-width:0;" });
     const titleActions = el("div", { style: "display:flex;align-items:center;gap:6px;flex-shrink:0;" });
 
-    const title = el("strong", { title: "单词本", style: "white-space:nowrap;font-size:14px;line-height:20px;" }, [txt("单词本")]);
+    const wordsFileName = itemID + ".json";
+    let wordsFileTip = wordsFileName;
+    try {
+      const p = Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.getWordsFilePath === "function"
+        ? Zotero.WordTranslatorStorage.getWordsFilePath(itemID) : "";
+      if (p) wordsFileTip = p;
+    } catch (e) {}
+    const title = el("strong", {
+      title: wordsFileTip,
+      style: "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;",
+    }, [txt("单词本 " + wordsFileName)]);
     titleGroup.append(title);
 
     const apiSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换翻译 API", "aria-label": "当前翻译 API" });
@@ -3482,13 +3637,14 @@ _configVersion: 0,
     }
     body.append(list);
 
-    // CSS（注入一次，挂在 body 内部最安全）
-    if (!body.querySelector(".wordtranslator-pane-style")) {
-      const style = doc.createElementNS(HTML_NS, "style");
+    // CSS 挂在 body 内部；每次重绘刷新，避免升级后仍用旧样式。
+    let style = body.querySelector(".wordtranslator-pane-style");
+    if (!style) {
+      style = doc.createElementNS(HTML_NS, "style");
       style.className = "wordtranslator-pane-style";
-      style.textContent = this._getPaneCSS();
       body.append(style);
     }
+    style.textContent = this._getPaneCSS();
     // 保存当前 pane 的 doc / body 引用，以便点击放大/缩小按钮后只对卡片文本动态调整
     this._currentPane = { doc: doc, body: body };
     this._currentPaneContext = {
@@ -3505,7 +3661,11 @@ _configVersion: 0,
     const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
     const txt = (s) => this._createTxt(doc, s);
 
-    const card = el("div", { style: "display:flex;align-items:flex-start;gap:6px;padding:6px 8px;border:1px solid ThreeDShadow;border-radius:8px;background:Canvas;" });
+    const hl = this._normalizeHighlight(w.highlight);
+    const card = el("div", {
+      class: "wt-card" + (hl ? " wt-card-hl wt-card-hl-" + hl : ""),
+      style: "display:flex;align-items:flex-start;gap:6px;padding:6px 8px;",
+    });
     const fsVal = Number(this._data && this._data.fontSize) || 13;
     // 文本部分包在一个容器里，只对它应用字号，并且可被选中
     const textWrap = el("div", { class: "wt-card-text", style: "flex:1;min-width:0;font-size:" + fsVal + "px;line-height:1.5;user-select:text;-webkit-user-select:text;cursor:text;" });
@@ -3520,6 +3680,20 @@ _configVersion: 0,
     delBtn.addEventListener("click", () => this._deleteWordForItem(itemID, idx));
     actionWrap.append(retryBtn, delBtn);
     card.append(textWrap, actionWrap);
+    card.addEventListener("dblclick", (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest("button")) return;
+      ev.preventDefault();
+      try {
+        const sel = doc.defaultView && doc.defaultView.getSelection && doc.defaultView.getSelection();
+        if (sel && sel.removeAllRanges) sel.removeAllRanges();
+      } catch (e) {}
+      this._toggleCardHighlight(itemID, idx);
+    });
+    card.addEventListener("contextmenu", (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest("button")) return;
+      ev.preventDefault();
+      this._showCardMenu(ev, itemID, idx, w);
+    });
     return card;
   },
 
@@ -3546,7 +3720,27 @@ _configVersion: 0,
   },
 
   _getPaneCSS() {
-    return ".wordtranslator-pane-body { color-scheme: light dark; } .wordtranslator-pane-body button:hover { background: color-mix(in srgb, Canvas 92%, CanvasText); } .wordtranslator-pane-body select { color: FieldText; background: Field; } .wt-card-text { user-select: text; -webkit-user-select: text; cursor: text; }";
+    return [
+      ".wordtranslator-pane-body { color-scheme: light dark; position: relative; }",
+      ".wordtranslator-pane-body button:hover { background: color-mix(in srgb, Canvas 92%, CanvasText); }",
+      ".wordtranslator-pane-body select { color: FieldText; background: Field; }",
+      ".wt-card { position:relative; overflow:visible; background:Canvas; border:1px solid ThreeDShadow; border-radius:8px; }",
+      ".wt-card-text { user-select: text; -webkit-user-select: text; cursor: text; }",
+      ".wt-card-hl { border-left-width: 3px; border-left-style: solid; }",
+      ".wt-card-hl-amber { background: color-mix(in srgb, #c4a35a 16%, Canvas); border-left-color: color-mix(in srgb, #c4a35a 70%, CanvasText); }",
+      ".wt-card-hl-sage { background: color-mix(in srgb, #6f8f72 16%, Canvas); border-left-color: color-mix(in srgb, #6f8f72 70%, CanvasText); }",
+      ".wt-card-hl-blue { background: color-mix(in srgb, #6d86a8 16%, Canvas); border-left-color: color-mix(in srgb, #6d86a8 70%, CanvasText); }",
+      ".wt-card-hl-rose { background: color-mix(in srgb, #b07a86 16%, Canvas); border-left-color: color-mix(in srgb, #b07a86 70%, CanvasText); }",
+      ".wt-card-menu { position:absolute; z-index:9999; display:flex; align-items:center; gap:6px; padding:4px 6px; border:1px solid ThreeDShadow; border-radius:8px; background:Canvas; color:CanvasText; box-shadow:0 8px 24px color-mix(in srgb, CanvasText 18%, transparent); }",
+      ".wt-card-menu-btn { width:22px; height:22px; padding:0; border:none; background:transparent; color:GrayText; cursor:pointer; font-size:14px; line-height:22px; border-radius:4px; }",
+      ".wt-card-menu-btn:hover { background: color-mix(in srgb, Canvas 88%, CanvasText); color:CanvasText; }",
+      ".wt-hl-swatch { width:16px; height:16px; padding:0; border:1px solid ThreeDShadow; border-radius:50%; cursor:pointer; box-sizing:border-box; }",
+      ".wt-hl-swatch.is-active { outline:2px solid Highlight; outline-offset:1px; }",
+      ".wt-hl-swatch-amber { background: color-mix(in srgb, #c4a35a 70%, Canvas); }",
+      ".wt-hl-swatch-sage { background: color-mix(in srgb, #6f8f72 70%, Canvas); }",
+      ".wt-hl-swatch-blue { background: color-mix(in srgb, #6d86a8 70%, Canvas); }",
+      ".wt-hl-swatch-rose { background: color-mix(in srgb, #b07a86 70%, Canvas); }",
+    ].join(" ");
   },
 
   // ---------- 偏好面板 onload ----------
@@ -3596,7 +3790,10 @@ _configVersion: 0,
             const id = Number(k);
             if (!Number.isFinite(id)) continue;
             const list = Array.isArray(obj[k]) ? obj[k].map(function (w) {
-              return { word: String(w.word || ""), translation: String(w.translation || ""), pending: !!w.pending };
+              const item = { word: String(w.word || ""), translation: String(w.translation || ""), pending: !!w.pending };
+              const hl = String(w.highlight || "");
+              if (hl === "amber" || hl === "sage" || hl === "blue" || hl === "rose") item.highlight = hl;
+              return item;
             }) : [];
             if (list.length > 0) {
               this._itemWords.set(id, list);
