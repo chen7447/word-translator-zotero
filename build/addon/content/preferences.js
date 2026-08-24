@@ -1264,6 +1264,21 @@
       : s.name + "：v" + (s.version || "?")).join("\n");
   }
 
+  function cdnHasLatest(result) {
+    const latest = result && result.latestVersion;
+    if (!latest || !Array.isArray(result.sources)) return false;
+    return result.sources.some((s) => s.name === "jsDelivr" && !s.error && s.version === latest);
+  }
+
+  function updateOpenUrl(result) {
+    const ver = result && result.latestVersion;
+    if (!ver) return "";
+    if (cdnHasLatest(result)) {
+      return "https://cdn.jsdelivr.net/gh/chen7447/word-translator-zotero@main/build/wordtranslator-" + ver + ".xpi";
+    }
+    return "https://github.com/chen7447/word-translator-zotero/releases/tag/v" + ver;
+  }
+
   async function runUpdateCheck(force) {
     if (_updateChecking) return;
     _updateChecking = true;
@@ -1280,7 +1295,8 @@
       if (result.error) {
         setUpdateLabel("error", "检查更新失败", "当前版本 v" + (result.currentVersion || "?") + "\n" + result.error + (src ? "\n" + src : "") + "\n\n点击可重试。");
       } else if (result.hasUpdate) {
-        setUpdateLabel("update", "有新版本 v" + result.latestVersion, "当前版本 v" + result.currentVersion + "，最新版本 v" + result.latestVersion + "。\n" + src + "\n点击打开 GitHub Release。");
+        const clickHint = cdnHasLatest(result) ? "点击从 jsDelivr 下载。" : "点击打开 GitHub Release。";
+        setUpdateLabel("update", "有新版本 v" + result.latestVersion, "当前版本 v" + result.currentVersion + "，最新版本 v" + result.latestVersion + "。\n" + src + "\n" + clickHint);
         setStatus("发现新版本 v" + result.latestVersion + "，当前为 v" + result.currentVersion);
       } else {
         setUpdateLabel("latest", "已是最新版本", "当前已是最新版本 v" + (result.currentVersion || "?") + "。\n" + src + "\n点击可重新检查。");
@@ -1512,7 +1528,7 @@
       save(false);
     });
 
-    // 有新版：打开对应 GitHub Release；否则强制再检查
+    // 有新版：jsDelivr 已同步则下 CDN xpi，否则打开 GitHub Release
     const checkUpdateEl = get("wt-check-update");
     if (checkUpdateEl) {
       const trigger = (ev) => {
@@ -1520,8 +1536,8 @@
           if (_updateChecking) return;
           ev && ev.preventDefault && ev.preventDefault();
           if (_updateState === "update" && _lastUpdate && _lastUpdate.latestVersion) {
-            const url = "https://github.com/chen7447/word-translator-zotero/releases/tag/v" + _lastUpdate.latestVersion;
-            if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.openExternalURL === "function") {
+            const url = updateOpenUrl(_lastUpdate);
+            if (url && Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.openExternalURL === "function") {
               Zotero.WordTranslator.openExternalURL(url);
             }
             return;

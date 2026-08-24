@@ -294,8 +294,12 @@ _configVersion: 0,
 
     const fetched = await Promise.all(this._updateCheckUrls.map(async (url) => {
       const name = this._updateSourceName(url);
+      const fetchUrl = url + (url.indexOf("?") >= 0 ? "&" : "?") + "t=" + now;
       try {
-        const resp = await Zotero.HTTP.request("GET", url, { responseType: "json" });
+        const resp = await Zotero.HTTP.request("GET", fetchUrl, {
+          responseType: "json",
+          headers: { "Cache-Control": "no-cache" },
+        });
         if (resp && resp.status === 200 && resp.response) {
           return { name, manifest: resp.response, error: null };
         }
