@@ -1247,33 +1247,38 @@
     if (title) e.title = title;
   }
 
+  function sourceLines(result) {
+    const srcs = result && result.sources;
+    if (!Array.isArray(srcs) || srcs.length === 0) return "";
+    return srcs.map((s) => s.error
+      ? s.name + "：失败（" + s.error + "）"
+      : s.name + "：v" + (s.version || "?")).join("\n");
+  }
+
   async function runUpdateCheck(force) {
-    if (_updateChecking) return; // 已有一个检查在进行中
+    if (_updateChecking) return;
     _updateChecking = true;
-    const prevState = _updateState;
     setUpdateLabel("checking", "检查中…", "正在检查插件是否有新版本…");
     try {
       let result = null;
       if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.checkForUpdates === "function") {
         result = await Zotero.WordTranslator.checkForUpdates(!!force);
       } else {
-        result = { hasUpdate: false, currentVersion: "4.0.1", latestVersion: "", updateLink: "", error: "插件核心未加载，检查不可用", list: [] };
+        result = { hasUpdate: false, currentVersion: "4.0.1", latestVersion: "", updateLink: "", error: "插件核心未加载，检查不可用", list: [], sources: [] };
       }
+      const src = sourceLines(result);
       if (result.error) {
-        setUpdateLabel("error", "检查更新失败", "当前版本 v" + (result.currentVersion || "?") + "\n" + result.error + "\n\n（自动检查失败时请点击重试；若点击仍失败，可能是网络无法访问 GitHub，可稍后再试）");
+        setUpdateLabel("error", "检查更新失败", "当前版本 v" + (result.currentVersion || "?") + "\n" + result.error + (src ? "\n" + src : "") + "\n\n点击可重试。");
       } else if (result.hasUpdate) {
-        setUpdateLabel("update", "有新版本 v" + result.latestVersion, "当前版本 v" + result.currentVersion + "，最新版本 v" + result.latestVersion + "。\n点击可重新检查。");
+        setUpdateLabel("update", "有新版本 v" + result.latestVersion, "当前版本 v" + result.currentVersion + "，最新版本 v" + result.latestVersion + "。\n" + src + "\n点击可重新检查。");
         setStatus("发现新版本 v" + result.latestVersion + "，当前为 v" + result.currentVersion);
       } else {
-        setUpdateLabel("latest", "已是最新版本", "当前已是最新版本 v" + (result.currentVersion || "?") + "。\n点击可重新检查。");
+        setUpdateLabel("latest", "已是最新版本", "当前已是最新版本 v" + (result.currentVersion || "?") + "。\n" + src + "\n点击可重新检查。");
       }
     } catch (e) {
-      setUpdateLabel("error", "检查更新失败", "检查更新出错：" + (e && (e.message || e)) + "\n\n自动检查失败时请点击重试；若点击仍失败，可能是网络无法访问 GitHub。");
+      setUpdateLabel("error", "检查更新失败", "检查更新出错：" + (e && (e.message || e)) + "\n\n点击可重试。");
     } finally {
       _updateChecking = false;
-      if (prevState === "checking" || prevState === "idle") {
-        // 无需额外处理；label 已由 setUpdateLabel 置为最终态
-      }
     }
   }
 
