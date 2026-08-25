@@ -140,6 +140,20 @@
     } catch (e) {}
   }
 
+  // TTS 引擎切换 UI：system 显示系统 TTS 面板，api 显示 API 面板
+  function applyTTSUI() {
+    try {
+      const sel = get("wt-tts-engine");
+      if (!sel) return;
+      const engine = data.ttsEngine === "api" ? "api" : "system";
+      sel.value = engine;
+      const sysWrap = get("wt-tts-system-wrap");
+      const apiWrap = get("wt-tts-api-wrap");
+      if (sysWrap) sysWrap.style.display = engine === "system" ? "flex" : "none";
+      if (apiWrap) apiWrap.style.display = engine === "api" ? "flex" : "none";
+    } catch (e) {}
+  }
+
   function applyPromptModeUI() {
     try {
       const mode = data.promptMode || "split";
@@ -708,6 +722,88 @@
     }
   }
 
+  // 显示 TTS 进阶说明弹窗
+  function showTTSTips() {
+    const overlay = document.createElementNS(HTML_NS, "div");
+    overlay.setAttribute("class", "wt-modal-overlay");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;z-index:9999;";
+
+    const dlg = document.createElementNS(HTML_NS, "div");
+    dlg.style.cssText = "background:Canvas;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.25);width:520px;max-width:90vw;max-height:85vh;display:flex;flex-direction:column;padding:20px;overflow-y:auto;";
+
+    const title = document.createElementNS(HTML_NS, "div");
+    title.style.cssText = "font-weight:600;font-size:14px;margin-bottom:10px;color:CanvasText;";
+    title.textContent = "给系统 TTS 添加更多英语语音";
+    dlg.appendChild(title);
+
+    const body = document.createElementNS(HTML_NS, "div");
+    body.style.cssText = "font-size:13px;line-height:1.7;color:CanvasText;white-space:pre-wrap;word-break:break-word;";
+    body.textContent = [
+      "想给旧列表加更多英语语音（口音不同，质量一般但能用）：\n",
+      "1. 去 设置 > 时间和语言 > 语言和区域。",
+      "2. 点 添加语言，搜索并添加 英语（英国） 或 英语（澳大利亚） 等（先加一个试试）。",
+      "3. 添加后，点刚加的语言右边的 三个点 > 语言选项。",
+      "4. 在“语音”部分下载对应语音包（这里才会真正下载，可能显示实际大小，需要联网）。",
+      "5. 下载完成后，重启电脑或注销再登录，然后回到经典“文本到语音转换”设置（开始菜单搜这个），下拉列表里通常会多出对应口音的语音（比如英国的 Hazel）。\n",
+      "提示：如果添加语言时一直显示 0 MB 或下载失败，多半是网络连微软服务器不畅（中国大陆常见）。可以换网络、开加速试试，或先确保 Windows 更新全部装完。",
+    ].join("\n");
+    dlg.appendChild(body);
+
+    const btnBar = document.createElementNS(HTML_NS, "div");
+    btnBar.style.cssText = "display:flex;justify-content:flex-end;margin-top:14px;";
+    const closeBtn = document.createElementNS(HTML_NS, "button");
+    closeBtn.textContent = "知道了";
+    closeBtn.style.cssText = "padding:5px 20px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;color:ButtonText;font-size:13px;";
+    closeBtn.addEventListener("click", () => { try { overlay.remove(); } catch (e) {} });
+    btnBar.appendChild(closeBtn);
+    dlg.appendChild(btnBar);
+
+    overlay.appendChild(dlg);
+    document.getElementById("wordtranslator-pref-root").appendChild(overlay);
+    overlay.addEventListener("click", (ev) => { if (ev.target === overlay) try { overlay.remove(); } catch (e) {} });
+  }
+
+  // TTS API 测试：调用 TTS API 朗读测试句子，OpenAI 兼容格式
+  async function testTTSApi() {
+    const url = (get("wt-tts-api-url").value || "").trim().replace(/\/+$/, "");
+    const key = (get("wt-tts-api-key").value || "").trim();
+    if (!url) { setStatus("请输入 API 地址"); return; }
+    if (!key) { setStatus("请输入 API Key"); return; }
+    const statusEl = get("wt-tts-api-status");
+    if (statusEl) statusEl.textContent = "请求中…";
+    try {
+      const resp = await Zotero.HTTP.request("POST", url + "/audio/speech", {
+        headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "tts-1",
+          input: "Hello, this is a test of the text-to-speech system.",
+          voice: "alloy",
+          response_format: "mp3",
+        }),
+        responseType: "arraybuffer",
+      });
+      if (resp.status !== 200) {
+        if (statusEl) statusEl.textContent = "失败（HTTP " + resp.status + "）";
+        return;
+      }
+      // 把二进制音频转为 blob URL 并播放
+      const bytes = new Uint8Array(resp.response);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const b64 = btoa(binary);
+      const audio = document.createElementNS(HTML_NS, "audio");
+      audio.src = "data:audio/mpeg;base64," + b64;
+      audio.play().then(() => {
+        if (statusEl) statusEl.textContent = "朗读中…";
+        audio.onended = () => { if (statusEl) statusEl.textContent = "完成"; };
+      }).catch(() => {
+        if (statusEl) statusEl.textContent = "播放失败";
+      });
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "错误：" + (e && e.message || e);
+    }
+  }
+
   // ----- 构建面板 -----
   function getApiConfigFilePath() {
     try {
@@ -1006,6 +1102,71 @@
       ]),
     ]);
 
+    // —— 发音（TTS） ——
+    const sectionTTS = el("section", { class: "wt-section", id: "wt-tts-section" }, [
+      el("h3", {}, [txt("发音")]),
+      el("div", { class: "wt-row-inline", style: "align-items:center;gap:8px;flex-wrap:wrap;" }, [
+        el("label", { class: "wt-label", style: "min-width:auto;" }, [txt("引擎")]),
+        (() => {
+          const sel = el("select", { class: "wt-select", id: "wt-tts-engine" });
+          sel.append(
+            el("option", { value: "system" }, [txt("系统 TTS 引擎语音（英）")]),
+            el("option", { value: "api" }, [txt("TTS API")]),
+          );
+          return sel;
+        })(),
+      ]),
+      // 系统 TTS 引擎
+      el("div", { id: "wt-tts-system-wrap", style: "margin:6px 0 0 22px;display:flex;flex-direction:column;gap:6px;" }, [
+        el("div", { class: "wt-row-inline", style: "gap:8px;margin:0;" }, [
+          (() => {
+            const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-open-settings" }, [txt("设置 TTS 引擎")]);
+            return btn;
+          })(),
+          (() => {
+            const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-help" }, [txt("说明")]);
+            return btn;
+          })(),
+          (() => {
+            const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-advanced" }, [txt("进阶说明")]);
+            return btn;
+          })(),
+        ]),
+        el("p", { class: "wt-hint", style: "margin:0;" }, [txt("打开系统设置中的语音设置页，或查看支持的语言和语音列表。")]),
+      ]),
+      // TTS API
+      el("div", { id: "wt-tts-api-wrap", style: "margin:6px 0 0 22px;display:none;flex-direction:column;gap:6px;" }, [
+        el("div", { class: "wt-row" }, [
+          el("label", { class: "wt-label", for: "wt-tts-api-url" }, [txt("API 地址")]),
+          (() => {
+            const inp = el("input", { type: "text", class: "wt-input", id: "wt-tts-api-url", placeholder: "例如 https://api.openai.com/v1" });
+            inp.style.width = "100%";
+            return inp;
+          })(),
+        ]),
+        el("div", { class: "wt-row" }, [
+          el("label", { class: "wt-label", for: "wt-tts-api-key" }, [txt("API Key")]),
+          (() => {
+            const inp = el("input", { type: "password", class: "wt-input", id: "wt-tts-api-key", placeholder: "sk-..." });
+            inp.style.width = "100%";
+            return inp;
+          })(),
+        ]),
+        el("div", { class: "wt-row-inline", style: "gap:8px;margin:2px 0;" }, [
+          (() => {
+            const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-api-test", title: "如果成功会朗读句子，否则不朗读。" }, [txt("测试")]);
+            return btn;
+          })(),
+          (() => {
+            const btn = el("button", { type: "button", class: "wt-btn wt-btn-primary", id: "wt-tts-api-save", title: "测试成功后，一定要点击保存！" }, [txt("保存")]);
+            return btn;
+          })(),
+          el("span", { id: "wt-tts-api-status", style: "color:GrayText;font-size:12px;margin-left:4px;" }),
+        ]),
+        el("p", { class: "wt-hint", style: "margin:0;" }, [txt("测试句子：\"Hello, this is a test of the text-to-speech system.\" 测试成功后请点击「保存」。")]),
+      ]),
+    ]);
+
     // —— 外观 ——
     const sectionAppearance = el("section", { class: "wt-section", id: "wt-font-size-section" }, [
       el("h3", {}, [txt("外观")]),
@@ -1234,7 +1395,7 @@
     ]);
     const statusBar = el("p", { id: "wt-status", class: "wt-status", style: "margin: 8px 0 0;" }, [txt("就绪")]);
 
-    root.append(style, header, intro, sectionGeneral, sectionAppearance, sectionSearch, sectionPrompt, sectionApis, sectionDictionary, statusBar, sectionSaveDir, sectionAbout, footer);
+    root.append(style, header, intro, sectionGeneral, sectionTTS, sectionAppearance, sectionSearch, sectionPrompt, sectionApis, sectionDictionary, statusBar, sectionSaveDir, sectionAbout, footer);
     return true;
   }
 
@@ -1553,6 +1714,46 @@
         } catch (e) {}
       });
     }
+
+    // TTS 引擎切换
+    const ttsEngine = get("wt-tts-engine");
+    if (ttsEngine) ttsEngine.addEventListener("change", () => {
+      data.ttsEngine = ttsEngine.value === "api" ? "api" : "system";
+      applyTTSUI();
+      save(false);
+    });
+    // 系统 TTS：打开 Windows 语音设置
+    bind("wt-tts-open-settings", "click", () => {
+      try {
+        if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.openExternalURL === "function") {
+          Zotero.WordTranslator.openExternalURL("ms-settings:speech");
+        }
+      } catch (e) {}
+    });
+    // 系统 TTS：说明
+    bind("wt-tts-help", "click", () => {
+      try {
+        if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.openExternalURL === "function") {
+          Zotero.WordTranslator.openExternalURL("https://support.microsoft.com/zh-CN/accessibility/windows/narrator/appendix-a-supported-languages-and-voices");
+        }
+      } catch (e) {}
+    });
+    // 系统 TTS：进阶说明
+    bind("wt-tts-advanced", "click", showTTSTips);
+    // TTS API 测试
+    bind("wt-tts-api-test", "click", testTTSApi);
+    // TTS API 保存
+    bind("wt-tts-api-save", "click", () => {
+      const url = (get("wt-tts-api-url").value || "").trim().replace(/\/+$/, "");
+      const key = (get("wt-tts-api-key").value || "").trim();
+      if (!url) { setStatus("请输入 API 地址"); return; }
+      if (!key) { setStatus("请输入 API Key"); return; }
+      data.ttsApiUrl = url;
+      data.ttsApiKey = key;
+      save(true);
+      const statusEl = get("wt-tts-api-status");
+      if (statusEl) statusEl.textContent = "已保存";
+    });
   }
 
   function renderForm() {
@@ -1612,6 +1813,12 @@
     if (selectionModeHint) selectionModeHint.textContent = data.selectionMode === "sentence"
       ? "本插件扩展模式，即对选中的单词数无要求。"
       : "本插件默认模式，即对选中的单词数有要求。";
+    // TTS
+    applyTTSUI();
+    const ttsApiUrl = get("wt-tts-api-url");
+    if (ttsApiUrl) ttsApiUrl.value = data.ttsApiUrl || "";
+    const ttsApiKey = get("wt-tts-api-key");
+    if (ttsApiKey) ttsApiKey.value = data.ttsApiKey || "";
   }
 
   function init() {

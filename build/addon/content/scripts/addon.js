@@ -162,7 +162,16 @@ var WordTranslator = {
           return true;
         }
       } catch (e) { this._debugLog("_openExternalURL openInShell ERROR: " + (e && e.message || e)); }
-      // 回退：nsIExternalProtocolService
+      // 回退：cmd.exe /c start 直开（Windows ShellExecute，无弹窗），支持 ms-settings: 和 http(s) 等
+      try {
+        const file = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+        file.initWithPath("C:\\Windows\\System32\\cmd.exe");
+        const proc = Components.classes["@mozilla.org/process/util;1"].createInstance(Components.interfaces.nsIProcess);
+        proc.init(file);
+        proc.run(false, ["/c", "start", "", url], 4);
+        return true;
+      } catch (e) { this._debugLog("_openExternalURL cmd start ERROR: " + (e && e.message || e)); }
+      // 最后退耀：nsIExternalProtocolService（可能弹权限框，仅作兜底）
       try {
         const io = Services.io;
         const eps = Components.classes["@mozilla.org/uriloader/external-protocol-service;1"].getService(Components.interfaces.nsIExternalProtocolService);
@@ -3672,11 +3681,63 @@ _configVersion: 0,
     const transEl = el("span", { class: "wt-card-trans", style: "word-break:break-word;" + (w.pending ? "color:GrayText;" : "") }, [txt(w.translation)]);
     textWrap.append(wordEl, arrowEl, transEl);
     const actionWrap = el("div", { style: "display:flex;align-items:center;gap:2px;flex-shrink:0;" });
+    const speakBtn = el("button", { title: "朗读", "aria-label": "朗读", style: "flex-shrink:0;border:none;background:transparent;color:GrayText;cursor:pointer;font-size:15px;padding:2px 4px;border-radius:4px;line-height:1;" }, [txt("🔊")]);
+    speakBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      try {
+        const engine = this._data && this._data.ttsEngine || "system";
+        if (engine === "api") {
+          // TTS API 模式
+          const apiUrl = this._data && this._data.ttsApiUrl;
+          const apiKey = this._data && this._data.ttsApiKey;
+          if (!apiUrl || !apiKey) {
+            this._debugLog("speak skipped: TTS API not configured");
+            return;
+          }
+          Zotero.HTTP.request("POST", apiUrl.replace(/\/+$/, "") + "/audio/speech", {
+            headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
+            body: JSON.stringify({ model: "tts-1", input: w.word, voice: "alloy", response_format: "mp3" }),
+            responseType: "arraybuffer",
+          }).then((resp) => {
+            if (resp.status !== 200) {
+              this._debugLog("speak TTS API error: HTTP " + resp.status);
+              return;
+            }
+            const blob = new Blob([resp.response], { type: "audio/mpeg" });
+            const url = URL.createObjectURL(blob);
+            const audio = doc.createElement("audio");
+            audio.src = url;
+            audio.play().then(() => {
+              audio.onended = () => URL.revokeObjectURL(url);
+            }).catch(() => {});
+          }).catch((e) => {
+            this._debugLog("speak TTS API ERROR: " + (e && (e.message || e)));
+          });
+          return;
+        }
+        // 系统 TTS 模式
+        let win = null;
+        try { win = Zotero.getMainWindow(); } catch (e) {}
+        if (!win) try { win = doc.defaultView; } catch (e) {}
+        const Ctor = win && win.SpeechSynthesisUtterance;
+        const ss = win && win.speechSynthesis;
+        if (Ctor && ss) {
+          const u = new Ctor(w.word);
+          u.lang = "en-US";
+          u.rate = 0.9;
+          ss.speak(u);
+        } else {
+          this._debugLog("speak unavailable: web speech API missing in window");
+        }
+      } catch (e) {
+        this._debugLog("speak ERROR: " + (e && (e.message || e)));
+      }
+    });
     const retryBtn = el("button", { title: "重新翻译", "aria-label": "重新翻译", style: "flex-shrink:0;border:none;background:transparent;color:GrayText;cursor:pointer;font-size:16px;padding:2px 5px;border-radius:4px;line-height:1;" }, [txt("↻")]);
     retryBtn.addEventListener("click", () => this._retryTranslationForCard(itemID, idx, w));
     const delBtn = el("button", { title: "删除", "aria-label": "删除", style: "flex-shrink:0;border:none;background:transparent;color:GrayText;cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;" }, [txt("✕")]);
     delBtn.addEventListener("click", () => this._deleteWordForItem(itemID, idx));
-    actionWrap.append(retryBtn, delBtn);
+    actionWrap.append(speakBtn, retryBtn, delBtn);
     card.append(textWrap, actionWrap);
     card.addEventListener("dblclick", (ev) => {
       if (ev.target && ev.target.closest && ev.target.closest("button")) return;

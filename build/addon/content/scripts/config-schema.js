@@ -36,6 +36,10 @@ WordTranslatorConfig.DEFAULTS = {
   promptUser: "请将以下英文单词或短语翻译为专业中文：{{word}}",
   promptGlobal:
     "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}",
+  // TTS 发音
+  ttsEngine: "system",  // "system" | "api"
+  ttsApiUrl: "",
+  ttsApiKey: "",
   // API
   apis: [],
   activeApiIndex: 0,
@@ -72,6 +76,9 @@ WordTranslatorConfig.normalize = function (raw) {
     xbuttonBridgeEnabled: typeof raw.xbuttonBridgeEnabled === "boolean" ? raw.xbuttonBridgeEnabled : true,
     hotkeyModifier: (raw.hotkeyModifier === "shift" || raw.hotkeyModifier === "ctrl+shift" || raw.hotkeyModifier === "alt+shift")
       ? "ctrl" : (raw.hotkeyModifier || "ctrl"),
+    ttsEngine: raw.ttsEngine === "api" ? "api" : "system",
+    ttsApiUrl: typeof raw.ttsApiUrl === "string" ? raw.ttsApiUrl : "",
+    ttsApiKey: typeof raw.ttsApiKey === "string" ? raw.ttsApiKey : "",
   };
 };
 
