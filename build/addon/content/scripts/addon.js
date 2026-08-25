@@ -3031,20 +3031,6 @@ _configVersion: 0,
     }
   },
 
-  _refreshProvidersInAllPanes(currentItemID) {
-    return (async () => {
-      try {
-        await this._reloadDataFromDisk();
-        const context = this._currentPaneContext;
-        const id = context && Number(context.itemID) || Number(currentItemID);
-        if (Number.isFinite(id) && id > 0) this._refreshItemPane(id);
-        this._debugLog("_refreshProvidersInAllPanes: direct refresh=" + (Number.isFinite(id) && id > 0) + ", currentItemID=" + currentItemID);
-      } catch (e) {
-        this._debugLog("_refreshProvidersInAllPanes ERROR: " + (e && (e.stack || e.message || String(e))));
-      }
-    })();
-  },
-
   // 强制按当前 Zotero.ItemPane 激活的 item id 重渲染单词本 body
   async _rerenderCurrentItemPane(reason) {
     try {
@@ -3104,9 +3090,9 @@ _configVersion: 0,
               body._wtRefresh = refresh;
             }
             this._debugLog("pane onInit: uid=" + uid + ", hasRefresh=" + !!refresh);
-            if (!this._currentPaneContext || !this._currentPaneContext.body || !this._currentPaneContext.body.isConnected) {
-              this._currentPaneContext = { doc: body && body.ownerDocument, body, itemID: null, paneUID: uid };
-            }
+            // 必须始终覆盖，不要检查 isConnected：插件版本更新后旧 body 可能仍连接，
+            // 不覆盖会导致后续所有渲染写入旧 body，界面卡死。
+            this._currentPaneContext = { doc: body && body.ownerDocument, body, itemID: null, paneUID: uid };
           } catch (e) {
             this._debugLog("pane onInit ERROR: " + (e && (e.stack || e.message || String(e))));
           }
@@ -3497,9 +3483,9 @@ _configVersion: 0,
     controlsRow.append(apiSelect);
 
     const compactButtonStyle = "width:28px;height:26px;padding:0;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:ButtonText;box-sizing:border-box;flex:0 0 28px;";
-    const refreshBtn = el("button", { title: "刷新服务商列表", "aria-label": "刷新服务商列表", style: compactButtonStyle }, []);
+    const refreshBtn = el("button", { title: "刷新单词本", "aria-label": "刷新单词本", style: compactButtonStyle }, []);
     refreshBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"23 4 23 10 17 10\"></polyline><polyline points=\"1 20 1 14 7 14\"></polyline><path d=\"M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15\"></path></svg>";
-    refreshBtn.addEventListener("click", () => this._refreshProvidersInAllPanes(itemID));
+    refreshBtn.addEventListener("click", () => this._applyWordBookView(itemID, { source: "refresh" }));
     controlsRow.append(refreshBtn);
 
     const settingsBtn = el("button", { title: "设置", "aria-label": "设置", style: compactButtonStyle }, []);
