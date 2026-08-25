@@ -3457,7 +3457,7 @@ _configVersion: 0,
     // 头部采用两行布局：第一行是“图标 + 单词本 + 菜单 + 清空”，第二行是 API 和常用操作。
     const header = el("div", { style: "display:flex;flex-direction:column;gap:5px;margin:0 0 8px;width:100%;padding:0 0 6px;border-bottom:1px solid rgba(0,0,0,0.08);box-sizing:border-box;" });
     const titleRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;" });
-    const controlsRow = el("div", { style: "display:flex;align-items:center;gap:5px;width:100%;min-width:0;min-height:26px;" });
+    const controlsRow = el("div", { style: "display:flex;align-items:center;gap:5px;width:100%;min-width:0;min-height:26px;flex-wrap:wrap;" });
     const titleGroup = el("div", { style: "display:flex;align-items:center;gap:6px;flex:1;min-width:0;" });
     const titleActions = el("div", { style: "display:flex;align-items:center;gap:6px;flex-shrink:0;" });
 
@@ -3540,7 +3540,7 @@ _configVersion: 0,
       this._wordBookViewState.set(itemID, { page: pageInfo.page, search: view.search });
       view.page = pageInfo.page;
     }
-    const navRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;margin-top:2px;" });
+    const navRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;margin-top:2px;flex-wrap:wrap;" });
     const searchInput = el("input", {
       type: "search",
       placeholder: "搜索单词或释义…",
