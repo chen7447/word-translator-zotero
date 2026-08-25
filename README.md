@@ -1,6 +1,6 @@
 # 单词翻译 Word Translator for Zotero
 
-当前版本：**6.10.2**
+当前版本：**6.11.0**
 
 Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人单词本，支持可配置的 AI 翻译 API。
 
@@ -18,6 +18,7 @@ Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人�
 - 支持选中后自动翻译并加入单词本。
 - 支持「先选区后按绑定键」：Ctrl / Alt / Shift / 自定义组合键，以及鼠标侧键 1 / 侧键 2。
 - 支持「按住快捷键划词翻译」（预设组合键与自定义快捷键互斥）。
+- 单词卡片支持 **朗读发音**：系统 TTS 引擎（免费离线）或 TTS API（OpenAI 兼容格式）。
 - 单词模式最长 500 字符；句子模式最长 5000 字符。
 - 单词本按 Zotero 条目分别保存，支持搜索、排序、分页、单条删除、重新翻译、全部清空、调节字体。
 - 单词卡片支持双击高亮、右键换色；偏好页可设默认高亮色。
@@ -40,7 +41,7 @@ Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人�
 1. 从 [Release](https://github.com/chen7447/word-translator-zotero/releases) 或仓库 `build/` 下载最新 `.xpi`，例如：
 
    ```text
-   wordtranslator-6.10.2.xpi
+   wordtranslator-6.11.0.xpi
    ```
 
 2. 打开 Zotero → `工具 → 插件`。
@@ -115,7 +116,7 @@ Google 翻译、DeepL 免费（非官方逆向）无需密钥，可能随时失�
    单词 -- 中文译文
    ```
 
-卡片上可点 `↻` 重新翻译，点 `✕` 删除。
+卡片上可点 `↻` 重新翻译，点 `✕` 删除，点 `🔊` 朗读发音。
 
 如果没看到单词本，在 Item Pane 中启用「单词本」面板。
 
@@ -237,6 +238,25 @@ Google 翻译、DeepL 免费（非官方逆向）无需密钥，可能随时失�
 
 ---
 
+## 发音（TTS）
+
+单词卡片上的 `🔊` 按钮用于朗读英文单词。在偏好页「发音」区段选择朗读引擎：
+
+| 引擎 | 说明 |
+|---|---|
+| 系统 TTS 引擎语音（英）（默认） | 免费、离线，使用 Windows 系统语音。可点击「设置 TTS 引擎」直达 Windows 语音设置，或点「说明」查看微软支持的语言和语音列表 |
+| TTS API | 使用 OpenAI 兼容的语音合成接口。填写 API 地址与 Key 后点「测试」朗读固定测试句，测试通过后务必点「保存」 |
+
+TTS API 请求格式（OpenAI 兼容）：
+
+```text
+POST {API地址}/audio/speech
+Authorization: Bearer {API Key}
+{"model": "tts-1", "input": "…", "voice": "alloy", "response_format": "mp3"}
+```
+
+---
+
 ## 数据存储
 
 插件在 Zotero profile 目录下创建：
@@ -337,7 +357,7 @@ locale/
 重新打包：
 
 ```powershell
-python build/pack_xpi.py build/addon build/wordtranslator-6.10.2.xpi
+python build/pack_xpi.py build/addon build/wordtranslator-6.11.0.xpi
 ```
 
 压缩包根目录必须直接包含 `manifest.json` 和 `bootstrap.js`，不要再套一层文件夹。
