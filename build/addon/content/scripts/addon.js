@@ -2961,6 +2961,8 @@ _configVersion: 0,
       if (next > MAX) next = MAX;
       this._data.fontSize = next;
       this._saveData();
+      // 放大/缩小同样借官方 item pane 刷新重渲染，避免写进孤儿 body（与其他按钮一致）
+      this._triggerPaneRefresh();
       this.applyFontSizeToPane();
       this._debugLog("_onZoomFontSize: " + cur + " -> " + next);
     } catch (e) {
@@ -3344,10 +3346,30 @@ _configVersion: 0,
   },
 
   // 统一的单词本视图更新调度：检索 → 排序 → 分页 → 重渲染。所有业务触发点汇聚于此。
+  // 触发 Zotero 官方 item pane 刷新：让 onRender 在"真正显示的 body"上重跑并重锚
+  // _currentPaneContext。解决插件重载后手动写 DOM 不被显示的问题（重进 PDF/开关侧边栏等效）。
+  _triggerPaneRefresh() {
+    try {
+      if (Zotero && Zotero.Notifier && typeof Zotero.Notifier.trigger === "function") {
+        Zotero.Notifier.trigger("refresh", "itempane", []).catch(function (e) {
+          try { Zotero.debug("[WordTranslator] pane refresh notifier ERROR: " + (e && e.message || e)); } catch (e2) {}
+        });
+      }
+      if (this._paneRefresh && typeof this._paneRefresh === "function") {
+        try { this._paneRefresh(); } catch (e) { this._debugLog("pane refresh callback ERROR: " + (e && e.message || e)); }
+      }
+    } catch (e) {
+      this._debugLog("_triggerPaneRefresh ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
+  },
+
   _applyWordBookView(itemID, options) {
     const id = Number(itemID);
     if (!Number.isFinite(id) || id <= 0) return;
     const opts = options || {};
+    // 所有会触发单词本重绘的按钮（排序/删除/清空/高亮/重翻译/翻页/搜索等）统一借
+    // Zotero 官方 item pane 刷新，确保渲染进真正显示的 body（插件重载后自愈）。
+    this._triggerPaneRefresh();
     const st = this._getWordBookViewState(id);
     const rawWords = this._itemWords.get(id) || [];
     const pageSize = Math.max(1, Number(this._data && this._data.pageSize) || 10);
@@ -3357,6 +3379,21 @@ _configVersion: 0,
     this._wordBookViewState.set(id, st);
     this._debugLog("word-book post-trigger: source=" + (opts.source || "unknown") + ", itemID=" + id + ", strategy=" + strategyName + ", total=" + info.total + ", page=" + info.page + "/" + info.pageCount);
     this._refreshItemPane(id, info);
+  },
+
+  // 刷新按钮：自愈能力已由 _applyWordBookView 内部的 _triggerPaneRefresh 统一提供，
+  // 这里仅需记录 itemID 到上下文（供 onRender 解析），再走 _applyWordBookView。
+  _repairWordBookPane(itemID) {
+    const id = Number(itemID);
+    try {
+      if (Number.isFinite(id) && id > 0 && this._currentPaneContext) {
+        try { this._currentPaneContext.itemID = id; } catch (e) {}
+      }
+      if (Number.isFinite(id) && id > 0) this._applyWordBookView(id, { source: "refresh" });
+    } catch (e) {
+      this._debugLog("_repairWordBookPane ERROR: " + (e && (e.stack || e.message || String(e))));
+      try { if (Number.isFinite(id) && id > 0) this._applyWordBookView(id, { source: "refresh" }); } catch (e2) {}
+    }
   },
 
   // 返回需要显示的"空态/搜索无结果"提示节点；有结果时返回 null
@@ -3494,7 +3531,7 @@ _configVersion: 0,
     const compactButtonStyle = "width:28px;height:26px;padding:0;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:ButtonText;box-sizing:border-box;flex:0 0 28px;";
     const refreshBtn = el("button", { title: "刷新单词本", "aria-label": "刷新单词本", style: compactButtonStyle }, []);
     refreshBtn.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"23 4 23 10 17 10\"></polyline><polyline points=\"1 20 1 14 7 14\"></polyline><path d=\"M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15\"></path></svg>";
-    refreshBtn.addEventListener("click", () => this._applyWordBookView(itemID, { source: "refresh" }));
+    refreshBtn.addEventListener("click", () => this._repairWordBookPane(itemID));
     controlsRow.append(refreshBtn);
 
     const settingsBtn = el("button", { title: "设置", "aria-label": "设置", style: compactButtonStyle }, []);
