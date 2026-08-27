@@ -715,8 +715,8 @@
     if ((requiresApiKey && !apiKey) || (requiresModel && !model)) { setStatus("请先填写必填配置项"); return; }
     const api = { provider, baseUrl, apiKey, model, name };
     try {
-      const ok = await Zotero.WordTranslator.testApi(api);
-      setStatus(ok ? "测试成功 ✓" : "测试失败（请检查 Key / URL / 模型）");
+      const res = await Zotero.WordTranslator.testApi(api);
+      setStatus(res && res.ok ? "测试成功 ✓" : "测试失败：" + ((res && res.message) || "请检查 Key / URL / 模型"));
     } catch (e) {
       setStatus("测试失败：" + (e && e.message || e));
     }
@@ -1496,7 +1496,17 @@
     bind("wt-api-cancel", "click", closeEditor);
     bind("wt-api-test", "click", testApi);
     bind("wt-api-fetch-models", "click", fetchModels);
-    bind("wt-api-provider", "change", () => updateProviderPreset(true));
+    bind("wt-api-provider", "change", () => {
+      // 切换服务商 = 全新配置：清空会残留上一服务商值的名称/模型/地址，避免把上一个 provider 的名字带过来。
+      // 清空后 updateProviderPreset(true) 会重填 managed 的名称/地址与有默认值的地址；custom 等无默认值的自然留空。
+      const preset = get("wt-api-baseurl");
+      const nameField = get("wt-api-name");
+      const modelField = get("wt-api-model");
+      if (preset) preset.value = "";
+      if (nameField) nameField.value = "";
+      if (modelField) modelField.value = "";
+      updateProviderPreset(true);
+    });
 
     bind("wt-reset-prompts", "click", () => {
       if (data.promptMode === "combined") {

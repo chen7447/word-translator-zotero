@@ -4711,11 +4711,19 @@ _configVersion: 0,
     return String(content).trim();
   },
 async testApi(api) {
+    // 测试必须落到成功/失败，不能因网络挂起永远停在"测试中…"：加超时兜底，并把失败原因透出。
+    const TEST_TIMEOUT = 15000;
+    let timer;
     try {
-      const result = await this.translate("translation", api);
-      return !!result;
+      const result = await Promise.race([
+        this.translate("translation", api),
+        new Promise(function (_, reject) { timer = setTimeout(function () { reject(new Error("测试超时（15 秒未返回）")); }, TEST_TIMEOUT); }),
+      ]);
+      return { ok: !!result, message: "翻译成功" };
     } catch (e) {
-      return false;
+      return { ok: false, message: (e && e.message) || String(e) };
+    } finally {
+      clearTimeout(timer);
     }
   },
 };
