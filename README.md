@@ -376,7 +376,7 @@ python build/pack_xpi.py build/addon build/wordtranslator-6.12.1.xpi
 
 - [Zotero](https://www.zotero.org/)
 - [Zotero Reader API](https://github.com/zotero/zotero)
-- [zotero-pdf-translate](https://github.com/windingwind/zotero-pdf-translate)
+- [zotero-pdf-translate](https://github.com/windingwind/zotero-pdf-translate)（AGPL-3.0）— 划词弹窗方案受其启发，仅借鉴实现思路，未复制其代码，故本项目保持 MIT 许可。
 
 ---
 
