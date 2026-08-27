@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 // Word Translator for Zotero 引导脚本（适配 Zotero 7/8/9/10）
 
@@ -84,6 +84,9 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
 
     // 加载配置 schema（含 DEFAULTS + normalize；addon.js 与 preferences.js 共用）
     Services.scriptloader.loadSubScript(rootURI + "content/scripts/config-schema.js", ctx);
+
+    // 加载字典服务模块（依赖 storage.js 与 config-schema.js；addon.js 与 preferences.js 会用到）
+    Services.scriptloader.loadSubScript(rootURI + "content/scripts/dict.js", ctx);
 
     Services.scriptloader.loadSubScript(rootURI + "content/scripts/addon.js", ctx);
 

@@ -37,9 +37,14 @@ WordTranslatorConfig.DEFAULTS = {
   promptGlobal:
     "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}",
   // TTS 发音
-  ttsEngine: "system",  // "system" | "api"
+  ttsEngine: "system",  // "system" | "api" | "dict"(词典原生音频)
   ttsApiUrl: "",
   ttsApiKey: "",
+  ttsEnabled: true,        // TTS 总开关（关时隐藏单词卡播放按钮）
+  // 字典服务
+  dictEnabled: true,       // 划词后后台补全 音标/词性/释义/例句/发音
+  dictProvider: "auto",    // "auto" | "youdao" | "freedict" | "ecdict"(未接入)
+  dictDisplayMode: "he",   // 单词卡字典显示模式："he"合 | "dan"单 | "dian"典
   // API
   apis: [],
   activeApiIndex: 0,
@@ -76,9 +81,14 @@ WordTranslatorConfig.normalize = function (raw) {
     xbuttonBridgeEnabled: typeof raw.xbuttonBridgeEnabled === "boolean" ? raw.xbuttonBridgeEnabled : true,
     hotkeyModifier: (raw.hotkeyModifier === "shift" || raw.hotkeyModifier === "ctrl+shift" || raw.hotkeyModifier === "alt+shift")
       ? "ctrl" : (raw.hotkeyModifier || "ctrl"),
-    ttsEngine: raw.ttsEngine === "api" ? "api" : "system",
+    ttsEngine: (raw.ttsEngine === "api" || raw.ttsEngine === "dict") ? raw.ttsEngine : "system",
     ttsApiUrl: typeof raw.ttsApiUrl === "string" ? raw.ttsApiUrl : "",
     ttsApiKey: typeof raw.ttsApiKey === "string" ? raw.ttsApiKey : "",
+    ttsEnabled: typeof raw.ttsEnabled === "boolean" ? raw.ttsEnabled : true,
+    dictEnabled: typeof raw.dictEnabled === "boolean" ? raw.dictEnabled : true,
+    dictProvider: (raw.dictProvider === "youdao" || raw.dictProvider === "freedict" || raw.dictProvider === "ecdict")
+      ? raw.dictProvider : "auto",
+    dictDisplayMode: (raw.dictDisplayMode === "dan" || raw.dictDisplayMode === "dian") ? raw.dictDisplayMode : "he",
   };
 };
 

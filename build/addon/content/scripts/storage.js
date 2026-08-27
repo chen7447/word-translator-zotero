@@ -304,6 +304,51 @@ var WordTranslatorStorage = {
       delete this._timers[key];
     }
   },
+
+  // ---------- 字典缓存（按词全局一份，LRU 上限） ----------
+  getDictCachePath() {
+    const dir = this.getDataDirPath();
+    if (!dir) return "";
+    return dir + (dir.indexOf("\\") >= 0 ? "\\" : "/") + "dict-cache.json";
+  },
+
+  loadDictCache() {
+    try {
+      this._ensureDirs();
+      const file = this._root.clone();
+      file.append("dict-cache.json");
+      const text = this._readFile(file);
+      if (!text) return {};
+      const obj = JSON.parse(text);
+      return (obj && typeof obj === "object") ? obj : {};
+    } catch (e) {
+      if (Zotero && Zotero.debug) {
+        try { Zotero.debug("[WordTranslatorStorage] loadDictCache ERROR: " + (e && (e.stack || e.message || String(e)))); } catch (e2) {}
+      }
+      return {};
+    }
+  },
+
+  // 原子写字典缓存；超过上限按 ts 升序裁掉最旧词条（原地修改传入对象）
+  saveDictCache(cache) {
+    try {
+      this._ensureDirs();
+      const keys = Object.keys(cache);
+      if (keys.length > 2000) {
+        const sorted = keys.sort((a, b) => (cache[a] && cache[a].ts || 0) - (cache[b] && cache[b].ts || 0));
+        for (const k of sorted.slice(0, keys.length - 2000)) delete cache[k];
+      }
+      const file = this._root.clone();
+      file.append("dict-cache.json");
+      this._writeFileAtomically(file, JSON.stringify(cache, null, 2));
+      return true;
+    } catch (e) {
+      if (Zotero && Zotero.debug) {
+        try { Zotero.debug("[WordTranslatorStorage] saveDictCache ERROR: " + (e && (e.stack || e.message || String(e)))); } catch (e2) {}
+      }
+      return false;
+    }
+  },
 };
 
 if (typeof Zotero !== "undefined") {

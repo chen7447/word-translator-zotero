@@ -372,6 +372,8 @@ _configVersion: 0,
       try { this._cleanupHotkeyDomListeners(); } catch (e2) {}
       // 无论原因，关闭/升级/禁用时都立即写盘，避免防抖定时器未触发导致数据丢失
       try { this._flushAndPersistWords(); } catch (e2) {}
+      // 字典缓存落盘
+      try { if (Zotero.WordTranslatorDict && typeof Zotero.WordTranslatorDict.flush === "function") Zotero.WordTranslatorDict.flush(); } catch (e2) {}
       for (const [, handler] of this._readerTabHandlers || []) {
         try { Zotero.Reader.unregisterEventListener("renderTextSelectionPopup", handler); } catch (e) {}
       }
@@ -440,7 +442,11 @@ _configVersion: 0,
         // 偏好沙箱读取助手：返回 JSON 字符串（沙箱内无 Components，不能直接调 storage.js）
         try { Zotero.WordTranslator.readApiConfigString = () => { try { const S = Zotero.WordTranslatorStorage; if (S && typeof S.loadApiConfig === "function") { const obj = S.loadApiConfig(); return obj ? JSON.stringify(obj) : ""; } } catch (e0) {} return ""; }; } catch (e) {}
         try { Zotero.WordTranslator.writeApiConfigString = (jsonStr) => { try { const S = Zotero.WordTranslatorStorage; if (S && typeof S.saveApiConfig === "function") { const obj = jsonStr ? JSON.parse(jsonStr) : null; return !!S.saveApiConfig(obj); } } catch (e0) {} return false; }; } catch (e) {}
+        // 字典服务：偏好页"测试"按钮桥接（镜像 testApi）
+        try { Zotero.WordTranslator.testDict = () => (Zotero.WordTranslatorDict && Zotero.WordTranslatorDict.test()) || Promise.resolve({ ok: false, message: "字典模块未加载" }); } catch (e) {}
       await this.loadDataFromDisk();
+      // 字典服务：词级缓存并入内存（此后渲染只读内存缓存，不触网）
+      try { if (Zotero.WordTranslatorDict && typeof Zotero.WordTranslatorDict.loadCache === "function") Zotero.WordTranslatorDict.loadCache(); } catch (e) {}
       this._loadWordsFromDisk();
       this._sortMode = this._data.sortMode || "reverse";
       this._activeSearchStrategy = this._getActiveSearchStrategyName();
@@ -2655,6 +2661,12 @@ _configVersion: 0,
     } catch (e) {}
 
     this._applyWordBookView(Number(paneID), { source: "addWord" });
+    // P4：词典提前异步补全，不等翻译结果——卡片先显示翻译中 + 词典行
+    try {
+      if (Zotero.WordTranslatorDict && typeof Zotero.WordTranslatorDict.lookup === "function") {
+        this._enrichDict(normWord);
+      }
+    } catch (e) {}
 
     try {
       const api = this.getActiveApi();
@@ -2664,7 +2676,7 @@ _configVersion: 0,
           baseUrl: api.baseUrl, model: api.model, hasKey: !!api.apiKey
         } : null)
       );
-      const result = await this.translate(word);
+      const result = await this._translateWithTimeout(word);
       card.translation = result || "翻译失败";
       this._debugLog("translate success: " + JSON.stringify(card.translation));
             this._debugLog("translate success: " + JSON.stringify(card.translation));
@@ -2693,6 +2705,20 @@ _configVersion: 0,
         }
       } catch (e2) {}
       this._debugLog("_addWordForReader finished: paneID=" + paneID);
+    }
+  },
+
+  // 字典服务：查词并补全卡片学词信息。lookup 命中即写内存缓存，
+  // 这里只需重绘一次让卡片显示 [音标] 词性.释义 行。全程后台、静默。
+  async _enrichDict(word) {
+    try {
+      const D = Zotero.WordTranslatorDict;
+      if (!D || typeof D.lookup !== "function") return;
+      const entry = await D.lookup(word);
+      if (!entry) return;
+      try { await this._rerenderCurrentItemPane("dict-update"); } catch (e) {}
+    } catch (e) {
+      this._debugLog("_enrichDict ERROR: " + (e && (e.message || e)));
     }
   },
 
@@ -2766,9 +2792,28 @@ _configVersion: 0,
   _toggleCardHighlight(itemID, index) {
     const id = Number(itemID);
     const list = this._itemWords.get(id);
+
     const card = list && list[index];
     if (!card) return;
     this._setCardHighlight(id, index, card.highlight ? "" : this._getDefaultHighlight(), false);
+  },
+
+  // P6：卡片级字典显示模式（dictMode 覆盖全局 dictDisplayMode；再次点击当前模式取消单独控制）
+  _setCardDictMode(itemID, index, mode) {
+    const id = Number(itemID);
+    const list = this._itemWords.get(id);
+    const card = list && list[index];
+    if (!card) return;
+    if (card.dictMode === mode) {
+      // 再次点击当前模式 → 取消单独控制，回落全局
+      delete card.dictMode;
+    } else if (mode === "he" || mode === "dan" || mode === "dian") {
+      card.dictMode = mode;
+    } else {
+      delete card.dictMode;
+    }
+    this._persistWords();
+    this._applyWordBookView(id, { source: "dict-mode" });
   },
 
   _hideCardMenu() {
@@ -2779,6 +2824,123 @@ _configVersion: 0,
     try { if (menu.onScroll) menu.doc.removeEventListener("scroll", menu.onScroll, true); } catch (e) {}
     try { if (menu.el && menu.el.parentNode) menu.el.parentNode.removeChild(menu.el); } catch (e) {}
     this._cardMenu = null;
+  },
+
+  // P5/P6：字典显示模式文案（合/单/典）
+  _dictModeLabel(mode) {
+    return mode === "dan" ? "单" : mode === "dian" ? "典" : "合";
+  },
+  _dictModeTooltip(mode) {
+    return mode === "dan" ? "只显示[单词 -- 翻译]" : mode === "dian" ? "只显示字典" : "显示[单词 -- 翻译]和字典";
+  },
+
+  // 🔊 播放器注册表：每个引擎独立实现、只读自己的源，杜绝跨引擎状态残留。
+  // 引擎键与偏好页 ttsEngine 值一致；新增引擎 = 增注册 + 条目数据带对应 audio 字段。
+  _speakRegistry: {
+    // 系统 TTS：无外部音频，纯本地合成（始终可用）
+    system: function (word, doc) {
+      try {
+        let win = null;
+        try { win = Zotero.getMainWindow(); } catch (e) {}
+        if (!win) try { win = doc.defaultView; } catch (e) {}
+        const Ctor = win && win.SpeechSynthesisUtterance;
+        const ss = win && win.speechSynthesis;
+        if (Ctor && ss) {
+          const u = new Ctor(word);
+          u.lang = "en-US";
+          u.rate = 0.9;
+          ss.speak(u);
+        } else {
+          this._debugLog("speak system: web speech API missing in window");
+        }
+      } catch (e) {
+        this._debugLog("speak system ERROR: " + (e && (e.message || e)));
+      }
+    },
+
+    // TTS API：需地址+Key；无配置则静默
+    api: function (word, doc) {
+      const apiUrl = this._data && this._data.ttsApiUrl;
+      const apiKey = this._data && this._data.ttsApiKey;
+      if (!apiUrl || !apiKey) {
+        this._debugLog("speak skipped: TTS API not configured");
+        return;
+      }
+      Zotero.HTTP.request("POST", apiUrl.replace(/\/+$/, "") + "/audio/speech", {
+        headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "tts-1", input: word, voice: "alloy", response_format: "mp3" }),
+        responseType: "arraybuffer",
+      }).then((resp) => {
+        if (resp.status !== 200) {
+          this._debugLog("speak TTS API error: HTTP " + resp.status);
+          return;
+        }
+        const blob = new Blob([resp.response], { type: "audio/mpeg" });
+        const url = URL.createObjectURL(blob);
+        const audio = doc.createElement("audio");
+        audio.src = url;
+        audio.play().then(() => {
+          audio.onended = () => URL.revokeObjectURL(url);
+        }).catch((e) => { this._debugLog("speak TTS API play ERROR: " + (e && e.message || e)); });
+      }).catch((e) => {
+        this._debugLog("speak TTS API ERROR: " + (e && (e.message || e)));
+      });
+    },
+
+    // 词典原生音频：优先条目音频，无则用 youdao dictvoice 按词兜底（实测可达）；
+    // 源失效（media error）时自动回退系统 TTS 兜底，保证任意词都有声。
+    "dict:youdao": function (word, doc) {
+      try {
+        const D = Zotero.WordTranslatorDict;
+        const entry = D && D.getCached && D.getCached(word);
+        let src = entry && entry.audio && (entry.audio.us || entry.audio.uk);
+        // 只有真·单词（无空格）才按词生成 youdao 兜底；句子/短语没有词典音频，回落系统 TTS 朗读
+        if (!src && !/\s/.test(word) && word.length <= 40) {
+          src = "https://dict.youdao.com/dictvoice?audio=" + encodeURIComponent(word) + "&type=1";
+        }
+        const onFail = () => this._speakRegistry.system.call(this, word, doc);
+        if (src) {
+          this._playAudioEl(doc, word, src, onFail);
+        } else {
+          onFail();
+        }
+      } catch (e) { this._debugLog("speak dict ERROR: " + (e && (e.message || e))); }
+    },
+  },
+
+  // 统一播放：audio 元素挂到 DOM 再播（Gecko 未挂载偶发静默），播完移除；
+  // 播放失败/媒体不可用时调用 onFail（若提供）
+  _playAudioEl(doc, word, src, onFail) {
+    try {
+      const a = doc.createElement("audio");
+      a.src = src;
+      a.style.display = "none";
+      try { (doc.body || doc.documentElement).appendChild(a); } catch (e) {}
+      let failed = false;
+      const failOnce = () => {
+        if (failed) return;
+        failed = true;
+        try { if (a.parentNode) a.parentNode.removeChild(a); } catch (e) {}
+        if (typeof onFail === "function") { try { onFail(); } catch (e) {} }
+      };
+      const onDone = () => {
+        try { if (a.parentNode) a.parentNode.removeChild(a); } catch (e) {}
+      };
+      a.addEventListener("error", failOnce);
+      a.addEventListener("ended", onDone);
+      a.play().catch((e) => {
+        this._debugLog("speak audio play ERROR (" + word + "): " + (e && (e.message || e)));
+        failOnce();
+      });
+    } catch (e) { this._debugLog("speak audio ERROR: " + (e && (e.message || e))); if (typeof onFail === "function") { try { onFail(); } catch (e2) {} } }
+  },
+
+  // 🔊 入口：现读引擎 → 注册表分派（无匹配回落 system），每次点击都现解析，无跨调用状态
+  _speakWord(word, doc) {
+    const engine = (this._data && this._data.ttsEngine) || "system";
+    const fn = (engine === "dict" ? this._speakRegistry["dict:youdao"] : this._speakRegistry[engine]) || this._speakRegistry.system;
+    try { fn.call(this, word, doc); }
+    catch (e) { this._debugLog("speak dispatch ERROR: " + (e && (e.message || e))); }
   },
 
   _showCardMenu(ev, itemID, index, card) {
@@ -2816,6 +2978,28 @@ _configVersion: 0,
           self._setCardHighlight(itemID, index, c.id, true);
         });
         menu.append(btn);
+      });
+      // P6：字典显示模式（卡片级，覆盖全局；仅对具字典对象卡片起效）
+      const curMode = (card && card.dictMode) || "";
+      const modes = [
+        { id: "he", label: "合" },
+        { id: "dan", label: "单" },
+        { id: "dian", label: "典" },
+      ];
+      modes.forEach((m) => {
+        const mb = el("button", {
+          type: "button",
+          class: "wt-card-menu-btn wt-dict-mode-btn" + (curMode === m.id ? " is-active" : ""),
+          title: self._dictModeTooltip(m.id),
+          "aria-label": m.label,
+        }, [txt(m.label)]);
+        mb.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          self._hideCardMenu();
+          self._setCardDictMode(itemID, index, m.id);
+        });
+        menu.append(mb);
       });
       const retryBtn = el("button", {
         type: "button",
@@ -2873,6 +3057,23 @@ _configVersion: 0,
     }
   },
 
+  // 翻译超时兜底：provider 长时间无响应（如 DeepL 免费版挂起）时按失败处理，
+  // 走词典服务兜底显示，避免"翻译中…"永远不结束。
+  async _translateWithTimeout(text, timeoutMs) {
+    const timeout = timeoutMs || 15000;
+    let timer = null;
+    try {
+      return await Promise.race([
+        this.translate(text),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("翻译超时（" + Math.round(timeout / 1000) + " 秒未返回）")), timeout);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  },
+
   async _retryTranslationForCard(itemID, index, card) {
     const id = Number(itemID);
     const list = this._itemWords.get(id);
@@ -2883,9 +3084,15 @@ _configVersion: 0,
     currentCard.pending = true;
     this._persistWords();
     this._applyWordBookView(id, { source: "retry-translate" });
+    // P3：重新翻译同时重查词典（切换字典源后 ↻ 生效）
+    try {
+      if (Zotero.WordTranslatorDict && typeof Zotero.WordTranslatorDict.lookup === "function") {
+        this._enrichDict(currentCard.word);
+      }
+    } catch (e) {}
 
     try {
-      const result = await this.translate(currentCard.word);
+      const result = await this._translateWithTimeout(currentCard.word);
       currentCard.translation = result || "翻译失败";
       this._debugLog("retry translate success: " + JSON.stringify(currentCard.translation));
     } catch (e) {
@@ -3665,7 +3872,48 @@ _configVersion: 0,
     nextBtn.addEventListener("click", () => this._setWordBookPage(itemID, pageInfo.page + 1));
     navRow.append(nextBtn);
 
-    header.append(titleRow, controlsRow, navRow);
+    // 字典行（controlsRow 与 navRow 之间）：字典源下拉 + 合/单/典显示模式按钮
+    const dictRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;margin-top:2px;flex-wrap:wrap;" });
+    const dictSourceSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换字典源", "aria-label": "字典源" });
+    const dictSources = [
+      { v: "auto", l: "自动（离线词库优先，在线源兜底）" },
+      { v: "youdao", l: "有道网页词典" },
+      { v: "freedict", l: "FreeDictionary" },
+      { v: "ecdict", l: "本地离线词典" },
+    ];
+    const curDictProvider = (this._data && this._data.dictProvider) || "auto";
+    for (const s of dictSources) {
+      const o = doc.createElementNS(HTML_NS, "option");
+      o.value = s.v;
+      o.textContent = s.l;
+      dictSourceSelect.append(o);
+    }
+    dictSourceSelect.value = curDictProvider;
+    dictSourceSelect.addEventListener("change", () => {
+      this._data.dictProvider = dictSourceSelect.value;
+      this._saveData();
+      this._applyWordBookView(itemID, { source: "dict-source" });
+    });
+    dictRow.append(dictSourceSelect);
+
+    // P5：字典显示模式切换按钮（合/单/典），全局生效（卡片级 dictMode 优先覆盖）
+    const dictModeBtn = el("button", {
+      title: "单词字典显示",
+      "aria-label": "字典显示模式",
+      style: "height:26px;min-width:28px;padding:0 8px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:13px;line-height:24px;color:ButtonText;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;",
+    }, [txt(this._dictModeLabel(this._data && this._data.dictDisplayMode || "he"))]);
+    dictModeBtn.addEventListener("click", () => {
+      const cur = (this._data && this._data.dictDisplayMode) || "he";
+      const next = cur === "he" ? "dan" : cur === "dan" ? "dian" : "he"; // 合→单→典→合
+      this._data.dictDisplayMode = next;
+      this._saveData();
+      dictModeBtn.textContent = this._dictModeLabel(next);
+      dictModeBtn.title = this._dictModeTooltip(next);
+      this._applyWordBookView(itemID, { source: "dict-mode" });
+    });
+    dictRow.append(dictModeBtn);
+
+    header.append(titleRow, controlsRow, dictRow, navRow);
     body.append(header);
 
     // 卡片列表
@@ -3711,70 +3959,97 @@ _configVersion: 0,
       style: "display:flex;align-items:flex-start;gap:6px;padding:6px 8px;",
     });
     const fsVal = Number(this._data && this._data.fontSize) || 13;
+    const self = this;
+    // 字典缓存与显示模式（P5/P6）
+    let entry = null, hasDict = false;
+    try {
+      const D = Zotero.WordTranslatorDict;
+      entry = D && D.getCached && D.getCached(w.word);
+      hasDict = !!entry;
+    } catch (e) {}
+    const transFailed = w.translation === "翻译失败";
+    // P4：provider 失败（含超时兜底）但有词典 → 用词典内容展示，不受模式开关影响
+    const dictFallback = hasDict && transFailed;
+    let effMode = "he";
+    if (!dictFallback) {
+      effMode = (w.dictMode) || (self._data && self._data.dictDisplayMode) || "he";
+    }
+    // 词典兜底内容：释义按「；」拆义项，首义项提升到行1（作"翻译"），剩余义项留给词典行；
+    // 单义项时整段放词典行，行1只显示单词。
+    let dfFirst = "", dfPos = "", dfRest = "", dfAll = "";
+    if (dictFallback && entry && entry.meanings && entry.meanings[0] && entry.meanings[0].def) {
+      const rawDef = String(entry.meanings[0].def);
+      dfAll = rawDef;
+      const senses = rawDef.split("；").map((s) => String(s).trim()).filter(Boolean);
+      dfPos = String((entry.meanings[0].pos) || "");
+      if (senses.length) {
+        let f = senses[0];
+        // ecdict 词性常为空、词性缩写嵌在释义开头（如 "a. 抗病毒的"），剥离到词性位
+        const pm = f.match(/^([a-z]+)\.\s*(.*)$/i);
+        const posWhitelist = ["n", "v", "adj", "adv", "a", "vt", "vi", "prep", "conj", "pron", "int", "art", "aux", "num", "abbr"];
+        if (pm && !dfPos && posWhitelist.indexOf(pm[1].toLowerCase()) >= 0) {
+          dfPos = pm[1];
+          f = pm[2];
+        }
+        dfFirst = f;
+        dfRest = senses.slice(1).join("；");
+      }
+    }
     // 文本部分包在一个容器里，只对它应用字号，并且可被选中
     const textWrap = el("div", { class: "wt-card-text", style: "flex:1;min-width:0;font-size:" + fsVal + "px;line-height:1.5;user-select:text;-webkit-user-select:text;cursor:text;" });
     const wordEl = el("span", { class: "wt-card-word", style: "font-weight:600;color:Highlight;word-break:break-word;" }, [txt(w.word)]);
     const arrowEl = el("span", { class: "wt-card-arrow", style: "color:GrayText;flex-shrink:0;margin:0 2px;" }, [txt(" -- ")]);
     const transEl = el("span", { class: "wt-card-trans", style: "word-break:break-word;" + (w.pending ? "color:GrayText;" : "") }, [txt(w.translation)]);
-    textWrap.append(wordEl, arrowEl, transEl);
-    const actionWrap = el("div", { style: "display:flex;align-items:center;gap:2px;flex-shrink:0;" });
-    const speakBtn = el("button", { title: "朗读", "aria-label": "朗读", style: "flex-shrink:0;border:none;background:transparent;color:GrayText;cursor:pointer;font-size:15px;padding:2px 4px;border-radius:4px;line-height:1;" }, [txt("🔊")]);
-    speakBtn.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      try {
-        const engine = this._data && this._data.ttsEngine || "system";
-        if (engine === "api") {
-          // TTS API 模式
-          const apiUrl = this._data && this._data.ttsApiUrl;
-          const apiKey = this._data && this._data.ttsApiKey;
-          if (!apiUrl || !apiKey) {
-            this._debugLog("speak skipped: TTS API not configured");
-            return;
-          }
-          Zotero.HTTP.request("POST", apiUrl.replace(/\/+$/, "") + "/audio/speech", {
-            headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
-            body: JSON.stringify({ model: "tts-1", input: w.word, voice: "alloy", response_format: "mp3" }),
-            responseType: "arraybuffer",
-          }).then((resp) => {
-            if (resp.status !== 200) {
-              this._debugLog("speak TTS API error: HTTP " + resp.status);
-              return;
-            }
-            const blob = new Blob([resp.response], { type: "audio/mpeg" });
-            const url = URL.createObjectURL(blob);
-            const audio = doc.createElement("audio");
-            audio.src = url;
-            audio.play().then(() => {
-              audio.onended = () => URL.revokeObjectURL(url);
-            }).catch(() => {});
-          }).catch((e) => {
-            this._debugLog("speak TTS API ERROR: " + (e && (e.message || e)));
-          });
-          return;
-        }
-        // 系统 TTS 模式
-        let win = null;
-        try { win = Zotero.getMainWindow(); } catch (e) {}
-        if (!win) try { win = doc.defaultView; } catch (e) {}
-        const Ctor = win && win.SpeechSynthesisUtterance;
-        const ss = win && win.speechSynthesis;
-        if (Ctor && ss) {
-          const u = new Ctor(w.word);
-          u.lang = "en-US";
-          u.rate = 0.9;
-          ss.speak(u);
-        } else {
-          this._debugLog("speak unavailable: web speech API missing in window");
-        }
-      } catch (e) {
-        this._debugLog("speak ERROR: " + (e && (e.message || e)));
+    // 行1 控制：dictFallback 多义项 → [单词 -- 首义项]；单义项 → 只显示单词（整段释义进词典行）
+    if (dictFallback) {
+      if (dfFirst && dfRest) {
+        transEl.textContent = dfFirst;
+      } else {
+        arrowEl.style.display = "none";
+        transEl.style.display = "none";
       }
-    });
+    } else if (hasDict && effMode === "dian") {
+      arrowEl.style.display = "none";
+      transEl.style.display = "none";
+    }
+    textWrap.append(wordEl, arrowEl, transEl);
+    // 词典行：dictFallback 或 非"单"模式 时显示
+    if (hasDict && (dictFallback || effMode !== "dan")) {
+      try {
+        const ph = entry.phonetic && (entry.phonetic.us || entry.phonetic.uk);
+        const parts = [];
+        if (ph) parts.push("[" + String(ph).trim().replace(/^\/+|\/+$/g, "") + "]");
+        if (dictFallback) {
+          if (dfPos) parts.push(String(dfPos) + ".");
+          parts.push(dfRest || dfAll);
+        } else {
+          const m = entry.meanings && entry.meanings[0];
+          if (m && m.pos) parts.push(String(m.pos) + ".");
+          if (m && m.def) parts.push(String(m.def));
+        }
+        if (parts.length) {
+          const dictEl = el("div", { class: "wt-card-dict", style: "font-size:" + Math.max(11, fsVal - 2) + "px;color:GrayText;margin-top:2px;word-break:break-word;line-height:1.4;" }, [txt(parts.join(" "))]);
+          textWrap.append(dictEl);
+        }
+      } catch (e) {}
+    }
+    const actionWrap = el("div", { style: "display:flex;align-items:center;gap:2px;flex-shrink:0;" });
+    // 发音按钮（P2：ttsEnabled 关闭时隐藏）
+    const ttsEnabled = this._data && this._data.ttsEnabled !== false;
+    if (ttsEnabled) {
+      const speakBtn = el("button", { title: "朗读", "aria-label": "朗读", style: "flex-shrink:0;border:none;background:transparent;color:GrayText;cursor:pointer;font-size:15px;padding:2px 4px;border-radius:4px;line-height:1;" }, [txt("🔊")]);
+      speakBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        // 🔊 注册表分派：每次点击现读引擎、现解析源（P3 三选一，不做自动降级）
+        self._speakWord(w.word, doc);
+      });
+      actionWrap.append(speakBtn);
+    }
     const retryBtn = el("button", { title: "重新翻译", "aria-label": "重新翻译", style: "flex-shrink:0;border:none;background:transparent;color:GrayText;cursor:pointer;font-size:16px;padding:2px 5px;border-radius:4px;line-height:1;" }, [txt("↻")]);
     retryBtn.addEventListener("click", () => this._retryTranslationForCard(itemID, idx, w));
     const delBtn = el("button", { title: "删除", "aria-label": "删除", style: "flex-shrink:0;border:none;background:transparent;color:GrayText;cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;" }, [txt("✕")]);
     delBtn.addEventListener("click", () => this._deleteWordForItem(itemID, idx));
-    actionWrap.append(speakBtn, retryBtn, delBtn);
+    actionWrap.append(retryBtn, delBtn);
     card.append(textWrap, actionWrap);
     card.addEventListener("dblclick", (ev) => {
       if (ev.target && ev.target.closest && ev.target.closest("button")) return;
@@ -3832,6 +4107,8 @@ _configVersion: 0,
       ".wt-card-menu-btn:hover { background: color-mix(in srgb, Canvas 88%, CanvasText); color:CanvasText; }",
       ".wt-hl-swatch { width:16px; height:16px; padding:0; border:1px solid ThreeDShadow; border-radius:50%; cursor:pointer; box-sizing:border-box; }",
       ".wt-hl-swatch.is-active { outline:2px solid Highlight; outline-offset:1px; }",
+      ".wt-dict-mode-btn { font-size:12px; font-weight:600; width:24px; }",
+      ".wt-dict-mode-btn.is-active { outline:2px solid Highlight; outline-offset:-1px; background:color-mix(in srgb, Highlight 15%, transparent); }",
       ".wt-hl-swatch-amber { background: color-mix(in srgb, #c4a35a 70%, Canvas); }",
       ".wt-hl-swatch-sage { background: color-mix(in srgb, #6f8f72 70%, Canvas); }",
       ".wt-hl-swatch-blue { background: color-mix(in srgb, #6d86a8 70%, Canvas); }",

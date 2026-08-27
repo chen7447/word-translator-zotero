@@ -19,3 +19,5 @@ api_request_lab/docs/_deeplx_*_tmp.*
 Thumbs.db
 .DS_Store
 # === 打包产物 ===
+# ECDICT raw data cache (generated offline dict from this)
+_ecdict.csv

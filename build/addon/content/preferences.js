@@ -143,14 +143,20 @@
   // TTS 引擎切换 UI：system 显示系统 TTS 面板，api 显示 API 面板
   function applyTTSUI() {
     try {
+      const enabled = !!data.ttsEnabled;
+      const cb = get("wt-tts-enabled");
+      if (cb) cb.checked = enabled;
       const sel = get("wt-tts-engine");
       if (!sel) return;
-      const engine = data.ttsEngine === "api" ? "api" : "system";
+      const engine = (data.ttsEngine === "api" || data.ttsEngine === "dict") ? data.ttsEngine : "system";
       sel.value = engine;
+      // 总开关关闭时隐藏整个 TTS 配置区域
+      const ttsBody = get("wt-tts-body");
+      if (ttsBody) ttsBody.style.display = enabled ? "" : "none";
       const sysWrap = get("wt-tts-system-wrap");
       const apiWrap = get("wt-tts-api-wrap");
-      if (sysWrap) sysWrap.style.display = engine === "system" ? "flex" : "none";
-      if (apiWrap) apiWrap.style.display = engine === "api" ? "flex" : "none";
+      if (sysWrap) sysWrap.style.display = (enabled && engine === "system") ? "flex" : "none";
+      if (apiWrap) apiWrap.style.display = (enabled && engine === "api") ? "flex" : "none";
     } catch (e) {}
   }
 
@@ -1106,64 +1112,72 @@
     const sectionTTS = el("section", { class: "wt-section", id: "wt-tts-section" }, [
       el("h3", {}, [txt("发音")]),
       el("div", { class: "wt-row-inline", style: "align-items:center;gap:8px;flex-wrap:wrap;" }, [
-        el("label", { class: "wt-label", style: "min-width:auto;" }, [txt("引擎")]),
-        (() => {
-          const sel = el("select", { class: "wt-select", id: "wt-tts-engine" });
-          sel.append(
-            el("option", { value: "system" }, [txt("系统 TTS 引擎语音（英）")]),
-            el("option", { value: "api" }, [txt("TTS API")]),
-          );
-          return sel;
-        })(),
+        (() => { const c = el("input", { type: "checkbox", id: "wt-tts-enabled" }); return c; })(),
+        el("label", { for: "wt-tts-enabled", style: "min-width:auto;" }, [txt("启用发音（关闭后单词卡隐藏播放按钮）")]),
       ]),
-      // 系统 TTS 引擎
-      el("div", { id: "wt-tts-system-wrap", style: "margin:6px 0 0 22px;display:flex;flex-direction:column;gap:6px;" }, [
-        el("div", { class: "wt-row-inline", style: "gap:8px;margin:0;" }, [
+      el("p", { class: "wt-hint", style: "margin: -4px 0 6px 22px;", id: "wt-tts-hint" }, [txt("关闭后单词卡上的 🔊 按钮将隐藏，词典原生发音也不播放。")]),
+      el("div", { id: "wt-tts-body", style: "margin-left:22px;display:flex;flex-direction:column;gap:4px;" }, [
+        el("div", { class: "wt-row-inline", style: "align-items:center;gap:8px;flex-wrap:wrap;" }, [
+          el("label", { class: "wt-label", style: "min-width:auto;" }, [txt("引擎")]),
           (() => {
-            const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-open-settings" }, [txt("设置 TTS 引擎")]);
-            return btn;
-          })(),
-          (() => {
-            const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-help" }, [txt("说明")]);
-            return btn;
-          })(),
-          (() => {
-            const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-advanced" }, [txt("进阶说明")]);
-            return btn;
+            const sel = el("select", { class: "wt-select", id: "wt-tts-engine" });
+            sel.append(
+              el("option", { value: "system" }, [txt("系统 TTS 引擎语音（英）")]),
+              el("option", { value: "api" }, [txt("TTS API")]),
+              el("option", { value: "dict" }, [txt("词典原生音频")]),
+            );
+            return sel;
           })(),
         ]),
-        el("p", { class: "wt-hint", style: "margin:0;" }, [txt("打开系统设置中的语音设置页，或查看支持的语言和语音列表。")]),
-      ]),
-      // TTS API
-      el("div", { id: "wt-tts-api-wrap", style: "margin:6px 0 0 22px;display:none;flex-direction:column;gap:6px;" }, [
-        el("div", { class: "wt-row" }, [
-          el("label", { class: "wt-label", for: "wt-tts-api-url" }, [txt("API 地址")]),
-          (() => {
-            const inp = el("input", { type: "text", class: "wt-input", id: "wt-tts-api-url", placeholder: "例如 https://api.openai.com/v1" });
-            inp.style.width = "100%";
-            return inp;
-          })(),
+        // 系统 TTS 引擎
+        el("div", { id: "wt-tts-system-wrap", style: "margin:6px 0 0 0;display:flex;flex-direction:column;gap:6px;" }, [
+          el("div", { class: "wt-row-inline", style: "gap:8px;margin:0;" }, [
+            (() => {
+              const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-open-settings" }, [txt("设置 TTS 引擎")]);
+              return btn;
+            })(),
+            (() => {
+              const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-help" }, [txt("说明")]);
+              return btn;
+            })(),
+            (() => {
+              const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-advanced" }, [txt("进阶说明")]);
+              return btn;
+            })(),
+          ]),
+          el("p", { class: "wt-hint", style: "margin:0;" }, [txt("打开系统设置中的语音设置页，或查看支持的语言和语音列表。")]),
         ]),
-        el("div", { class: "wt-row" }, [
-          el("label", { class: "wt-label", for: "wt-tts-api-key" }, [txt("API Key")]),
-          (() => {
-            const inp = el("input", { type: "password", class: "wt-input", id: "wt-tts-api-key", placeholder: "sk-..." });
-            inp.style.width = "100%";
-            return inp;
-          })(),
+        // TTS API
+        el("div", { id: "wt-tts-api-wrap", style: "margin:6px 0 0 0;display:none;flex-direction:column;gap:6px;" }, [
+          el("div", { class: "wt-row" }, [
+            el("label", { class: "wt-label", for: "wt-tts-api-url" }, [txt("API 地址")]),
+            (() => {
+              const inp = el("input", { type: "text", class: "wt-input", id: "wt-tts-api-url", placeholder: "例如 https://api.openai.com/v1" });
+              inp.style.width = "100%";
+              return inp;
+            })(),
+          ]),
+          el("div", { class: "wt-row" }, [
+            el("label", { class: "wt-label", for: "wt-tts-api-key" }, [txt("API Key")]),
+            (() => {
+              const inp = el("input", { type: "password", class: "wt-input", id: "wt-tts-api-key", placeholder: "sk-..." });
+              inp.style.width = "100%";
+              return inp;
+            })(),
+          ]),
+          el("div", { class: "wt-row-inline", style: "gap:8px;margin:2px 0;" }, [
+            (() => {
+              const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-api-test", title: "如果成功会朗读句子，否则不朗读。" }, [txt("测试")]);
+              return btn;
+            })(),
+            (() => {
+              const btn = el("button", { type: "button", class: "wt-btn wt-btn-primary", id: "wt-tts-api-save", title: "测试成功后，一定要点击保存！" }, [txt("保存")]);
+              return btn;
+            })(),
+            el("span", { id: "wt-tts-api-status", style: "color:GrayText;font-size:12px;margin-left:4px;" }),
+          ]),
+          el("p", { class: "wt-hint", style: "margin:0;" }, [txt("测试句子：\"Hello, this is a test of the text-to-speech system.\" 测试成功后请点击「保存」。")]),
         ]),
-        el("div", { class: "wt-row-inline", style: "gap:8px;margin:2px 0;" }, [
-          (() => {
-            const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-api-test", title: "如果成功会朗读句子，否则不朗读。" }, [txt("测试")]);
-            return btn;
-          })(),
-          (() => {
-            const btn = el("button", { type: "button", class: "wt-btn wt-btn-primary", id: "wt-tts-api-save", title: "测试成功后，一定要点击保存！" }, [txt("保存")]);
-            return btn;
-          })(),
-          el("span", { id: "wt-tts-api-status", style: "color:GrayText;font-size:12px;margin-left:4px;" }),
-        ]),
-        el("p", { class: "wt-hint", style: "margin:0;" }, [txt("测试句子：\"Hello, this is a test of the text-to-speech system.\" 测试成功后请点击「保存」。")]),
       ]),
     ]);
 
@@ -1339,11 +1353,19 @@
     const sectionDictionary = el("section", { class: "wt-section", id: "wt-dictionary-services" }, [
     el("h3", {}, [txt("字典服务")]),
     el("p", { class: "wt-hint", style: "margin: -4px 0 8px;" }, [
-      txt("字典服务用于补充音标、词性、释义、例句和发音；将在翻译服务框架稳定后逐步接入。"),
+      txt("划词后自动补全音标、词性、中文释义、例句和原生发音（后台异步，不阻塞翻译）。"),
     ]),
-    el("div", { class: "wt-provider-placeholder" }, [
-      el("span", { class: "wt-provider-placeholder-title" }, [txt("计划支持")]),
-      el("span", { class: "wt-provider-placeholder-items" }, [txt("有道词典 · 必应词典 · FreeDictionary API · 剑桥词典")]),
+    el("div", { class: "wt-row-inline" }, [
+      (() => { const c = el("input", { type: "checkbox", id: "wt-dict-enabled" }); return c; })(),
+      el("label", { for: "wt-dict-enabled" }, [txt("启用字典服务（关闭后卡片只显示译文行）")]),
+    ]),
+    el("div", { class: "wt-row" }, [
+      el("label", { class: "wt-label", for: "wt-dict-provider" }, [txt("字典源")]),
+      el("div", { class: "wt-row-inline", style: "width: 100%;" }, [
+        (() => { const s = el("select", { class: "wt-select", id: "wt-dict-provider", style: "flex:1;min-width:0;" }); return s; })(),
+        (() => { const b = el("button", { type: "button", class: "wt-btn wt-test-btn", id: "wt-dict-test" }, [txt("测试")]); return b; })(),
+      ]),
+      el("p", { class: "wt-hint", id: "wt-dict-hint", style: "margin:2px 0 0;" }, [txt("自动：内置离线词库（音标+词性+中文释义）优先，断网也能用；联网再补有道网页（例句）与 FreeDictionary（原生音频）。")]),
     ]),
   ]);
 
@@ -1458,7 +1480,6 @@
       } else if (result.hasUpdate) {
         const clickHint = cdnHasLatest(result) ? "点击从 jsDelivr 下载。" : "点击打开 GitHub Release。";
         setUpdateLabel("update", "有新版本 v" + result.latestVersion, "当前版本 v" + result.currentVersion + "，最新版本 v" + result.latestVersion + "。\n" + src + "\n" + clickHint);
-        setStatus("发现新版本 v" + result.latestVersion + "，当前为 v" + result.currentVersion);
       } else {
         setUpdateLabel("latest", "已是最新版本", "当前已是最新版本 v" + (result.currentVersion || "?") + "。\n" + src + "\n点击可重新检查。");
       }
@@ -1725,10 +1746,17 @@
       });
     }
 
+    // TTS 总开关
+    const ttsEnabledCb = get("wt-tts-enabled");
+    if (ttsEnabledCb) ttsEnabledCb.addEventListener("change", () => {
+      data.ttsEnabled = !!ttsEnabledCb.checked;
+      applyTTSUI();
+      save(false);
+    });
     // TTS 引擎切换
     const ttsEngine = get("wt-tts-engine");
     if (ttsEngine) ttsEngine.addEventListener("change", () => {
-      data.ttsEngine = ttsEngine.value === "api" ? "api" : "system";
+      data.ttsEngine = (ttsEngine.value === "api" || ttsEngine.value === "dict") ? ttsEngine.value : "system";
       applyTTSUI();
       save(false);
     });
@@ -1763,6 +1791,33 @@
       save(true);
       const statusEl = get("wt-tts-api-status");
       if (statusEl) statusEl.textContent = "已保存";
+    });
+    // 字典服务：启用勾选
+    const dictEnabledCb = get("wt-dict-enabled");
+    if (dictEnabledCb) dictEnabledCb.addEventListener("change", () => {
+      data.dictEnabled = !!dictEnabledCb.checked;
+      save(false);
+    });
+    // 字典服务：provider 下拉
+    const dictProviderSel = get("wt-dict-provider");
+    if (dictProviderSel) dictProviderSel.addEventListener("change", () => {
+      data.dictProvider = dictProviderSel.value && dictProviderSel.value !== "auto"
+        ? dictProviderSel.value : "auto";
+      save(false);
+    });
+    // 字典服务：测试（经 addon.js 桥接 Zotero.WordTranslator.testDict）
+    bind("wt-dict-test", "click", async () => {
+      setStatus("正在测试字典服务…");
+      try {
+        if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.testDict === "function") {
+          const res = await Zotero.WordTranslator.testDict();
+          setStatus(res && res.ok ? "字典测试成功 ✓" : "字典测试失败：" + ((res && res.message) || "请检查网络"));
+        } else {
+          setStatus("字典模块未加载");
+        }
+      } catch (e) {
+        setStatus("字典测试失败：" + (e && e.message || e));
+      }
     });
   }
 
@@ -1829,6 +1884,20 @@
     if (ttsApiUrl) ttsApiUrl.value = data.ttsApiUrl || "";
     const ttsApiKey = get("wt-tts-api-key");
     if (ttsApiKey) ttsApiKey.value = data.ttsApiKey || "";
+    const dictEnabled = get("wt-dict-enabled");
+    if (dictEnabled) dictEnabled.checked = !!data.dictEnabled;
+    const dictProviderSel = get("wt-dict-provider");
+    if (dictProviderSel) {
+      dictProviderSel.replaceChildren(
+        el("option", { value: "auto" }, [txt("自动（离线词库优先，在线源兜底）")]),
+        el("option", { value: "youdao" }, [txt("有道网页（英汉+音标+例句）")]),
+        el("option", { value: "freedict" }, [txt("FreeDictionary API（英英+原生音频）")]),
+        el("option", { value: "ecdict" }, [txt("本地离线词典（仅内置词库，完全离线）")])
+      );
+      const dv = data.dictProvider === "auto" ? "auto" : data.dictProvider || "auto";
+      if (dv !== "auto" && !["youdao", "freedict", "ecdict"].includes(dv)) dictProviderSel.value = "auto";
+      else dictProviderSel.value = dv;
+    }
   }
 
   function init() {
