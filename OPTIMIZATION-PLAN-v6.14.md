@@ -82,6 +82,20 @@
 
 ---
 
+## Phase 2.5 — 临时编辑框流式上屏与尺寸修复（用户反馈追加，2026-08-29）
+
+**背景**：用户指出流式输出（onChunk）的原始设计意图就是让临时编辑框随译文逐字长高，但该接线在历史迭代中丢失；且实测"第二次译文返回时文本框尺寸基本不再调整"。
+
+**改动点**（addon.js）
+1. **恢复流式接线**：`_translateWithTimeout(text, timeoutMs, onChunk)` 透传 onChunk；`_addWordForReader` 与 `_retryTranslationForCard` 在调用时传入回调 → 实时 `_updateTempEditArea(word, partial)`（每个 chunk 都触发重算尺寸）。OpenAI 兼容路径为真流式；适配器类 provider 与无 fetch 环境在拿到完整结果后一次性回调（`translate()` 末尾补 onChunk 契约，`streamed` 标记防双回调）。
+2. **`translate()` 流式门控加保险**：流式分支额外要求 `typeof fetch === "function"`，否则自动回退非流式请求——避免主进程无 fetch 时划词翻译直接报错。
+3. **`_resizeTempEditArea` 加固**：① `scrollHeight` 读到 0（弹窗隐藏/未渲染）时保持原高度不塌缩为单行；② 下一帧 rAF 校正由"只放大"改为"偏大偏小都校正"（容差 0.5px）；③ 流式时每次增量都触发重算，天然自我修复。
+
+**回归断言**（_smoke.js S5）：流式端到端（fetch 桩返回真实 SSE 分包，onChunk 累积值 === 最终返回值）；无 fetch 回退非流式并单次回调。
+**b 版实测**：划词后临时编辑框应随译文逐字变长（OpenAI 兼容 provider 最明显）；第二次及以后划词，译文返回时文本框高度必须跟随内容；断网失败卡重译后高度恢复。
+
+---
+
 ## Phase 3 — 存储与生命周期（bug #3 孤儿文件 / #4 flushAll 语义）
 
 **改动点**

@@ -295,6 +295,39 @@ function section(title) { console.log("\n===== " + title + " ====="); }
       check("已译卡重复划词跳过 API", translateCalls === 2);
       check("状态常量存在", WT.STATUS_TRANSLATING === "翻译中…" && WT.STATUS_FAILED === "翻译失败");
 
+      // d) translate() 流式端到端（fetch 桩返回真实 SSE 分包，含跨包劈开场景）
+      WT._data = WT._normalize({ apis: [{ name: "t", provider: "custom", apiKey: "k", model: "m", baseUrl: "https://example.invalid/v1" }] });
+      mainSb.TextDecoder = TextDecoder;
+      const enc = new TextEncoder();
+      const sseChunks = [
+        'data: {"choices":[{"delta":{"content":"你"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"好"}}]}\n\ndata: [DONE]\n\n',
+      ];
+      mainSb.fetch = async () => ({
+        ok: true,
+        status: 200,
+        text: async () => "",
+        body: {
+          getReader: () => ({
+            read: async () => (sseChunks.length
+              ? { done: false, value: enc.encode(sseChunks.shift()) }
+              : { done: true, value: undefined }),
+          }),
+        },
+      });
+      let lastPartial = "";
+      const streamResult = await WT.translate("hi", null, (acc) => { lastPartial = acc; });
+      check("流式端到端（fetch 桩）", streamResult === "你好" && lastPartial === "你好");
+
+      // e) 无 fetch 环境：回退非流式请求，完整结果一次性回调（onChunk 契约不破）
+      delete mainSb.fetch;
+      const savedRequest = mainSb.Zotero.HTTP.request;
+      mainSb.Zotero.HTTP.request = () => Promise.resolve({ status: 200, response: { choices: [{ message: { content: "完整译文" } }] } });
+      let fallbackPartial = "";
+      const fbResult = await WT.translate("hi", null, (acc) => { fallbackPartial = acc; });
+      check("无 fetch 回退非流式并单次回调", fbResult === "完整译文" && fallbackPartial === "完整译文");
+      mainSb.Zotero.HTTP.request = savedRequest;
+
       // 还原，避免影响后续 section
       WT._translateWithTimeout = savedTranslate;
       WT._data = savedData;

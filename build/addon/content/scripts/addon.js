@@ -2083,29 +2083,37 @@ _configVersion: 0,
     try {
       if (!textarea) return;
       // 双保险：先强制按内容自然高度，再逐次读取 scrollHeight
+      const prevHeight = parseFloat(textarea.style.height || "0") || 0;
       textarea.style.height = "auto";
       textarea.style.overflowY = "hidden";
       const view = textarea.ownerDocument && textarea.ownerDocument.defaultView;
       const style = view && view.getComputedStyle ? view.getComputedStyle(textarea) : null;
       const lineHeight = parseFloat(style && style.lineHeight) || 18;
-      // 长句原文 + "-- 正在翻译"/译文可能超过单行；最大放宽到 10 行，避免内容被截断
+      // 长句原文 + "-- 译文"可能超过单行；最大放宽到 10 行，避免内容被截断
       const maxHeight = lineHeight * 10;
       const minHeight = lineHeight * 1.35;
-      const next = Math.max(minHeight, Math.min(textarea.scrollHeight || minHeight, maxHeight));
+      // 弹窗隐藏/尚未渲染时 scrollHeight 可能为 0：保持原高度不塌缩，交给下方 rAF 重测
+      const raw = textarea.scrollHeight || 0;
+      const next = raw > 0 ? Math.max(minHeight, Math.min(raw, maxHeight)) : Math.max(minHeight, prevHeight);
       textarea.style.height = next + "px";
       textarea.style.overflowY = (textarea.scrollHeight || 0) > maxHeight ? "auto" : "hidden";
-      // PDF.js 沙箱中 scrollHeight 在第一次设置 height=auto 时可能尚未重排，
-      // 下一帧再校正一次（仅当高度确实偏小时）
+      // PDF.js 沙箱中 scrollHeight 在设置 height=auto 后可能尚未重排，下一帧再校正
+      // 一次；偏大或偏小都校正（流式输出时每次增量都会再触发本函数，可自我修复）
       try {
         const win = view || (textarea.ownerDocument && textarea.ownerDocument.defaultView);
         if (win && typeof win.requestAnimationFrame === "function") {
           win.requestAnimationFrame(() => {
-            if (!textarea || !textarea.isConnected) return;
-            const h = Math.max(minHeight, Math.min(textarea.scrollHeight || minHeight, maxHeight));
-            if (h > parseFloat(textarea.style.height || "0") * 0.9) {
-              textarea.style.height = h + "px";
-              textarea.style.overflowY = (textarea.scrollHeight || 0) > maxHeight ? "auto" : "hidden";
-            }
+            try {
+              if (!textarea || !textarea.isConnected) return;
+              const sc = textarea.scrollHeight || 0;
+              if (sc <= 0) return;
+              const h = Math.max(minHeight, Math.min(sc, maxHeight));
+              const cur = parseFloat(textarea.style.height || "0") || 0;
+              if (Math.abs(h - cur) > 0.5) {
+                textarea.style.height = h + "px";
+                textarea.style.overflowY = sc > maxHeight ? "auto" : "hidden";
+              }
+            } catch (e) {}
           });
         }
       } catch (e) {}
@@ -2682,7 +2690,11 @@ _configVersion: 0,
           baseUrl: api.baseUrl, model: api.model, hasKey: !!api.apiKey
         } : null)
       );
-      const result = await this._translateWithTimeout(word);
+      // 流式增量上屏：onChunk 实时更新临时编辑框（逐 chunk 长高，原始设计意图）。
+      // OpenAI 兼容路径为真流式；适配器类 provider 拿到完整结果后回调一次。
+      const result = await this._translateWithTimeout(word, null, (partial) => {
+        try { this._updateTempEditArea(normWord, partial); } catch (e0) {}
+      });
       card.translation = result || this.STATUS_FAILED;
       this._debugLog("translate success: " + JSON.stringify(card.translation));
     } catch (e) {
@@ -3064,12 +3076,12 @@ _configVersion: 0,
 
   // 翻译超时兜底：provider 长时间无响应（如 DeepL 免费版挂起）时按失败处理，
   // 走词典服务兜底显示，避免"翻译中…"永远不结束。
-  async _translateWithTimeout(text, timeoutMs) {
+  async _translateWithTimeout(text, timeoutMs, onChunk) {
     const timeout = timeoutMs || 15000;
     let timer = null;
     try {
       return await Promise.race([
-        this.translate(text),
+        this.translate(text, null, onChunk),
         new Promise((_, reject) => {
           timer = setTimeout(() => reject(new Error("翻译超时（" + Math.round(timeout / 1000) + " 秒未返回）")), timeout);
         }),
@@ -3097,7 +3109,9 @@ _configVersion: 0,
     } catch (e) {}
 
     try {
-      const result = await this._translateWithTimeout(currentCard.word);
+      const result = await this._translateWithTimeout(currentCard.word, null, (partial) => {
+        try { this._updateTempEditArea(currentCard.word, partial); } catch (e0) {}
+      });
       currentCard.translation = result || this.STATUS_FAILED;
       this._debugLog("retry translate success: " + JSON.stringify(currentCard.translation));
     } catch (e) {
@@ -4956,7 +4970,10 @@ _configVersion: 0,
     let responseData;
         let respStatus = 200;
         let respStatusText = "";
-        if (typeof onChunk === "function") {
+        let streamed = false;
+        // 流式仅在 fetch 可用时启用；无 fetch 的环境回退非流式，结束后一次性回调 onChunk
+        if (typeof onChunk === "function" && typeof fetch === "function") {
+          streamed = true;
           // 流式输出：使用 fetch + SSE 逐行解析（LLM 场景）
           const fetchResp = await fetch(url, {
             method: "POST",
@@ -5014,6 +5031,10 @@ _configVersion: 0,
     const content = (responseData && responseData.choices && responseData.choices[0] && responseData.choices[0].message && responseData.choices[0].message.content) || "";
     if (!content) {
       throw new Error("API 返回中没有 choices[0].message.content：" + JSON.stringify(responseData).slice(0, 500));
+    }
+    if (typeof onChunk === "function" && !streamed) {
+      // 非流式路径拿到完整结果后一次性回调，保持 onChunk 契约（临时编辑框据此收尾）
+      try { onChunk(String(content)); } catch (e) {}
     }
     return String(content).trim();
   },
