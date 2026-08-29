@@ -169,39 +169,34 @@
 
 ---
 
-## Phase 6 — 渲染性能：单词本局部重渲染
+## Phase 6 — 渲染性能：单词本局部重渲染 — 已完成 2026-08-29
 
-**改动点**（Phase 5 后落在 wordbook-pane.js）
-1. `_renderPaneBody` 拆两层：
-   - `_renderPaneChrome(doc, body, item)`：头部四行（标题/API/排序/字典行/搜索框/翻页控件）——仅条目切换或全局配置变更时重建；
-   - `_renderCardList(doc, body, pageInfo)`：卡片列表区——搜索/翻页/增删/高亮/重译时只重绘这一层。
-2. `_applyWordBookView` 改调 `_renderCardList`；搜索输入框不再被销毁 → 删除 `_onWordBookSearchTrigger` 里恢复焦点/光标的 hack（现 3525-3537）。
-3. 对外接口不变：onRender / `_refreshItemPane(itemID, viewInfo)` 条目切换仍走全量；插件重载自愈路径（`_triggerPaneRefresh` → onRender）不动。
-4. `_currentPaneContext`、`_panelUIDs`、`body._wtRefresh` 的重锚逻辑保持原语义。
+**改动点**（落在 wordbook-pane.js）
+1. `_renderPaneBody` 拆两层：`_buildPaneChrome(doc, itemID, pageInfo)`（头部四行：标题/API/排序/字典行/搜索框/翻页控件，仅全量渲染时重建）+ `_renderCardList(doc, body, itemID, rawWords, pageInfo)`（卡片列表区 + 翻页控件状态同步，返回 false 表示外壳不存在）。
+2. `_applyWordBookView` 增加快路径：上下文条目与 `body.dataset.chromeItemID` **双一致**且 body 可用 → 只调 `_renderCardList`，不触发官方 pane 刷新（不闪、不丢搜索框焦点）；否则回退慢路径（`_triggerPaneRefresh` 自愈 + 全量）。forceFull 选项强制慢路径。
+3. 搜索输入不再被销毁 → 删除 `_onWordBookSearchTrigger` 的焦点/光标恢复 hack。
+4. 排序按钮与字典模式按钮改为点击时自更新外观（原依赖全量重绘刷写）；刷新按钮 `_repairWordBookPane` 传 forceFull 走全量自愈。
+5. 防错位护栏：外壳构建时打 `chromeItemID` 标记，快路径要求上下文条目与外壳条目双一致，杜绝 onItemChange 先到而 onRender 未跑时把 B 条目卡片渲染进 A 条目外壳。
 
-**b 版实测**：搜索框连续输入不丢焦点；长列表（>50 词）翻页流畅度；插件重载/重开 PDF 后面板正常显示（自愈不回归）。
+**回归断言**（_smoke.js S8，迷你假 DOM）：列表重绘卡片数与分页一致、页码/总页/禁用态同步、快路径不触发全量刷新、forceFull 走全量、跨条目不走快路径、无外壳返回 false。成员基线更新至 219（+_buildPaneChrome/_renderCardList）。
+**b 版实测**：搜索连续输入不丢焦点、翻页流畅不闪；条目切换/重载后面板正常（自愈不回归）；排序与字典模式按钮外观即时正确。
 
 ---
 
-## Phase 7 — 功能 A：单词本导出 + 译文级缓存
+## Phase 7 — 功能 A：单词本导出 + 译文级缓存 — 已完成 2026-08-29
 
-**1. 导出（用户价值最高）**
-- 入口：单词本头部新增"导出"按钮 → 菜单：CSV / Markdown / Anki tsv × 当前条目 / 全部条目合并；
-- 数据组装：`_itemWords` + dict-cache（音标/词性/释义）+ 高亮色 + 条目标题；
-- 格式：
-  - CSV：`word,translation,phonetic,pos,meaning,highlight,item`（UTF-8 **带 BOM**，保证 Excel/WPS 中文不乱码）；
-  - Markdown：按条目分节的无序列表；
-  - Anki tsv：正面 = 单词，背面 = `译文<br>音标 词性.释义`（制表符分隔，可直接导入 Anki）；
-- 保存路径：`Zotero.FilePicker`（Zotero 7 封装），默认文件名 `单词本-<条目标题>-<日期>.<ext>`；
-- 实现：新函数 `_exportWordBook(itemIDOrNull, format)`，落在 wordbook-pane.js。
+**1. 导出**
+- 入口：单词本头部新增"导出"按钮 → 固定定位菜单（复用 _cardMenu 外部关闭机制）：CSV / Markdown / Anki × 当前条目 / 全部条目合并；
+- 数据：`_collectExportSections`（空条目跳过；标题取 Zotero.Items，取不到回退"条目 <id>"）+ `_exportDictSummary`（dict-cache 的音标/词性/释义）；
+- 格式：CSV `word,translation,phonetic,pos,meaning,highlight,item`（BOM + 引号转义）；Markdown 多节 `## 标题` + `- **word** -- 译文 [音标] pos. meaning`；Anki tsv 正面=单词、背面=`译文<br>[音标] pos. meaning`（tab/换行清洗为空格）；
+- 保存：首选 `Zotero.FilePicker`（modeSave）；不可用/取消时兜底写 `<数据目录>/exports/`（时间戳后缀防覆盖）并 toast 通知；写盘用 `Zotero.File.putContentsAsync`。
 
 **2. 译文缓存**
-- storage.js 新增 `translation-cache.json`：`word → { translation, ts }`，LRU 上限 2000（复用 dict-cache 的裁剪策略与落盘时机）；
-- `_addWordForReader`：查缓存命中 → 直接填卡（不调 API，仍触发 `_enrichDict` 补词典行）；未命中 → 调 API 后写缓存；
-- `_retryTranslationForCard`（卡片 ↻）**强制绕过缓存**重新请求——用户改提示词后靠 ↻ 刷新；
-- 缓存 key 用小写化原词（与 dict.js `_norm` 一致）。
+- storage.js：`translation-cache.json`（word → {translation, ts}，LRU 2000，同 dict-cache 裁剪策略）；
+- addon.js core：`_translationCache` 内存层 + `_loadTranslationCache`（init 载入）+ `_getCachedTranslation/_setCachedTranslation`（800ms 防抖落盘）+ `_flushTranslationCache`（shutdown 落盘）；
+- hotkey.js `_addWordForReader`：命中缓存直接填卡不调 API（词典行仍由 _enrichDict 独立补全）；`_retryTranslationForCard`（↻）绕过读缓存、成功后回写（改提示词重译即更新全局缓存）。
 
-**b 版实测**：同一词在第二条文献添加瞬时显示；导出文件用 Excel 打开中文正常；↻ 后译文随新提示词更新。
+**回归断言**（_smoke.js S9）：缓存载入/大小写归一/写入/flush；收集当前与全部条目、空条目跳过；CSV BOM+表头+引号转义；MD 分节；Anki 清洗；文件名清洗。成员基线更新至 233。
 
 ---
 

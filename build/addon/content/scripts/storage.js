@@ -374,6 +374,51 @@ var WordTranslatorStorage = {
       return false;
     }
   },
+
+  // ---------- 译文缓存（按词全局一份，LRU 上限 2000；Phase 7） ----------
+  getTranslationCachePath() {
+    const dir = this.getDataDirPath();
+    if (!dir) return "";
+    return dir + (dir.indexOf("\\") >= 0 ? "\\" : "/") + "translation-cache.json";
+  },
+
+  loadTranslationCache() {
+    try {
+      this._ensureDirs();
+      const file = this._root.clone();
+      file.append("translation-cache.json");
+      const text = this._readFile(file);
+      if (!text) return {};
+      const obj = JSON.parse(text);
+      return (obj && typeof obj === "object") ? obj : {};
+    } catch (e) {
+      if (Zotero && Zotero.debug) {
+        try { Zotero.debug("[WordTranslatorStorage] loadTranslationCache ERROR: " + (e && (e.stack || e.message || String(e)))); } catch (e2) {}
+      }
+      return {};
+    }
+  },
+
+  // 原子写译文缓存；超过上限按 ts 升序裁掉最旧词条（与 dict-cache 同策略）
+  saveTranslationCache(cache) {
+    try {
+      this._ensureDirs();
+      const keys = Object.keys(cache);
+      if (keys.length > 2000) {
+        const sorted = keys.sort((a, b) => (cache[a] && cache[a].ts || 0) - (cache[b] && cache[b].ts || 0));
+        for (const k of sorted.slice(0, keys.length - 2000)) delete cache[k];
+      }
+      const file = this._root.clone();
+      file.append("translation-cache.json");
+      this._writeFileAtomically(file, JSON.stringify(cache, null, 2));
+      return true;
+    } catch (e) {
+      if (Zotero && Zotero.debug) {
+        try { Zotero.debug("[WordTranslatorStorage] saveTranslationCache ERROR: " + (e && (e.stack || e.message || String(e)))); } catch (e2) {}
+      }
+      return false;
+    }
+  },
 };
 
 if (typeof Zotero !== "undefined") {

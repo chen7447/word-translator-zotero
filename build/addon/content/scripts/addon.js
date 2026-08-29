@@ -56,6 +56,8 @@ var WordTranslator = {
   _hotkeyToolbarHandler: null,// renderToolbar 监听（快捷键绑定入口）
   _notifierID: null,          // 条目删除观察者 id
   _prefsPaneID: null,         // 偏好面板注册 id
+  _translationCache: null,    // word -> { translation, ts }（Phase 7 译文级缓存，跨条目复用）
+  _translationCacheTimer: null,
 
   _getProfileDir() {
     try {
@@ -348,6 +350,8 @@ _configVersion: 0,
       try { this._flushAndPersistWords(); } catch (e2) {}
       // 字典缓存落盘
       try { if (Zotero.WordTranslatorDict && typeof Zotero.WordTranslatorDict.flush === "function") Zotero.WordTranslatorDict.flush(); } catch (e2) {}
+      // 译文缓存落盘（Phase 7）
+      try { this._flushTranslationCache(); } catch (e2) {}
       for (const [, handler] of this._readerTabHandlers || []) {
         try { Zotero.Reader.unregisterEventListener("renderTextSelectionPopup", handler); } catch (e) {}
       }
@@ -421,6 +425,8 @@ _configVersion: 0,
       // 字典服务：词级缓存并入内存（此后渲染只读内存缓存，不触网）
       try { if (Zotero.WordTranslatorDict && typeof Zotero.WordTranslatorDict.loadCache === "function") Zotero.WordTranslatorDict.loadCache(); } catch (e) {}
       this._loadWordsFromDisk();
+      // Phase 7：译文缓存并入内存（跨条目复用译文，命中不再调 API）
+      this._loadTranslationCache();
       this._sortMode = this._data.sortMode || "reverse";
       this._activeSearchStrategy = this._getActiveSearchStrategyName();
       // 主动验证存储层：确保数据目录存在并写盘（输出日志便于定位写文件失败）
@@ -761,6 +767,59 @@ _configVersion: 0,
     } catch (e) {
       this._debugLog("_flushAndPersistWords ERROR: " + (e && (e.stack || e.message || String(e))));
     }
+  },
+
+  // ---------- Phase 7：译文级缓存 ----------
+  // 同一个词在不同文献中反复出现：命中缓存直接填卡，不再重复调 API。
+  // key 与 dict.js _norm 一致（trim + 小写）；卡片 ↻ 重译强制绕过读缓存，
+  // 但成功后回写缓存（改提示词后重译的译文会更新全局缓存）。
+  _loadTranslationCache() {
+    try {
+      if (this._translationCache) return;
+      const S = Zotero.WordTranslatorStorage;
+      this._translationCache = (S && typeof S.loadTranslationCache === "function") ? (S.loadTranslationCache() || {}) : {};
+    } catch (e) {
+      this._translationCache = {};
+    }
+  },
+
+  _getCachedTranslation(word) {
+    try {
+      this._loadTranslationCache();
+      const key = String(word || "").trim().toLowerCase();
+      const hit = this._translationCache[key];
+      return hit && hit.translation ? String(hit.translation) : null;
+    } catch (e) {
+      return null;
+    }
+  },
+
+  _setCachedTranslation(word, translation) {
+    try {
+      this._loadTranslationCache();
+      const key = String(word || "").trim().toLowerCase();
+      if (!key || !translation) return;
+      this._translationCache[key] = { translation: String(translation), ts: Date.now() };
+      if (this._translationCacheTimer) clearTimeout(this._translationCacheTimer);
+      const self = this;
+      this._translationCacheTimer = setTimeout(function () {
+        self._translationCacheTimer = null;
+        try {
+          const S = Zotero.WordTranslatorStorage;
+          if (S && typeof S.saveTranslationCache === "function") S.saveTranslationCache(self._translationCache);
+        } catch (e) {}
+      }, 800);
+    } catch (e) {}
+  },
+
+  _flushTranslationCache() {
+    try {
+      if (this._translationCacheTimer) { clearTimeout(this._translationCacheTimer); this._translationCacheTimer = null; }
+      const S = Zotero.WordTranslatorStorage;
+      if (this._translationCache && S && typeof S.saveTranslationCache === "function") {
+        S.saveTranslationCache(this._translationCache);
+      }
+    } catch (e) {}
   },
 
   _saveData() {

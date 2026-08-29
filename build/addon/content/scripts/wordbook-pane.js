@@ -305,6 +305,8 @@ var WordTranslatorModule_pane = {
       });
       currentCard.translation = result || this.STATUS_FAILED;
       this._debugLog("retry translate success: " + JSON.stringify(currentCard.translation));
+      // Phase 7：重译成功后回写译文缓存（改提示词重译的译文更新全局缓存）
+      if (result) this._setCachedTranslation(currentCard.word, result);
     } catch (e) {
       currentCard.translation = this.STATUS_FAILED;
       this._debugLog("retry translate ERROR: " + (e && (e.stack || e.message || String(e))));
@@ -1030,6 +1032,14 @@ var WordTranslatorModule_pane = {
     zoomOutBtn.addEventListener("click", () => this._onZoomFontSize(itemID, -1));
     controlsRow.append(zoomOutBtn);
 
+    // Phase 7：导出按钮（CSV / Markdown / Anki，当前条目或全部条目）
+    const exportBtn = el("button", { title: "导出单词本（CSV / Markdown / Anki）", "aria-label": "导出单词本", style: "height:26px;padding:0 9px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:12px;line-height:24px;box-sizing:border-box;white-space:nowrap;color:ButtonText;" }, [txt("导出")]);
+    exportBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this._showExportMenu(ev, itemID);
+    });
+    titleActions.append(exportBtn);
+
     const clearBtn = el("button", { title: "清空当前条目的全部单词", "aria-label": "清空当前条目的全部单词", style: "height:26px;padding:0 9px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:12px;line-height:24px;box-sizing:border-box;white-space:nowrap;color:ButtonText;" }, [txt("清空")]);
     clearBtn.addEventListener("click", () => this._clearAllWordsForItem(itemID));
     titleActions.append(clearBtn);
@@ -1364,6 +1374,214 @@ var WordTranslatorModule_pane = {
       ".wt-hl-swatch-blue { background: color-mix(in srgb, #6d86a8 70%, Canvas); }",
       ".wt-hl-swatch-rose { background: color-mix(in srgb, #b07a86 70%, Canvas); }",
     ].join(" ");
+  },
+
+  // ---------- Phase 7：单词本导出（CSV / Markdown / Anki tsv） ----------
+
+  // 收集导出数据：scope 为条目 id（当前条目）或 null（全部条目）。
+  // 返回 [{ id, title, words: [card] }]；条目标题取不到时回退 "条目 <id>"。
+  _collectExportSections(scope) {
+    const sections = [];
+    const ids = scope != null ? [Number(scope)] : Array.from(this._itemWords.keys()).sort((a, b) => a - b);
+    for (const id of ids) {
+      const words = this._itemWords.get(Number(id)) || [];
+      if (!words.length) continue;
+      let title = "条目 " + id;
+      try {
+        const item = Zotero.Items && Zotero.Items.get(Number(id));
+        if (item) title = String(item.getField("title") || "") || title;
+      } catch (e) {}
+      sections.push({ id: Number(id), title, words });
+    }
+    return sections;
+  },
+
+  // 单条词的词典摘要（来自 dict-cache；离线词库/在线源命中都有）
+  _exportDictSummary(word) {
+    try {
+      const D = Zotero.WordTranslatorDict;
+      const entry = D && D.getCached && D.getCached(word);
+      if (!entry) return { phonetic: "", pos: "", meaning: "" };
+      const ph = entry.phonetic && (entry.phonetic.us || entry.phonetic.uk);
+      const m = entry.meanings && entry.meanings[0];
+      return {
+        phonetic: ph ? "[" + String(ph).trim().replace(/^\/+|\/+$/g, "") + "]" : "",
+        pos: m && m.pos ? String(m.pos) : "",
+        meaning: m && m.def ? String(m.def) : "",
+      };
+    } catch (e) {
+      return { phonetic: "", pos: "", meaning: "" };
+    }
+  },
+
+  _formatExportCSV(sections) {
+    const esc = (v) => "\"" + String(v == null ? "" : v).replace(/"/g, "\"\"") + "\"";
+    const rows = ["word,translation,phonetic,pos,meaning,highlight,item"];
+    for (const sec of sections) {
+      for (const w of sec.words) {
+        const d = this._exportDictSummary(w.word);
+        rows.push([
+          esc(w.word), esc(w.translation), esc(d.phonetic), esc(d.pos), esc(d.meaning),
+          esc(w.highlight || ""), esc(sec.title),
+        ].join(","));
+      }
+    }
+    // BOM：保证 Excel/WPS 直接打开中文不乱码
+    return "\uFEFF" + rows.join("\r\n") + "\r\n";
+  },
+
+  _formatExportMD(sections) {
+    const lines = [];
+    const date = new Date().toISOString().slice(0, 10);
+    lines.push("# 单词本导出（" + date + "）", "");
+    for (const sec of sections) {
+      if (sections.length > 1) lines.push("## " + sec.title, "");
+      for (const w of sec.words) {
+        const d = this._exportDictSummary(w.word);
+        const parts = ["**" + String(w.word || "").replace(/\*/g, "\\*") + "**", String(w.translation || "").trim()].filter(Boolean);
+        let line = "- " + parts.join(" -- ");
+        const extras = [d.phonetic, [d.pos ? d.pos + "." : "", d.meaning].filter(Boolean).join(" ")].filter(Boolean).join(" ");
+        if (extras) line += "　" + extras;
+        if (w.highlight) line += "　（" + w.highlight + "）";
+        lines.push(line);
+      }
+      if (sections.length > 1) lines.push("");
+    }
+    return lines.join("\n") + "\n";
+  },
+
+  _formatExportAnki(sections) {
+    const clean = (v) => String(v == null ? "" : v).replace(/[\t\r\n]+/g, " ").trim();
+    const rows = [];
+    for (const sec of sections) {
+      for (const w of sec.words) {
+        const d = this._exportDictSummary(w.word);
+        const back = [clean(w.translation), [d.phonetic, [d.pos ? d.pos + "." : "", d.meaning].filter(Boolean).join(" ")].filter(Boolean).join(" ")].filter(Boolean);
+        rows.push(clean(w.word) + "\t" + back.join("<br>"));
+      }
+    }
+    return rows.join("\n") + "\n";
+  },
+
+  // 文件名非法字符清洗（Windows 为主）
+  _exportFileName(name) {
+    return String(name || "export").replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, " ").trim().slice(0, 120);
+  },
+
+  // 导出主流程：收集 → 格式化 → 文件选择器（兜底写数据目录 exports/）→ 写盘
+  async _exportWordBook(scope, format) {
+    try {
+      const sections = this._collectExportSections(scope);
+      if (!sections.length) {
+        try { if (Zotero.toast) Zotero.toast("单词本为空，没有可导出的内容"); } catch (e0) {}
+        return false;
+      }
+      const fmt = format === "md" ? "md" : format === "anki" ? "anki" : "csv";
+      let content = "";
+      if (fmt === "csv") content = this._formatExportCSV(sections);
+      else if (fmt === "md") content = this._formatExportMD(sections);
+      else content = this._formatExportAnki(sections);
+
+      const ext = fmt === "csv" ? "csv" : fmt === "md" ? "md" : "txt";
+      const scopeTitle = sections.length === 1 ? sections[0].title : "全部条目";
+      const baseName = this._exportFileName("单词本-" + scopeTitle + "-" + new Date().toISOString().slice(0, 10)) + "." + ext;
+
+      // 首选 Zotero.FilePicker（Zotero 7 封装 nsIFilePicker）
+      let targetPath = null;
+      try {
+        if (typeof Zotero.FilePicker === "function") {
+          const fp = new Zotero.FilePicker();
+          const win = Zotero.getMainWindow();
+          fp.init(win, "导出单词本", fp.modeSave);
+          fp.defaultString = baseName;
+          fp.defaultExtension = ext;
+          fp.appendFilter(fmt === "csv" ? "CSV" : fmt === "md" ? "Markdown" : "Anki tsv", "*." + ext);
+          const rv = await fp.show();
+          if (rv === fp.returnOK || rv === fp.returnReplace) targetPath = fp.file;
+        }
+      } catch (e1) {
+        this._debugLog("export filepicker ERROR: " + (e1 && (e1.message || String(e1))));
+      }
+
+      // 兜底：文件选择器不可用/被取消时写数据目录 exports/（不覆盖已有文件，追加时间戳）
+      if (!targetPath) {
+        const S = Zotero.WordTranslatorStorage;
+        const dir = S && S.getDataDirPath ? S.getDataDirPath() : "";
+        if (!dir) return false;
+        const sep = dir.indexOf("\\") >= 0 ? "\\" : "/";
+        const stamp = String(Date.now()).slice(-6);
+        targetPath = dir + sep + "exports" + sep + this._exportFileName(baseName.replace(/\.\w+$/, "")) + "-" + stamp + "." + ext;
+        try {
+          const dirFile = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+          dirFile.initWithPath(dir + sep + "exports");
+          if (!dirFile.exists()) dirFile.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
+        } catch (e2) {}
+      }
+
+      try {
+        if (Zotero.File && typeof Zotero.File.putContentsAsync === "function") {
+          await Zotero.File.putContentsAsync(targetPath, content);
+        } else {
+          throw new Error("Zotero.File.putContentsAsync 不可用");
+        }
+      } catch (e3) {
+        this._debugLog("export write ERROR: " + (e3 && (e3.message || String(e3))));
+        try { if (Zotero.toast) Zotero.toast("导出失败：" + (e3 && e3.message || e3)); } catch (e4) {}
+        return false;
+      }
+      try { if (Zotero.toast) Zotero.toast("单词本已导出：" + targetPath, 6000); } catch (e5) {}
+      this._debugLog("export OK: " + targetPath + " (" + fmt + ", " + sections.length + " section(s))");
+      return true;
+    } catch (e) {
+      this._debugLog("_exportWordBook ERROR: " + (e && (e.stack || e.message || String(e))));
+      return false;
+    }
+  },
+
+  // 导出菜单（固定定位在导出按钮下方；复用 _cardMenu 的外部点击/Esc/滚动关闭机制）
+  _showExportMenu(ev, itemID) {
+    this._hideCardMenu();
+    try {
+      const btnEl = ev && ev.currentTarget;
+      const doc = (btnEl && btnEl.ownerDocument) || (ev && ev.target && ev.target.ownerDocument);
+      if (!doc || !btnEl) return;
+      const self = this;
+      const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
+      const txt = (s) => this._createTxt(doc, s);
+      const menu = el("div", { class: "wt-card-menu", role: "menu", style: "position:fixed;flex-direction:column;align-items:stretch;min-width:150px;" });
+      const entries = [
+        ["CSV · 当前条目", itemID, "csv"],
+        ["CSV · 全部条目", null, "csv"],
+        ["Markdown · 当前条目", itemID, "md"],
+        ["Markdown · 全部条目", null, "md"],
+        ["Anki · 当前条目", itemID, "anki"],
+        ["Anki · 全部条目", null, "anki"],
+      ];
+      for (const [label, scope, fmt] of entries) {
+        const b = el("button", { type: "button", class: "wt-card-menu-btn", title: label, "aria-label": label, style: "width:auto;min-width:130px;height:24px;padding:0 10px;font-size:12px;white-space:nowrap;text-align:left;" }, [txt(label)]);
+        b.addEventListener("click", (e2) => {
+          e2.preventDefault();
+          e2.stopPropagation();
+          self._hideCardMenu();
+          Promise.resolve(self._exportWordBook(scope, fmt)).catch((err) => self._debugLog("export ERROR: " + (err && (err.stack || err.message || String(err)))));
+        });
+        menu.append(b);
+      }
+      const rect = btnEl.getBoundingClientRect();
+      menu.style.left = Math.max(4, rect.left) + "px";
+      menu.style.top = (rect.bottom + 4) + "px";
+      (doc.body || doc.documentElement).append(menu);
+
+      const onDoc = (e3) => { if (menu.contains(e3.target)) return; self._hideCardMenu(); };
+      const onKey = (e3) => { if ((e3.key || "").toLowerCase() === "escape") self._hideCardMenu(); };
+      const onScroll = () => self._hideCardMenu();
+      doc.addEventListener("mousedown", onDoc, true);
+      doc.addEventListener("keydown", onKey, true);
+      doc.addEventListener("scroll", onScroll, true);
+      this._cardMenu = { el: menu, doc, onDoc, onKey, onScroll };
+    } catch (e) {
+      this._debugLog("_showExportMenu ERROR: " + (e && (e.stack || e.message || e)));
+    }
   },
 
   // ---------- 偏好面板 onload ----------

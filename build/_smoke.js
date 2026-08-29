@@ -561,6 +561,66 @@ function section(title) { console.log("\n===== " + title + " ====="); }
     }
   }
 
+  // ============================================================
+  // S9 导出与译文缓存（Phase 7 回归）
+  // ============================================================
+  section("S9 导出与译文缓存（Phase 7 回归）");
+  if (WT) {
+    try {
+      const savedData9 = WT._data;
+      WT._data = WT._normalize(null);
+
+      // 1) 译文缓存：载入/大小写归一读取/写入/flush 立即落盘
+      const savedStorage9 = mainSb.Zotero.WordTranslatorStorage;
+      let savedCacheObj = null;
+      mainSb.Zotero.WordTranslatorStorage = {
+        loadTranslationCache: () => ({ "cell": { translation: "细胞", ts: 1 } }),
+        saveTranslationCache: (c) => { savedCacheObj = c; return true; },
+      };
+      WT._translationCache = null;
+      WT._loadTranslationCache();
+      check("译文缓存载入并大小写归一命中", WT._getCachedTranslation("CELL") === "细胞");
+      WT._setCachedTranslation("plant", "植物");
+      // 写盘是 800ms 防抖的：此刻只断言内存命中，落盘由下面的 flush 断言覆盖
+      check("译文缓存写入", WT._getCachedTranslation("plant") === "植物");
+      savedCacheObj = null;
+      WT._flushTranslationCache();
+      check("flush 立即落盘", !!savedCacheObj && !!savedCacheObj.cell);
+      mainSb.Zotero.WordTranslatorStorage = savedStorage9;
+
+      // 2) 导出数据收集：无 Zotero.Items 时标题回退
+      WT._itemWords = new Map();
+      WT._itemWords.set(42, [{ word: "cell", translation: "细胞", highlight: "amber" }, { word: "metabolism", translation: "新陈代谢" }]);
+      const sections = WT._collectExportSections(42);
+      check("收集当前条目", sections.length === 1 && sections[0].title === "条目 42" && sections[0].words.length === 2);
+      check("全部条目模式", WT._collectExportSections(null).length === 1);
+      WT._itemWords.set(43, [{ word: "enzyme", translation: "酶" }]);
+      check("空条目跳过", WT._collectExportSections(null).length === 2);
+
+      // 3) CSV：BOM + 表头 + 引号转义
+      const csv = WT._formatExportCSV([{ id: 42, title: "论文\"A\",B", words: [{ word: "cell", translation: "细胞", highlight: "amber" }] }]);
+      check("CSV 带 BOM 与表头", csv.charCodeAt(0) === 0xFEFF && csv.indexOf("word,translation,phonetic,pos,meaning,highlight,item") >= 0);
+      check("CSV 字段引号转义", csv.indexOf('"论文""A"",B"') >= 0);
+
+      // 4) Markdown / Anki tsv（多节才有 ## 分节标题）
+      const md = WT._formatExportMD([
+        { id: 42, title: "T", words: [{ word: "cell", translation: "细胞" }] },
+        { id: 43, title: "T2", words: [{ word: "enzyme", translation: "酶" }] },
+      ]);
+      check("Markdown 含分节与词条", md.indexOf("## T") >= 0 && md.indexOf("**cell** -- 细胞") >= 0 && md.indexOf("## T2") >= 0);
+      const anki = WT._formatExportAnki([{ id: 42, title: "T", words: [{ word: "cell\tX", translation: "细\n胞" }] }]);
+      check("Anki tsv 制表/换行清洗", anki.indexOf("cell X\t细 胞") >= 0);
+
+      // 5) 文件名清洗（连续非法字符合并为一个下划线）
+      check("文件名非法字符清洗", WT._exportFileName("a/b:c*d?\"<>|") === "a_b_c_d_");
+
+      WT._data = savedData9;
+      WT._itemWords = new Map();
+    } catch (e) {
+      check("S9 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
   console.log("\nRESULT pass=%d fail=%d", pass, fail);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("SMOKE ERROR", e); process.exit(1); });

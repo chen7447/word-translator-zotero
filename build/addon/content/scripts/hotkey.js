@@ -1392,18 +1392,27 @@ var WordTranslatorModule_hotkey = {
     } catch (e) {}
 
     try {
-      const api = this.getActiveApi();
-      this._debugLog(
-        "translate start: api=" + JSON.stringify(api ? {
-          name: api.name, provider: api.provider,
-          baseUrl: api.baseUrl, model: api.model, hasKey: !!api.apiKey
-        } : null)
-      );
-      // 流式增量上屏：onChunk 实时更新临时编辑框（逐 chunk 长高，原始设计意图）。
-      // OpenAI 兼容路径为真流式；适配器类 provider 拿到完整结果后回调一次。
-      const result = await this._translateWithTimeout(word, null, (partial) => {
-        try { this._updateTempEditArea(normWord, partial); } catch (e0) {}
-      });
+      // Phase 7：译文缓存命中 → 直接填卡不调 API（跨条目复用；词典行由 _enrichDict 独立补全）
+      const cachedTranslation = this._getCachedTranslation(normWord);
+      let result = null;
+      if (cachedTranslation) {
+        this._debugLog("translate cache hit: " + JSON.stringify(normWord));
+        result = cachedTranslation;
+      } else {
+        const api = this.getActiveApi();
+        this._debugLog(
+          "translate start: api=" + JSON.stringify(api ? {
+            name: api.name, provider: api.provider,
+            baseUrl: api.baseUrl, model: api.model, hasKey: !!api.apiKey
+          } : null)
+        );
+        // 流式增量上屏：onChunk 实时更新临时编辑框（逐 chunk 长高，原始设计意图）。
+        // OpenAI 兼容路径为真流式；适配器类 provider 拿到完整结果后回调一次。
+        result = await this._translateWithTimeout(word, null, (partial) => {
+          try { this._updateTempEditArea(normWord, partial); } catch (e0) {}
+        });
+        if (result) this._setCachedTranslation(normWord, result);
+      }
       card.translation = result || this.STATUS_FAILED;
       this._debugLog("translate success: " + JSON.stringify(card.translation));
     } catch (e) {
