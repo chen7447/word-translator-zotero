@@ -1,4 +1,4 @@
-# === 涓存椂鏂囦欢 ===
+# === 临时文件 ===
 _tmp_*
 *_tmp.*
 *_tmp_*
@@ -6,18 +6,20 @@ _tmp_*
 *.bak-*
 *.bak.*
 
-# === 鏋勫缓鑴氭湰涓庝骇鐗╋紙鎵撳寘婧?addon 鐩綍鍐呯殑鎺掗櫎鐢?pack_xpi.py 璐熻矗锛?==
+# === 构建脚本与产物（打包源 addon 目录内的排除项由 pack_xpi.py 负责）===
 __pycache__/
 *.pyc
 *.pyo
 
-# === 寮�鍙?娴嬭瘯宸ュ叿 ===
+# === 开发/测试工具 ===
 .zcode/
 api_request_lab/docs/_deeplx_*_tmp.*
 
-# === 鎿嶄綔绯荤粺 ===
+# === 操作系统 ===
 Thumbs.db
 .DS_Store
+
 # === 打包产物 ===
 # ECDICT raw data cache (generated offline dict from this)
 _ecdict.csv
+build/*.xpi

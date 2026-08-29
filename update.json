@@ -1,4 +1,5 @@
 {
+  "_comment": "同步说明：本文件（仓库根，manifest update_url 实际指向的更新源）与 build/addon/update.json（随包副本）内容必须保持一致；发布新版本时两份都要新增 updates 条目。本说明键会被更新检查器忽略。",
   "addons": {
     "wordtranslator@example.com": {
       "updates": [
