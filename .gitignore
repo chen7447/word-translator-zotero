@@ -22,4 +22,5 @@ Thumbs.db
 # === 打包产物 ===
 # ECDICT raw data cache (generated offline dict from this)
 _ecdict.csv
-build/*.xpi
+build/*b*.xpi
+# 正式版 xpi 需提交进仓库（skill 铁律），仅忽略 b 测试版
