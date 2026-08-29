@@ -716,20 +716,8 @@ var WordTranslatorModule_pane = {
     }
     const timer = setTimeout(() => {
       this._wordBookSearchTimers.delete(id);
+      // Phase 6：列表局部重绘不再销毁搜索框，焦点与光标自然保留（旧焦点恢复 hack 已删）。
       this._handleWordBookSearchEvent({ type: "input", itemID: id, keyword: value });
-      // _refreshItemPane 会重建 input；重建后恢复焦点和光标位置，保证可连续输入。
-      try {
-        const pane = this._currentPaneContext;
-        const input = pane && pane.body && pane.body.isConnected
-          ? pane.body.querySelector('input[type="search"]') : null;
-        if (input) {
-          input.focus();
-          const end = String(input.value || "").length;
-          if (typeof input.setSelectionRange === "function") input.setSelectionRange(end, end);
-        }
-      } catch (e) {
-        this._debugLog("search focus restore ERROR: " + (e && (e.message || String(e))));
-      }
     }, 250);
     this._wordBookSearchTimers.set(id, timer);
   },
@@ -769,9 +757,6 @@ var WordTranslatorModule_pane = {
     const id = Number(itemID);
     if (!Number.isFinite(id) || id <= 0) return;
     const opts = options || {};
-    // 所有会触发单词本重绘的按钮（排序/删除/清空/高亮/重翻译/翻页/搜索等）统一借
-    // Zotero 官方 item pane 刷新，确保渲染进真正显示的 body（插件重载后自愈）。
-    this._triggerPaneRefresh();
     const st = this._getWordBookViewState(id);
     const rawWords = this._itemWords.get(id) || [];
     const pageSize = Math.max(1, Number(this._data && this._data.pageSize) || 10);
@@ -780,21 +765,42 @@ var WordTranslatorModule_pane = {
     st.page = info.page;
     this._wordBookViewState.set(id, st);
     this._debugLog("word-book post-trigger: source=" + (opts.source || "unknown") + ", itemID=" + id + ", strategy=" + strategyName + ", total=" + info.total + ", page=" + info.page + "/" + info.pageCount);
+
+    // Phase 6 快路径：外壳已构建、上下文条目一致、body 可用 → 只重绘卡片列表。
+    // 搜索/翻页/增删改不再整板重绘：不闪、不丢搜索框焦点、不触发全 pane 刷新。
+    if (!opts.forceFull) {
+      try {
+        const ctx = this._currentPaneContext;
+        const doc = ctx && ctx.doc && ctx.doc.defaultView ? ctx.doc : null;
+        const body = this._resolvePaneBody(doc, ctx && ctx.body);
+        // 双一致：上下文条目 === 目标条目，且外壳构建时也属于该条目
+        // （防 onItemChange 先行而 onRender 未跑时，把 B 条目卡片渲染进 A 条目外壳）。
+        if (ctx && Number(ctx.itemID) === id && body && body.isConnected
+            && body.dataset && body.dataset.chromeItemID === String(id)) {
+          if (this._renderCardList(doc, body, id, rawWords, info) !== false) return;
+        }
+      } catch (e0) {
+        this._debugLog("_applyWordBookView fast-path ERROR: " + (e0 && (e0.message || String(e0))));
+      }
+    }
+
+    // 慢路径：借 Zotero 官方 item pane 刷新自愈（条目切换/插件重载后/局部路径不可用/强制全量）。
+    this._triggerPaneRefresh();
     this._refreshItemPane(id, info);
   },
 
-  // 刷新按钮：自愈能力已由 _applyWordBookView 内部的 _triggerPaneRefresh 统一提供，
-  // 这里仅需记录 itemID 到上下文（供 onRender 解析），再走 _applyWordBookView。
+  // 刷新按钮：强制走慢路径（官方 item pane 刷新自愈 + 全量重绘），
+  // 并记录 itemID 到上下文（供 onRender 解析）。
   _repairWordBookPane(itemID) {
     const id = Number(itemID);
     try {
       if (Number.isFinite(id) && id > 0 && this._currentPaneContext) {
         try { this._currentPaneContext.itemID = id; } catch (e) {}
       }
-      if (Number.isFinite(id) && id > 0) this._applyWordBookView(id, { source: "refresh" });
+      if (Number.isFinite(id) && id > 0) this._applyWordBookView(id, { source: "refresh", forceFull: true });
     } catch (e) {
       this._debugLog("_repairWordBookPane ERROR: " + (e && (e.stack || e.message || String(e))));
-      try { if (Number.isFinite(id) && id > 0) this._applyWordBookView(id, { source: "refresh" }); } catch (e2) {}
+      try { if (Number.isFinite(id) && id > 0) this._applyWordBookView(id, { source: "refresh", forceFull: true }); } catch (e2) {}
     }
   },
 
@@ -902,6 +908,54 @@ var WordTranslatorModule_pane = {
       );
     }
 
+    // 分页信息计算一次，外壳与列表共用
+    const pageSize = Math.max(1, Number(this._data && this._data.pageSize) || 10);
+    const view = this._getWordBookViewState(itemID);
+    const pageInfo = item && item.viewInfo
+      ? item.viewInfo
+      : this._computePagedIndices(rawWords, this._sortMode, view.search, view.page, pageSize, this._getActiveSearchStrategyName());
+    // 若当前页超出范围则自动收拢到最后一页（例如清空/删除后）
+    if (view.page !== pageInfo.page) {
+      this._wordBookViewState.set(itemID, { page: pageInfo.page, search: view.search });
+      view.page = pageInfo.page;
+    }
+
+    // Phase 6 分层：外壳（头部四行，含搜索框/翻页控件）与卡片列表分离——
+    // 搜索/翻页/增删改只重绘列表（_renderCardList），外壳仅在条目切换/全量渲染时重建。
+    // chromeItemID 标记外壳归属：快路径要求上下文条目与外壳条目双一致。
+    body.append(this._buildPaneChrome(doc, itemID, pageInfo));
+    try { body.dataset.chromeItemID = String(itemID); } catch (e0) {}
+    const list = el("div", { class: "wordtranslator-pane-list", style: "display:flex;flex-direction:column;gap:6px;" });
+    body.append(list);
+    this._renderCardList(doc, body, itemID, rawWords, pageInfo);
+
+    // CSS 挂在 body 内部；每次重绘刷新，避免升级后仍用旧样式。
+    let style = body.querySelector(".wordtranslator-pane-style");
+    if (!style) {
+      style = doc.createElementNS(HTML_NS, "style");
+      style.className = "wordtranslator-pane-style";
+      body.append(style);
+    }
+    style.textContent = this._getPaneCSS();
+    // 保存当前 pane 的 doc / body 引用，以便点击放大/缩小按钮后只对卡片文本动态调整
+    this._currentPane = { doc: doc, body: body };
+    this._currentPaneContext = {
+      doc,
+      body,
+      itemID,
+      paneUID: body.dataset && body.dataset.wtPaneUid || null,
+    };
+    return true;
+  },
+
+  // Phase 6：外壳——头部四行（标题/操作按钮行/字典行/搜索+翻页行）。返回 header 元素。
+  // 仅在 _renderPaneBody 全量渲染时构建；翻页控件的后续状态由 _renderCardList 同步。
+  _buildPaneChrome(doc, itemID, pageInfo) {
+    const HTML_NS = "http://www.w3.org/1999/xhtml";
+    const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
+    const txt = (s) => this._createTxt(doc, s);
+    const view = this._getWordBookViewState(itemID);
+
     // 头部采用两行布局：第一行是“图标 + 单词本 + 菜单 + 清空”，第二行是 API 和常用操作。
     const header = el("div", { style: "display:flex;flex-direction:column;gap:5px;margin:0 0 8px;width:100%;padding:0 0 6px;border-bottom:1px solid rgba(0,0,0,0.08);box-sizing:border-box;" });
     const titleRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;" });
@@ -956,6 +1010,11 @@ var WordTranslatorModule_pane = {
       const next = modes[(idx + 1) % modes.length];
       this._debugLog("sort click: current=" + current + ", next=" + next);
       if (!this._setSortMode(next)) return;
+      // Phase 6 局部重绘不再重建外壳：排序按钮自更新外观（原依赖全量重绘刷写）。
+      if (next === "reverse") sortBtn.textContent = "倒";
+      else if (next === "forward") sortBtn.textContent = "正";
+      else sortBtn.innerHTML = this._getSortIconHTML("alpha");
+      sortBtn.title = this._getSortLabel(next);
       // 排序改变后回到第 1 页（保留搜索词），统一走 _applyWordBookView。
       this._applyWordBookView(itemID, { source: "sort", page: 1 });
     });
@@ -977,17 +1036,7 @@ var WordTranslatorModule_pane = {
 
     titleRow.append(titleGroup, titleActions);
 
-    // 第三行：搜索 + 翻页（新增，不影响上面两行排版）
-    const pageSize = Math.max(1, Number(this._data && this._data.pageSize) || 10);
-    const view = this._getWordBookViewState(itemID);
-    const pageInfo = item && item.viewInfo
-      ? item.viewInfo
-      : this._computePagedIndices(rawWords, this._sortMode, view.search, view.page, pageSize, this._getActiveSearchStrategyName());
-    // 若当前页超出范围则自动收拢到最后一页（例如清空/删除后）
-    if (view.page !== pageInfo.page) {
-      this._wordBookViewState.set(itemID, { page: pageInfo.page, search: view.search });
-      view.page = pageInfo.page;
-    }
+    // 第三行：搜索 + 翻页
     const navRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;margin-top:2px;flex-wrap:wrap;" });
     const searchInput = el("input", {
       type: "search",
@@ -1007,12 +1056,13 @@ var WordTranslatorModule_pane = {
     });
     navRow.append(searchInput);
 
-    const prevBtn = el("button", { title: "上一页", "aria-label": "上一页", disabled: pageInfo.page <= 1 ? "disabled" : null, style: "height:26px;min-width:28px;padding:0 8px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:13px;line-height:24px;color:ButtonText;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;" }, [txt("‹")]);
+    const prevBtn = el("button", { class: "wt-page-prev", title: "上一页", "aria-label": "上一页", disabled: pageInfo.page <= 1 ? "disabled" : null, style: "height:26px;min-width:28px;padding:0 8px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:13px;line-height:24px;color:ButtonText;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;" }, [txt("‹")]);
     prevBtn.addEventListener("click", () => this._setWordBookPage(itemID, pageInfo.page - 1));
     navRow.append(prevBtn);
 
     const pageInput = el("input", {
       type: "text",
+      class: "wt-page-input",
       inputmode: "numeric",
       pattern: "[0-9]*",
       min: "1",
@@ -1060,10 +1110,10 @@ var WordTranslatorModule_pane = {
     });
     navRow.append(jumpBtn);
 
-    const totalLabel = el("span", { style: "font-size:12px;color:GrayText;white-space:nowrap;flex:0 0 auto;" }, [txt(" / " + pageInfo.pageCount)]);
+    const totalLabel = el("span", { class: "wt-page-total", style: "font-size:12px;color:GrayText;white-space:nowrap;flex:0 0 auto;" }, [txt(" / " + pageInfo.pageCount)]);
     navRow.append(totalLabel);
 
-    const nextBtn = el("button", { title: "下一页", "aria-label": "下一页", disabled: pageInfo.page >= pageInfo.pageCount ? "disabled" : null, style: "height:26px;min-width:28px;padding:0 8px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:13px;line-height:24px;color:ButtonText;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;" }, [txt("›")]);
+    const nextBtn = el("button", { class: "wt-page-next", title: "下一页", "aria-label": "下一页", disabled: pageInfo.page >= pageInfo.pageCount ? "disabled" : null, style: "height:26px;min-width:28px;padding:0 8px;border:1px solid ThreeDShadow;background:ButtonFace;border-radius:6px;cursor:pointer;font-size:13px;line-height:24px;color:ButtonText;box-sizing:border-box;flex:0 0 auto;white-space:nowrap;" }, [txt("›")]);
     nextBtn.addEventListener("click", () => this._setWordBookPage(itemID, pageInfo.page + 1));
     navRow.append(nextBtn);
 
@@ -1109,38 +1159,43 @@ var WordTranslatorModule_pane = {
     dictRow.append(dictModeBtn);
 
     header.append(titleRow, controlsRow, dictRow, navRow);
-    body.append(header);
+    return header;
+  },
 
-    // 卡片列表
-    const list = el("div", { class: "wordtranslator-pane-list", style: "display:flex;flex-direction:column;gap:6px;" });
-    const emptyHint = this._getEmptyHint(doc, rawWords, view.search, pageInfo);
-    if (emptyHint) {
-      list.append(emptyHint);
-    } else {
-      pageInfo.indices.forEach((origIdx) => {
-        const w = rawWords[origIdx];
-        list.append(this._renderCard(doc, itemID, origIdx, w));
-      });
+  // Phase 6：卡片列表局部重绘——只更新列表内容与翻页控件状态，不动外壳/搜索框。
+  // 返回 false 表示外壳不存在（调用方应回退全量渲染）。
+  _renderCardList(doc, body, itemID, rawWords, pageInfo) {
+    try {
+      try { this._hideCardMenu(); } catch (e0) {}
+      const list = body && body.querySelector ? body.querySelector(".wordtranslator-pane-list") : null;
+      if (!list) return false;
+      const st = this._getWordBookViewState(itemID);
+      list.replaceChildren();
+      const emptyHint = this._getEmptyHint(doc, rawWords, st.search, pageInfo);
+      if (emptyHint) {
+        list.append(emptyHint);
+      } else {
+        pageInfo.indices.forEach((origIdx) => {
+          const w = rawWords[origIdx];
+          list.append(this._renderCard(doc, itemID, origIdx, w));
+        });
+      }
+      // 同步翻页控件状态（外壳保留，控件值/禁用态跟随最新分页信息）
+      try {
+        const prev = body.querySelector(".wt-page-prev");
+        const next = body.querySelector(".wt-page-next");
+        const input = body.querySelector(".wt-page-input");
+        const total = body.querySelector(".wt-page-total");
+        if (prev) { if (pageInfo.page <= 1) prev.setAttribute("disabled", "disabled"); else prev.removeAttribute("disabled"); }
+        if (next) { if (pageInfo.page >= pageInfo.pageCount) next.setAttribute("disabled", "disabled"); else next.removeAttribute("disabled"); }
+        if (input) input.value = String(pageInfo.page);
+        if (total) total.textContent = " / " + pageInfo.pageCount;
+      } catch (e1) {}
+      return true;
+    } catch (e) {
+      this._debugLog("_renderCardList ERROR: " + (e && (e.stack || e.message || String(e))));
+      return false;
     }
-    body.append(list);
-
-    // CSS 挂在 body 内部；每次重绘刷新，避免升级后仍用旧样式。
-    let style = body.querySelector(".wordtranslator-pane-style");
-    if (!style) {
-      style = doc.createElementNS(HTML_NS, "style");
-      style.className = "wordtranslator-pane-style";
-      body.append(style);
-    }
-    style.textContent = this._getPaneCSS();
-    // 保存当前 pane 的 doc / body 引用，以便点击放大/缩小按钮后只对卡片文本动态调整
-    this._currentPane = { doc: doc, body: body };
-    this._currentPaneContext = {
-      doc,
-      body,
-      itemID,
-      paneUID: body.dataset && body.dataset.wtPaneUid || null,
-    };
-    return true;
   },
 
   _renderCard(doc, itemID, idx, w) {

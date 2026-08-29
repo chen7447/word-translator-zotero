@@ -479,6 +479,88 @@ function section(title) { console.log("\n===== " + title + " ====="); }
     }
   }
 
+  // ============================================================
+  // S8 单词本局部重绘（Phase 6 回归）：迷你假 DOM 验证列表重绘、
+  // 翻页控件同步、快/慢路径分派（快路径不触发全量 pane 刷新）。
+  // ============================================================
+  section("S8 单词本局部重绘（Phase 6 回归）");
+  if (WT) {
+    try {
+      const mkEl = (tag) => ({
+        tag, className: "", style: {}, attrs: {}, children: [], textContent: "",
+        append(...cs) { for (const c of cs) this.children.push(c); },
+        replaceChildren() { this.children = []; },
+        setAttribute(k, v) { this.attrs[k] = v; },
+        removeAttribute(k) { delete this.attrs[k]; },
+        addEventListener() {},
+      });
+      const docFake = {
+        // defaultView：真实 document 必有，快路径据此判定 doc 有效
+        defaultView: {},
+        createElementNS: (ns, tag) => mkEl(tag),
+        createTextNode: (s) => ({ text: String(s) }),
+        querySelectorAll: () => [],
+      };
+      const list = mkEl("#list");
+      const controls = { prev: mkEl("#prev"), next: mkEl("#next"), input: mkEl("#input"), total: mkEl("#total") };
+      const bodyFake = {
+        isConnected: true,
+        dataset: { wtPaneUid: "U1", chromeItemID: "555" },
+        replaceChildren() {},
+        querySelector: (sel) => sel === ".wordtranslator-pane-list" ? list
+          : sel === ".wt-page-prev" ? controls.prev
+          : sel === ".wt-page-next" ? controls.next
+          : sel === ".wt-page-input" ? controls.input
+          : sel === ".wt-page-total" ? controls.total : null,
+      };
+      const rawWords = [];
+      for (let i = 0; i < 25; i++) rawWords.push({ word: "w" + i, translation: "t" + i, pending: false });
+      WT._itemWords = new Map();
+      WT._itemWords.set(555, rawWords);
+      WT._wordBookViewState.set(555, { page: 1, search: "" });
+      const savedData8 = WT._data;
+      WT._data = WT._normalize(null);
+
+      // 1) 列表局部重绘：卡片数量与分页一致，翻页控件同步
+      const ok1 = WT._renderCardList(docFake, bodyFake, 555, rawWords, { indices: [24, 23, 22, 21, 20, 19, 18, 17, 16, 15], page: 3, pageCount: 3, total: 25 });
+      check("列表局部重绘返回 true", ok1 === true);
+      check("渲染卡片数 = indices 数", list.children.length === 10);
+      check("页码/总页控件同步", controls.input.value === "3" && controls.total.textContent === " / 3");
+      // 第 3 页/共 3 页：下页禁用、上页可用
+      check("翻页禁用态正确", controls.next.attrs.disabled === "disabled" && controls.prev.attrs.disabled === undefined);
+
+      // 2) 快路径：上下文+外壳双一致 → 只重绘列表，不触发官方 pane 刷新
+      const savedTrigger = mainSb.Zotero.Notifier.trigger;
+      let refreshCalls = 0;
+      mainSb.Zotero.Notifier.trigger = () => { refreshCalls++; return Promise.resolve(); };
+      WT._paneRefresh = null;
+      WT._currentPaneContext = { doc: docFake, body: bodyFake, itemID: 555, paneUID: "U1" };
+      refreshCalls = 0;
+      WT._applyWordBookView(555, { source: "test-fast" });
+      check("快路径只重绘列表不触发全量刷新", refreshCalls === 0 && list.children.length === 10);
+
+      // 3) forceFull：走全量刷新路径
+      WT._applyWordBookView(555, { source: "test-full", forceFull: true });
+      check("forceFull 走全量刷新路径", refreshCalls >= 1);
+
+      // 4) 条目不一致 → 不走快路径（防 A 外壳渲染 B 卡片）
+      refreshCalls = 0;
+      WT._applyWordBookView(666, { source: "test-cross" });
+      check("跨条目不走快路径", refreshCalls >= 1);
+
+      // 5) 无外壳 → _renderCardList 返回 false
+      const bodyEmpty = { isConnected: true, dataset: {}, querySelector: () => null };
+      check("无外壳时返回 false",
+        WT._renderCardList(docFake, bodyEmpty, 555, rawWords, { indices: [], page: 1, pageCount: 1, total: 25 }) === false);
+
+      mainSb.Zotero.Notifier.trigger = savedTrigger;
+      WT._data = savedData8;
+      WT._itemWords = new Map();
+    } catch (e) {
+      check("S8 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
   console.log("\nRESULT pass=%d fail=%d", pass, fail);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("SMOKE ERROR", e); process.exit(1); });

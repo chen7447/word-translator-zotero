@@ -155,26 +155,17 @@
 
 ---
 
-## Phase 5 — addon.js 模块拆分（纯移动，行为不变）
+## Phase 5 — addon.js 模块拆分（纯移动，行为不变）— 已完成 2026-08-29
 
-**目标**：把 5010 行单体拆为 5 个文件，为 Phase 6-8 的功能开发提供可读的落点。
+拆分以一次性解析脚本机械执行（按成员边界逐行归桶、行数守恒校验，拆后脚本已删）：
+- **addon.js**（794 行）：core 65 成员——对象定义、init/shutdown、存储、更新检查、偏好桥接；
+- **hotkey.js**（1443 行，43 成员）：划词会话、快捷键匹配、reset 监听、临时编辑框、`_addWordForReader`；
+- **xbutton-bridge.js**（601 行，18 成员）：`_xbuttonBridge` 全家、Subprocess/编译/轮询；
+- **wordbook-pane.js**（1319 行，57 成员）：ItemPane section、渲染、分页搜索、卡片操作；
+- **translate.js**（912 行，34 成员）：16 家适配器、`translate`、TTS、词典兜底。
 
-**拆分方案**（保持"单一 WordTranslator 对象 + loadSubScript 注入"模式不变）
-| 新文件 | 内容（按成员整体迁移） | 规模 |
-|---|---|---|
-| `content/scripts/hotkey.js` | 划词会话、快捷键匹配、reset 监听、`_selectionTranslate*` 全家 | ~1500 行 |
-| `content/scripts/xbutton-bridge.js` | `_xbuttonBridge` 全家、Subprocess/编译/轮询 | ~700 行 |
-| `content/scripts/wordbook-pane.js` | ItemPane section 注册、`_renderPaneBody`/`_renderCard`/CSS/分页搜索 | ~1100 行 |
-| `content/scripts/translate.js` | `translate()`、16 家适配器、`_speakRegistry`/TTS | ~1100 行 |
-| `addon.js`（保留） | 对象定义、init/shutdown、存储、更新检查、入口桥接 | ~700 行 |
-
-**机制**：addon.js 先定义对象与核心成员；各模块文件形如
-`var WordTranslatorModule_hotkey = { ...方法组... }; if (typeof WordTranslator !== "undefined") Object.assign(WordTranslator, WordTranslatorModule_hotkey);`
-bootstrap.js 加载顺序：storage → config-schema → dict → **addon → hotkey → xbutton-bridge → wordbook-pane → translate**（addon.js 内不再直接调用 init，仍由 bootstrap 末尾 `Zotero.WordTranslator.init()` 触发——现状已如此）。
-低风险原因：所有方法内部均为 `this.xxx` 引用，assign 到同一对象后 `this` 绑定不变；嵌套对象（`_speakRegistry`、`_translateAdapters`、`_wordBookSearchStrategies`）随所属模块整体迁移，不拆散。
-
-**防回归硬校验**：拆分前用 smoke 记录 `Object.keys(WordTranslator).sort()` 快照，拆分后 diff 必须为空（防同名覆盖/漏迁）。
-**降级预案**：若实测出现隐藏耦合导致行为差异且 24h 内无法定位 → 回退本 Phase，保持单文件，仅补分节注释；Phase 6-8 在单文件上继续（主线不卡死）。
+机制：各模块 `var WordTranslatorModule_X = {...}; Object.assign(WordTranslator, ...)`，bootstrap/smoke 在 addon.js 之后加载（hotkey → bridge → pane → translate），`this` 绑定不变。
+**硬校验**：拆分前导出 217 成员名快照（build/_wt_keys_baseline.json），smoke 断言拆分后集合完全一致（PASS）；node --check ×5 全过；行数守恒 5013 = 778+1433+591+1309+902。降级预案未触发。
 
 ---
 
