@@ -1486,36 +1486,58 @@ var WordTranslatorModule_pane = {
       const scopeTitle = sections.length === 1 ? sections[0].title : "全部条目";
       const baseName = this._exportFileName("单词本-" + scopeTitle + "-" + new Date().toISOString().slice(0, 10)) + "." + ext;
 
-      // 首选 Zotero.FilePicker（Zotero 7 封装 nsIFilePicker）
+      // 首选文件选择器（可自选路径）：Zotero.FilePicker 不可用时直接 XPCOM 实例化
+      // nsIFilePicker 兜底，保证原生"另存为"对话框可用。
       let targetPath = null;
+      let pickerWorked = false;
       try {
+        let fp = null;
         if (typeof Zotero.FilePicker === "function") {
-          const fp = new Zotero.FilePicker();
+          fp = new Zotero.FilePicker();
+        } else if (typeof Components !== "undefined" && Components.classes && Components.interfaces) {
+          fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(Components.interfaces.nsIFilePicker);
+        }
+        if (fp) {
           const win = Zotero.getMainWindow();
-          fp.init(win, "导出单词本", fp.modeSave);
+          const MODE_SAVE = fp.modeSave != null ? fp.modeSave : 0;
+          fp.init(win, "导出单词本", MODE_SAVE);
           fp.defaultString = baseName;
           fp.defaultExtension = ext;
           fp.appendFilter(fmt === "csv" ? "CSV" : fmt === "md" ? "Markdown" : "Anki tsv", "*." + ext);
           const rv = await fp.show();
-          if (rv === fp.returnOK || rv === fp.returnReplace) targetPath = fp.file;
+          pickerWorked = true;
+          const RETURN_OK = fp.returnOK != null ? fp.returnOK : 0;
+          const RETURN_REPLACE = fp.returnReplace != null ? fp.returnReplace : 2;
+          if (rv === RETURN_OK || rv === RETURN_REPLACE) targetPath = fp.file;
         }
       } catch (e1) {
         this._debugLog("export filepicker ERROR: " + (e1 && (e1.message || String(e1))));
       }
 
-      // 兜底：文件选择器不可用/被取消时写数据目录 exports/（不覆盖已有文件，追加时间戳）
+      // 用户在对话框点了取消 → 直接中止，不写任何文件
+      if (pickerWorked && !targetPath) {
+        this._debugLog("export cancelled by user");
+        try { if (Zotero.toast) Zotero.toast("已取消导出"); } catch (e5) {}
+        return false;
+      }
+
+      // 兜底：仅当选择器完全不可用时，写数据目录 exports/（时间戳后缀防覆盖）
+      let usedFallback = false;
+      let exportsDir = "";
       if (!targetPath) {
         const S = Zotero.WordTranslatorStorage;
         const dir = S && S.getDataDirPath ? S.getDataDirPath() : "";
         if (!dir) return false;
         const sep = dir.indexOf("\\") >= 0 ? "\\" : "/";
+        exportsDir = dir + sep + "exports";
         const stamp = String(Date.now()).slice(-6);
-        targetPath = dir + sep + "exports" + sep + this._exportFileName(baseName.replace(/\.\w+$/, "")) + "-" + stamp + "." + ext;
+        targetPath = exportsDir + sep + this._exportFileName(baseName.replace(/\.\w+$/, "")) + "-" + stamp + "." + ext;
         try {
           const dirFile = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-          dirFile.initWithPath(dir + sep + "exports");
+          dirFile.initWithPath(exportsDir);
           if (!dirFile.exists()) dirFile.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
         } catch (e2) {}
+        usedFallback = true;
       }
 
       try {
@@ -1530,6 +1552,10 @@ var WordTranslatorModule_pane = {
         return false;
       }
       try { if (Zotero.toast) Zotero.toast("单词本已导出：" + targetPath, 6000); } catch (e5) {}
+      // 兜底路径没有对话框，写完自动打开 exports 文件夹帮助定位
+      if (usedFallback && exportsDir) {
+        try { if (Zotero.WordTranslator && typeof Zotero.WordTranslator.openInOS === "function") Zotero.WordTranslator.openInOS(exportsDir); } catch (e6) {}
+      }
       this._debugLog("export OK: " + targetPath + " (" + fmt + ", " + sections.length + " section(s))");
       return true;
     } catch (e) {
