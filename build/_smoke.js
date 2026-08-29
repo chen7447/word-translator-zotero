@@ -248,6 +248,61 @@ function section(title) { console.log("\n===== " + title + " ====="); }
     }
   }
 
+  // ============================================================
+  // S5 翻译链路（Phase 2 回归）：提示词构造 / SSE 解析 / pending 状态
+  // ============================================================
+  section("S5 翻译链路（Phase 2 回归）");
+  if (WT) {
+    try {
+      const savedData = WT._data;
+      const savedTranslate = WT._translateWithTimeout;
+
+      // a) _buildPromptParts：split / combined 两模式
+      WT._data = WT._normalize({ promptMode: "split", promptSystem: "SYS", promptUser: "U {{word}}", promptGlobal: "G {{word}}" });
+      const p1 = WT._buildPromptParts("cat");
+      check("prompt split 模式", p1.system === "SYS" && p1.user === "U cat");
+      WT._data = WT._normalize({ promptMode: "combined", promptGlobal: "G {{word}}" });
+      const p2 = WT._buildPromptParts("cat");
+      check("prompt combined 模式", p2.system === "" && p2.user === "G cat");
+      // 缺省时回落 config-schema 默认提示词（不再返回空 system）
+      WT._data = WT._normalize(null);
+      const p3 = WT._buildPromptParts("cat");
+      check("prompt 缺省回落 DEFAULTS", p3.system.length > 10 && p3.user.includes("cat"));
+
+      // b) _parseSSEChunk：单 chunk 多事件 / 跨 chunk 行缓冲 / 残行留缓冲
+      const r1 = WT._parseSSEChunk("", 'data: {"a":1}\n\ndata: [DONE]\n\n');
+      check("SSE 单 chunk 多事件", r1.events.length === 2 && r1.events[0] === '{"a":1}' && r1.events[1] === "[DONE]" && r1.rest === "");
+      const r2 = WT._parseSSEChunk('data: {"cho', 'ices": {"delta": {"content": "hi"}}}\n');
+      check("SSE 跨 chunk 行缓冲拼齐", r2.events.length === 1 && JSON.parse(r2.events[0]).choices.delta.content === "hi");
+      const r3 = WT._parseSSEChunk("data: partial", "");
+      check("SSE 残行留缓冲", r3.events.length === 0 && r3.rest === "data: partial");
+
+      // c) pending 状态布尔化：失败卡重复划词 → 重新翻译；已译卡 → 跳过 API
+      WT._data = WT._normalize({ apis: [] });
+      WT._itemWords = new Map();
+      let translateCalls = 0;
+      WT._translateWithTimeout = function () { translateCalls++; return Promise.reject(new Error("no api")); };
+      const reader = { itemID: 987654 };
+      await WT._addWordForReader(reader, "smokeword");
+      check("首次划词调用翻译一次", translateCalls === 1);
+      await WT._addWordForReader(reader, "smokeword");
+      check("失败卡重复划词触发重译（旧版因字符串误判会跳过）", translateCalls === 2);
+      const cardList = WT._itemWords.get(987654) || [];
+      check("失败卡仍单张且标记失败", cardList.length === 1 && cardList[0].translation === WT.STATUS_FAILED && cardList[0].pending === false);
+      cardList[0].translation = "真实译文";
+      cardList[0].pending = false;
+      await WT._addWordForReader(reader, "smokeword");
+      check("已译卡重复划词跳过 API", translateCalls === 2);
+      check("状态常量存在", WT.STATUS_TRANSLATING === "翻译中…" && WT.STATUS_FAILED === "翻译失败");
+
+      // 还原，避免影响后续 section
+      WT._translateWithTimeout = savedTranslate;
+      WT._data = savedData;
+    } catch (e) {
+      check("S5 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
   console.log("\nRESULT pass=%d fail=%d", pass, fail);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("SMOKE ERROR", e); process.exit(1); });

@@ -9,6 +9,10 @@
 //   4. Item Pane 头部下拉切换当前 API；多 API 配置在偏好面板完成
 
 var WordTranslator = {
+  // 卡片状态占位常量：状态判断一律走 pending 布尔与这两个常量，
+  // 禁止在业务逻辑里散落比较显示字符串（旧版 "翻译中…"/"正在翻译…" 混用导致失败卡重译失效）。
+  STATUS_TRANSLATING: "翻译中…",
+  STATUS_FAILED: "翻译失败",
   hooks: {
     onPrefsLoad(event) {
       WordTranslator.onPrefsLoad(event);
@@ -2008,7 +2012,7 @@ _configVersion: 0,
 
   _formatTempEditText(word, translation) {
     const w = String(word || "").trim();
-    const t = String(translation || "").trim() || "正在翻译…";
+    const t = String(translation || "").trim() || this.STATUS_TRANSLATING;
     return w ? w + " -- " + t : t;
   },
 
@@ -2031,7 +2035,7 @@ _configVersion: 0,
       textarea.className = "wordtranslator-temp-edit";
       textarea.rows = 1;
       textarea.value = this._formatTempEditText(text, translation);
-      textarea.placeholder = "正在翻译…";
+      textarea.placeholder = this.STATUS_TRANSLATING;
       textarea.setAttribute("data-tabstop", "1");
       textarea.style.resize = "both";
       textarea.style.boxSizing = "border-box";
@@ -2117,7 +2121,7 @@ _configVersion: 0,
       const tgt = String(word || "").trim().toLowerCase();
       if (!cur || cur !== tgt) return;
       st.textarea.value = this._formatTempEditText(st.text, translation);
-      st.textarea.placeholder = translation ? "" : "正在翻译…";
+      st.textarea.placeholder = translation ? "" : this.STATUS_TRANSLATING;
       this._resizeTempEditArea(st.textarea);
     } catch (e) {
       this._debugLog("_updateTempEditArea ERROR: " + (e && (e.stack || e.message || String(e))));
@@ -2613,47 +2617,46 @@ _configVersion: 0,
       return c && String(c.word || "").toLowerCase() === normWord.toLowerCase();
     });
     if (existingCard) {
-          const existingTranslation = String(existingCard.translation || "").trim();
-          // 已有真实翻译 → 视为最近使用，不重复调用 API
-          if (existingTranslation && existingTranslation !== "翻译中…") {
-            this._debugLog("_addWordForReader skip (duplicate): " + JSON.stringify(normWord));
-            try {
-              this._updateTempEditArea(normWord, existingTranslation);
-              const existingIndex = list.indexOf(existingCard);
-              if (existingIndex >= 0 && existingIndex !== list.length - 1) {
-                list.splice(existingIndex, 1);
-                list.push(existingCard);
-                this._itemWords.set(Number(paneID), list);
-                this._persistWords();
-                this._applyWordBookView(Number(paneID), { source: "duplicate-reorder" });
-              }
-            } catch (e) {
-              this._debugLog("duplicate recent-use update ERROR: " + (e && (e.message || String(e))));
-            }
-            return;
-          }
-          // 翻译中…残留 → 复用 existingCard 重新翻译
-          this._debugLog("_addWordForReader re-translate (stale '翻译中…'): " + JSON.stringify(normWord));
-          existingCard.translation = "正在翻译…";
-          existingCard.pending = true;
-          // 移动到末尾（最近使用）
+      // 状态判断走 pending 布尔与常量，不再比较显示字符串：
+      // 翻译中残留或上次失败 → 复用卡片重新翻译；已有真实译文 → 视为最近使用，跳过 API。
+      if (existingCard.pending || existingCard.translation === this.STATUS_FAILED) {
+        this._debugLog("_addWordForReader re-translate (pending or failed): " + JSON.stringify(normWord));
+        existingCard.translation = this.STATUS_TRANSLATING;
+        existingCard.pending = true;
+        // 移动到末尾（最近使用）
+        const existingIndex = list.indexOf(existingCard);
+        if (existingIndex >= 0 && existingIndex !== list.length - 1) {
+          list.splice(existingIndex, 1);
+          list.push(existingCard);
+          this._itemWords.set(Number(paneID), list);
+          this._persistWordsForItem(Number(paneID));
+          this._applyWordBookView(Number(paneID), { source: "duplicate-reorder" });
+        }
+        // 复用 existingCard，跳过下面 card 创建
+        var card = existingCard;
+      } else {
+        this._debugLog("_addWordForReader skip (duplicate): " + JSON.stringify(normWord));
+        try {
+          this._updateTempEditArea(normWord, String(existingCard.translation || "").trim());
           const existingIndex = list.indexOf(existingCard);
           if (existingIndex >= 0 && existingIndex !== list.length - 1) {
             list.splice(existingIndex, 1);
             list.push(existingCard);
             this._itemWords.set(Number(paneID), list);
-            this._persistWords();
+            this._persistWordsForItem(Number(paneID));
             this._applyWordBookView(Number(paneID), { source: "duplicate-reorder" });
           }
-          // 复用 existingCard，跳过下面 card 创建
-          // 复用 existingCard，跳过下面 card 创建
-          var card = existingCard;
+        } catch (e) {
+          this._debugLog("duplicate recent-use update ERROR: " + (e && (e.message || String(e))));
         }
+        return;
+      }
+    }
     if (typeof card === "undefined") {
-      var card = { word: normWord, translation: "翻译中…", pending: true };
+      var card = { word: normWord, translation: this.STATUS_TRANSLATING, pending: true };
       list.push(card);
       this._itemWords.set(Number(paneID), list);
-      this._persistWords();
+      this._persistWordsForItem(Number(paneID));
     }
     try {
       const st = this._getWordBookViewState(Number(paneID));
@@ -2680,11 +2683,10 @@ _configVersion: 0,
         } : null)
       );
       const result = await this._translateWithTimeout(word);
-      card.translation = result || "翻译失败";
+      card.translation = result || this.STATUS_FAILED;
       this._debugLog("translate success: " + JSON.stringify(card.translation));
-            this._debugLog("translate success: " + JSON.stringify(card.translation));
     } catch (e) {
-      card.translation = "翻译失败";
+      card.translation = this.STATUS_FAILED;
       this._debugLog("translate ERROR: " + (e && (e.stack || e.message || String(e))));
     } finally {
       card.pending = false;
@@ -2756,7 +2758,7 @@ _configVersion: 0,
     if (!list) return;
     list.splice(index, 1);
     this._itemWords.set(id, list);
-    this._persistWords();
+    this._persistWordsForItem(id);
     this._applyWordBookView(id, { source: "delete" });
   },
 
@@ -2788,7 +2790,7 @@ _configVersion: 0,
     } else {
       delete card.highlight;
     }
-    this._persistWords();
+    this._persistWordsForItem(id);
     this._applyWordBookView(id, { source: "highlight" });
   },
 
@@ -2815,7 +2817,7 @@ _configVersion: 0,
     } else {
       delete card.dictMode;
     }
-    this._persistWords();
+    this._persistWordsForItem(id);
     this._applyWordBookView(id, { source: "dict-mode" });
   },
 
@@ -3083,9 +3085,9 @@ _configVersion: 0,
     const currentCard = list && list[index];
     if (!list || !currentCard || currentCard !== card) return;
 
-    currentCard.translation = "翻译中…";
+    currentCard.translation = this.STATUS_TRANSLATING;
     currentCard.pending = true;
-    this._persistWords();
+    this._persistWordsForItem(id);
     this._applyWordBookView(id, { source: "retry-translate" });
     // P3：重新翻译同时重查词典（切换字典源后 ↻ 生效）
     try {
@@ -3096,10 +3098,10 @@ _configVersion: 0,
 
     try {
       const result = await this._translateWithTimeout(currentCard.word);
-      currentCard.translation = result || "翻译失败";
+      currentCard.translation = result || this.STATUS_FAILED;
       this._debugLog("retry translate success: " + JSON.stringify(currentCard.translation));
     } catch (e) {
-      currentCard.translation = "翻译失败";
+      currentCard.translation = this.STATUS_FAILED;
       this._debugLog("retry translate ERROR: " + (e && (e.stack || e.message || String(e))));
     } finally {
       currentCard.pending = false;
@@ -3282,7 +3284,7 @@ _configVersion: 0,
     const id = Number(itemID);
     this._itemWords.set(id, []);
     this._wordBookViewState.set(id, { page: 1, search: "" }); // 清空后回到第 1 页并清空搜索
-    this._persistWords();
+    this._persistWordsForItem(id);
     this._applyWordBookView(id, { source: "clear" });
   },
 
@@ -3970,7 +3972,7 @@ _configVersion: 0,
       entry = D && D.getCached && D.getCached(w.word);
       hasDict = !!entry;
     } catch (e) {}
-    const transFailed = w.translation === "翻译失败";
+    const transFailed = w.translation === this.STATUS_FAILED;
     // P4：provider 失败（含超时兜底）但有词典 → 用词典内容展示，不受模式开关影响
     const dictFallback = hasDict && transFailed;
     let effMode = "he";
@@ -4191,22 +4193,24 @@ _configVersion: 0,
     }
   },
 
-  _persistWords() {
+  // 只调度单个条目的防抖保存：业务改动点（增删词/高亮/字典模式/重译等）一律走这里。
+  // 旧版 _persistWords 每次改动对全部条目重新调度防抖写入（O(全部条目) 定时器风暴），已移除。
+  _persistWordsForItem(itemID) {
     try {
+      const id = Number(itemID);
+      if (!Number.isFinite(id) || id <= 0) return;
       if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItemDebounced === "function") {
-        for (const [itemID, list] of this._itemWords) {
-          Zotero.WordTranslatorStorage.saveWordsForItemDebounced(itemID, list, 300);
-        }
+        Zotero.WordTranslatorStorage.saveWordsForItemDebounced(id, this._itemWords.get(id) || [], 300);
         return;
       }
-      // 兜底：仍写 prefs
+      // 兜底：仍写 prefs（无 storage 层时全量序列化）
       const obj = {};
-      for (const [itemID, list] of this._itemWords) {
-        obj[String(itemID)] = list;
+      for (const [itemKey, l] of this._itemWords) {
+        obj[String(itemKey)] = l;
       }
       Zotero.Prefs.set(this._wordsPrefKey, JSON.stringify(obj), true);
     } catch (e) {
-      this._debugLog("_persistWords ERROR: " + (e && (e.stack || e.message || String(e))));
+      this._debugLog("_persistWordsForItem ERROR: " + (e && (e.message || String(e))));
     }
   },
 
@@ -4677,11 +4681,15 @@ _configVersion: 0,
       "x-api-key": api.apiKey,
       "anthropic-version": "2023-06-01",
     };
+    // 与 OpenAI 兼容路径共用提示词设置（旧版硬编码提示词，忽略偏好页配置）：
+    // split 模式 → Anthropic 协议的顶层 system 字段；combined 模式 → 全并入 user 消息。
+    const parts = this._buildPromptParts(source);
     const body = {
       model: api.model,
       max_tokens: 1024,
-      messages: [{ role: "user", content: "请将以下英文单词或短语翻译为专业中文，只输出译文：" + source }],
+      messages: [{ role: "user", content: parts.user }],
     };
+    if (parts.system) body.system = parts.system;
     this._debugLog("Claude request URL: " + url + " | model=" + (api.model || "(none)"));
     const resp = await Zotero.HTTP.request("POST", url, { headers, body: JSON.stringify(body), responseType: "json" });
     let responseData = resp.response;
@@ -4877,6 +4885,37 @@ _configVersion: 0,
     return translation;
   },
 
+  // 提示词构造单一来源：OpenAI 兼容路径与 Claude 适配器共用。
+  // split 模式 → { system, user }；combined 模式 → { system: "", user: 全局模板 }。
+  // {{word}} 替换为待翻译文本。
+  _buildPromptParts(text) {
+    const D = WordTranslatorConfig.DEFAULTS;
+    const promptMode = (this._data && this._data.promptMode) || "split";
+    if (promptMode === "combined") {
+      const globalTemplate = (this._data && this._data.promptGlobal) || D.promptGlobal;
+      return { system: "", user: String(globalTemplate || "").split("{{word}}").join(text) };
+    }
+    const system = (this._data && this._data.promptSystem) || D.promptSystem;
+    const userTemplate = (this._data && this._data.promptUser) || D.promptUser;
+    return { system: String(system || ""), user: String(userTemplate || "").split("{{word}}").join(text) };
+  },
+
+  // SSE 流解析（纯函数，可离线单测）：把 buffer+chunk 拆成完整的 "data: ..." 事件行。
+  // 返回 { events: string[], rest: string }；rest 是末尾残缺行，留给下一个 chunk 拼接。
+  // 兼容 \n 与 \r\n 行尾、有无空格的 "data:" 前缀。
+  _parseSSEChunk(buffer, chunk) {
+    const events = [];
+    let rest = String(buffer || "") + String(chunk || "");
+    let idx;
+    while ((idx = rest.indexOf("\n")) >= 0) {
+      const line = rest.slice(0, idx).replace(/\r$/, "");
+      rest = rest.slice(idx + 1);
+      if (line.startsWith("data: ")) events.push(line.slice(6).trim());
+      else if (line.startsWith("data:")) events.push(line.slice(5).trim());
+    }
+    return { events, rest };
+  },
+
   async translate(text, apiOverride, onChunk) {
     const api = apiOverride || this.getActiveApi();
     if (!api) throw new Error("未配置 API（请到设置->单词翻译 中添加 API）");
@@ -4890,23 +4929,10 @@ _configVersion: 0,
       }
       return result;
     }
-    const promptMode = (this._data && this._data.promptMode) || "split";
-    let messages = [];
-    if (promptMode === "combined") {
-      const globalTemplate = (this._data && this._data.promptGlobal) ||
-        "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}";
-      messages = [
-        { role: "user", content: globalTemplate.split("{{word}}").join(text) },
-      ];
-    } else {
-      const system = (this._data && this._data.promptSystem) || "";
-      const userTemplate = (this._data && this._data.promptUser) || "请将以下英文单词或短语翻译为专业中文：{{word}}";
-      const user = userTemplate.split("{{word}}").join(text);
-      messages = [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ];
-    }
+    const parts = this._buildPromptParts(text);
+    const messages = [];
+    if (parts.system) messages.push({ role: "system", content: parts.system });
+    messages.push({ role: "user", content: parts.user });
     const body = {
       model: api.model,
       messages,
@@ -4945,24 +4971,25 @@ _configVersion: 0,
           const reader = fetchResp.body.getReader();
           const decoder = new TextDecoder();
           let accumulated = "";
+          let sseBuffer = "";
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split("\\n");
-            for (const line of lines) {
-              if (line.startsWith("data: ")) {
-                const data = line.slice(6).trim();
-                if (data === "[DONE]") break;
-                try {
-                  const parsed = JSON.parse(data);
-                  const delta = parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content;
-                  if (delta) {
-                    accumulated += delta;
-                    try { onChunk(accumulated); } catch (e) {}
-                  }
-                } catch (e) {}
-              }
+            // 行缓冲解析：跨 chunk 被劈开的 data 行会在下一轮拼齐
+            // （旧版 split("\\n") 拆的是字面量反斜杠且无行缓冲，流式必然解析失败）
+            const sseParsed = this._parseSSEChunk(sseBuffer, chunk);
+            sseBuffer = sseParsed.rest;
+            for (const data of sseParsed.events) {
+              if (data === "[DONE]") break;
+              try {
+                const parsed = JSON.parse(data);
+                const delta = parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content;
+                if (delta) {
+                  accumulated += delta;
+                  try { onChunk(accumulated); } catch (e) {}
+                }
+              } catch (e) {}
             }
           }
           responseData = { choices: [{ message: { content: accumulated } }] };
