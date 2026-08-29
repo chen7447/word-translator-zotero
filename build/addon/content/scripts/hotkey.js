@@ -911,7 +911,10 @@ var WordTranslatorModule_hotkey = {
       };
       try {
         textarea.focus();
-        textarea.select();
+        // Phase 8.x.2（用户截图反馈）：不再整段全选——长译文整片高亮过于扎眼；
+        // 光标置于末尾，便于直接编辑或追加
+        const len = String(textarea.value || "").length;
+        if (typeof textarea.setSelectionRange === "function") textarea.setSelectionRange(len, len);
       } catch (e) {}
       this._bindTempEditAutoClose();
     } catch (e) {
@@ -945,7 +948,29 @@ var WordTranslatorModule_hotkey = {
       const MIN_H = lineHeight * 1.35 + padY;
       const MAX_H = lineHeight * 10 + padY;
       const MIN_W = 180;
-      const MAX_W = Math.max(MIN_W, Math.min(480, (view.innerWidth || 1200) * 0.7));
+      // Phase 8.x.2（用户截图反馈）：宽度预算取四者最小——
+      //   480px 绝对上限、窗口宽的 70%、所在弹窗面板的内容宽、textarea 左缘到窗口右缘的可用空间。
+      // 后两项保证：不撑破下拉面板、不被右侧边栏遮挡。
+      const winW = view.innerWidth || 1200;
+      let panelW = 0;
+      try {
+        let node = textarea.parentElement;
+        while (node && node !== doc.documentElement && node !== doc.body) {
+          const tag = String(node.localName || node.tagName || "").toLowerCase();
+          if (tag === "panel" || tag === "annotation-popup" || tag === "popup") {
+            const pr = node.getBoundingClientRect();
+            if (pr && pr.width > 40) panelW = pr.width - 24; // 面板内容宽粗估值（扣内边距）
+            break;
+          }
+          node = node.parentElement;
+        }
+      } catch (e0) {}
+      let availRight = 0;
+      try {
+        const rect = textarea.getBoundingClientRect();
+        if (rect && rect.left > 0) availRight = Math.max(160, winW - rect.left - 16);
+      } catch (e1) {}
+      const MAX_W = Math.max(MIN_W, Math.min(480, winW * 0.7, panelW || 480, availRight || 480));
       const value = String(textarea.value || "");
 
       const host = doc.body || doc.documentElement;
