@@ -781,9 +781,9 @@
       const resp = await Zotero.HTTP.request("POST", url + "/audio/speech", {
         headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "tts-1",
+          model: (get("wt-tts-api-model").value || "").trim() || "tts-1",
           input: "Hello, this is a test of the text-to-speech system.",
-          voice: "alloy",
+          voice: (get("wt-tts-api-voice").value || "").trim() || "alloy",
           response_format: "mp3",
         }),
         responseType: "arraybuffer",
@@ -1165,6 +1165,22 @@
               return inp;
             })(),
           ]),
+          el("div", { class: "wt-row" }, [
+            el("label", { class: "wt-label", for: "wt-tts-api-model" }, [txt("模型（可选，默认 tts-1）")]),
+            (() => {
+              const inp = el("input", { type: "text", class: "wt-input", id: "wt-tts-api-model", placeholder: "tts-1 / gpt-4o-mini-tts / 自定义" });
+              inp.style.width = "100%";
+              return inp;
+            })(),
+          ]),
+          el("div", { class: "wt-row" }, [
+            el("label", { class: "wt-label", for: "wt-tts-api-voice" }, [txt("音色（可选，默认 alloy）")]),
+            (() => {
+              const inp = el("input", { type: "text", class: "wt-input", id: "wt-tts-api-voice", placeholder: "alloy / nova / shimmer / 自定义" });
+              inp.style.width = "100%";
+              return inp;
+            })(),
+          ]),
           el("div", { class: "wt-row-inline", style: "gap:8px;margin:2px 0;" }, [
             (() => {
               const btn = el("button", { type: "button", class: "wt-btn", id: "wt-tts-api-test", title: "如果成功会朗读句子，否则不朗读。" }, [txt("测试")]);
@@ -1258,6 +1274,14 @@
           ]);
           return l2;
         })(),
+      ]),
+      // Phase 8：{{context}} 选区上下文开关（默认关）
+      el("div", { class: "wt-row-inline", style: "gap:10px;margin-top:4px;" }, [
+        (() => { const c = el("input", { type: "checkbox", id: "wt-prompt-use-context" }); return c; })(),
+        el("label", { for: "wt-prompt-use-context" }, [txt("携带选区上下文（{{context}}）")]),
+      ]),
+      el("p", { class: "wt-hint", style: "margin:-2px 0 6px;" }, [
+        txt("开启后划词会把单词前后的原句作为上下文发给模型，歧义词（如 cell/plant）译文更准；提示词可用 {{context}} 占位符指定位置，未写时自动附加在末尾。开启且有上下文时不走译文缓存（避免跨语境复用）。默认关闭。"),
       ]),
       el("div", { id: "wt-prompt-split-wrap" }, [
         el("div", { class: "wt-row" }, [
@@ -1649,6 +1673,23 @@
     if (pu) pu.addEventListener("input", () => { data.promptUser = pu.value; save(false); });
     const pg = get("wt-prompt-global");
     if (pg) pg.addEventListener("input", () => { data.promptGlobal = pg.value; save(false); });
+    // Phase 8：{{context}} 上下文开关
+    const useContextCb = get("wt-prompt-use-context");
+    if (useContextCb) useContextCb.addEventListener("change", () => {
+      data.promptUseContext = !!useContextCb.checked;
+      save(false);
+    });
+    // Phase 8：TTS 模型/音色即时保存
+    const ttsModelInput = get("wt-tts-api-model");
+    if (ttsModelInput) ttsModelInput.addEventListener("input", () => {
+      data.ttsApiModel = ttsModelInput.value.trim() || "tts-1";
+      save(false);
+    });
+    const ttsVoiceInput = get("wt-tts-api-voice");
+    if (ttsVoiceInput) ttsVoiceInput.addEventListener("input", () => {
+      data.ttsApiVoice = ttsVoiceInput.value.trim() || "alloy";
+      save(false);
+    });
 
     const highlightWrap = get("wt-default-highlight");
     if (highlightWrap) highlightWrap.addEventListener("click", (ev) => {
@@ -1788,6 +1829,9 @@
       if (!key) { setStatus("请输入 API Key"); return; }
       data.ttsApiUrl = url;
       data.ttsApiKey = key;
+      // Phase 8：模型/音色随保存一并写入
+      data.ttsApiModel = (get("wt-tts-api-model").value || "").trim() || "tts-1";
+      data.ttsApiVoice = (get("wt-tts-api-voice").value || "").trim() || "alloy";
       save(true);
       const statusEl = get("wt-tts-api-status");
       if (statusEl) statusEl.textContent = "已保存";
@@ -1859,6 +1903,9 @@
     if (promptSystem) promptSystem.value = data.promptSystem || DEFAULT_PROMPT_SYSTEM;
     if (promptUser) promptUser.value = data.promptUser || DEFAULT_PROMPT_USER;
     if (promptGlobal) promptGlobal.value = data.promptGlobal || DEFAULT_PROMPT_GLOBAL;
+    // Phase 8：{{context}} 开关回显
+    const useContextCb = get("wt-prompt-use-context");
+    if (useContextCb) useContextCb.checked = !!data.promptUseContext;
     applyPromptModeUI();
     applyHotkeyUI();
     applyAddWordHotkeyUI();
@@ -1884,6 +1931,11 @@
     if (ttsApiUrl) ttsApiUrl.value = data.ttsApiUrl || "";
     const ttsApiKey = get("wt-tts-api-key");
     if (ttsApiKey) ttsApiKey.value = data.ttsApiKey || "";
+    // Phase 8：TTS 模型/音色回显
+    const ttsApiModel = get("wt-tts-api-model");
+    if (ttsApiModel) ttsApiModel.value = data.ttsApiModel || "tts-1";
+    const ttsApiVoice = get("wt-tts-api-voice");
+    if (ttsApiVoice) ttsApiVoice.value = data.ttsApiVoice || "alloy";
     const dictEnabled = get("wt-dict-enabled");
     if (dictEnabled) dictEnabled.checked = !!data.dictEnabled;
     const dictProviderSel = get("wt-dict-provider");

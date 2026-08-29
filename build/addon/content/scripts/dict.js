@@ -9,6 +9,7 @@
 var WordTranslatorDict = {
   _cache: {},         // word -> { entry, ts }（内存缓存，渲染热路径只读它）
   _inflight: {},      // word -> Promise（并发去重）
+  _exampleFetching: {}, // word -> true（Phase 8 例句后台补抓去重）
   _loaded: false,
   _persistTimer: null,
   _ecdDict: null,     // 内置离线词库（懒加载，dict-ecdict.json）
@@ -127,12 +128,61 @@ var WordTranslatorDict = {
             entry.word = w; // 统一按原词缓存
             this._cache[w] = { entry, ts: Date.now() };
             this._schedulePersist();
+            // Phase 8：离线命中且无例句 → 后台异步补在线例句（纯离线模式跳过；不阻塞返回）
+            if (name === "ecdict" && cfg.provider !== "ecdict" && (!entry.examples || !entry.examples.length)) {
+              this._fetchExamplesInBackground(w);
+            }
             return entry;
           }
         } catch (e) {} // 静默降级到下一个源
       }
     }
     return null;
+  },
+
+  // Phase 8：离线命中后异步补在线例句（youdao blng_sents_part）。
+  // 不阻塞查询返回；成功则合并进缓存条目并再落盘、重渲染单词本；失败静默（断网保持现状）。
+  async _fetchExamplesInBackground(word) {
+    if (this._exampleFetching[word]) return;
+    this._exampleFetching[word] = true;
+    try {
+      const resp = await Zotero.HTTP.request("GET",
+        "https://dict.youdao.com/jsonapi?q=" + encodeURIComponent(word), {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            Referer: "https://dict.youdao.com/",
+          },
+          responseType: "json",
+          timeout: 5000,
+        });
+      const d = resp && resp.status === 200 ? resp.response : null;
+      const sents = d && d.blng_sents_part && d.blng_sents_part.sents;
+      const examples = [];
+      if (Array.isArray(sents)) {
+        for (const s of sents) {
+          if (!s || !s.sentence) continue;
+          const tr = String(s.sentence_translation || "").trim();
+          examples.push({ sentence: String(s.sentence), translation: tr || undefined });
+          if (examples.length >= 2) break;
+        }
+      }
+      const hit = this._cache[word];
+      if (hit && hit.entry && examples.length) {
+        hit.entry.examples = examples;
+        hit.entry.ts = Date.now();
+        this._schedulePersist();
+        // 例句到达晚于首绘：若主模块在位则重渲染一次当前单词本
+        try {
+          if (Zotero.WordTranslator && typeof Zotero.WordTranslator._rerenderCurrentItemPane === "function") {
+            Zotero.WordTranslator._rerenderCurrentItemPane("dict-examples");
+          }
+        } catch (e0) {}
+      }
+    } catch (e) {
+      // 失败静默：断网/接口失效时保持现状（无例句）
+    } finally {
+      delete this._exampleFetching[word];
+    }
   },
 
   // 懒加载内置离线词库（dict-ecdict.json，构建期生成、随 xpi 打包、零网络）

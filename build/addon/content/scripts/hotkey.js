@@ -1294,6 +1294,33 @@ var WordTranslatorModule_hotkey = {
     }
   },
 
+  // Phase 8：选区上下文提取（{{context}} 提示词素材）。
+  // getSelection 在多层 iframe 下不可信（历史结论），这里仅作可选上下文素材：
+  // 取不到/取错就返回空串，绝不影响触发与翻译主流程。开关关闭时直接返回空串。
+  _getSelectionContext(reader, word) {
+    try {
+      if (!this._data || this._data.promptUseContext !== true) return "";
+      const win = this._getHotkeyTargetWindow(reader);
+      const sel = win && win.getSelection ? String(win.getSelection() || "") : "";
+      const text = sel.replace(/\s+/g, " ").trim();
+      if (!text) return "";
+      const target = String(word || "").trim();
+      const RADIUS = 120;
+      let ctxText;
+      const idx = target ? text.toLowerCase().indexOf(target.toLowerCase()) : -1;
+      if (idx >= 0) {
+        const start = Math.max(0, idx - RADIUS);
+        const end = Math.min(text.length, idx + target.length + RADIUS);
+        ctxText = (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
+      } else {
+        ctxText = text.slice(0, RADIUS * 2) + (text.length > RADIUS * 2 ? "…" : "");
+      }
+      return ctxText.slice(0, 400);
+    } catch (e) {
+      return "";
+    }
+  },
+
   async _addWordForReader(reader, word) {
     this._debugLog(
       "_addWordForReader called: word=" + JSON.stringify(word) +
@@ -1392,8 +1419,12 @@ var WordTranslatorModule_hotkey = {
     } catch (e) {}
 
     try {
+      // Phase 8：选区上下文（开关开启且确有上下文时，绕过词级译文缓存——
+      // 上下文相关的译文不应跨语境复用；无上下文时缓存行为不变）
+      const selContext = this._getSelectionContext(reader, normWord);
+      const useContext = !!(selContext && this._data && this._data.promptUseContext === true);
       // Phase 7：译文缓存命中 → 直接填卡不调 API（跨条目复用；词典行由 _enrichDict 独立补全）
-      const cachedTranslation = this._getCachedTranslation(normWord);
+      const cachedTranslation = useContext ? null : this._getCachedTranslation(normWord);
       let result = null;
       if (cachedTranslation) {
         this._debugLog("translate cache hit: " + JSON.stringify(normWord));
@@ -1404,14 +1435,15 @@ var WordTranslatorModule_hotkey = {
           "translate start: api=" + JSON.stringify(api ? {
             name: api.name, provider: api.provider,
             baseUrl: api.baseUrl, model: api.model, hasKey: !!api.apiKey
-          } : null)
+          } : null) +
+          (useContext ? ", withContext=true, context=" + JSON.stringify(selContext) : "")
         );
         // 流式增量上屏：onChunk 实时更新临时编辑框（逐 chunk 长高，原始设计意图）。
         // OpenAI 兼容路径为真流式；适配器类 provider 拿到完整结果后回调一次。
         result = await this._translateWithTimeout(word, null, (partial) => {
           try { this._updateTempEditArea(normWord, partial); } catch (e0) {}
-        });
-        if (result) this._setCachedTranslation(normWord, result);
+        }, selContext);
+        if (result && !useContext) this._setCachedTranslation(normWord, result);
       }
       card.translation = result || this.STATUS_FAILED;
       this._debugLog("translate success: " + JSON.stringify(card.translation));

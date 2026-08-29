@@ -36,10 +36,14 @@ WordTranslatorConfig.DEFAULTS = {
   promptUser: "请将以下英文单词或短语翻译为专业中文：{{word}}",
   promptGlobal:
     "你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法。如果该词属于特定学科（如生物、化学、医学、信息技术等），优先给出该学科最常用的译法；如该词有多个常用义项，给出当前语境下最相关的一个或两个。只输出翻译结果本身，不要输出任何解释、释义、例句或多余文字。\n请将以下英文单词或短语翻译为专业中文：{{word}}",
+  // Phase 8：划词携带选区上下文（{{context}} 占位符；默认关）
+  promptUseContext: false,
   // TTS 发音
-  ttsEngine: "system",  // "system" | "api" | "dict"(词典原生音频)
-  ttsApiUrl: "",
-  ttsApiKey: "",
+    ttsEngine: "system",  // "system" | "api" | "dict"(词典原生音频)
+    ttsApiUrl: "",
+    ttsApiKey: "",
+    ttsApiModel: "tts-1",   // Phase 8：TTS API 模型可配置
+    ttsApiVoice: "alloy",   // Phase 8：TTS API 音色可配置
   ttsEnabled: true,        // TTS 总开关（关时隐藏单词卡播放按钮）
   // 字典服务
   dictEnabled: true,       // 划词后后台补全 音标/词性/释义/例句/发音
@@ -84,6 +88,9 @@ WordTranslatorConfig.normalize = function (raw) {
     ttsEngine: (raw.ttsEngine === "api" || raw.ttsEngine === "dict") ? raw.ttsEngine : "system",
     ttsApiUrl: typeof raw.ttsApiUrl === "string" ? raw.ttsApiUrl : "",
     ttsApiKey: typeof raw.ttsApiKey === "string" ? raw.ttsApiKey : "",
+    ttsApiModel: (typeof raw.ttsApiModel === "string" && raw.ttsApiModel.trim()) ? raw.ttsApiModel.trim() : "tts-1",
+    ttsApiVoice: (typeof raw.ttsApiVoice === "string" && raw.ttsApiVoice.trim()) ? raw.ttsApiVoice.trim() : "alloy",
+    promptUseContext: typeof raw.promptUseContext === "boolean" ? raw.promptUseContext : false,
     ttsEnabled: typeof raw.ttsEnabled === "boolean" ? raw.ttsEnabled : true,
     dictEnabled: typeof raw.dictEnabled === "boolean" ? raw.dictEnabled : true,
     dictProvider: (raw.dictProvider === "youdao" || raw.dictProvider === "freedict" || raw.dictProvider === "ecdict")

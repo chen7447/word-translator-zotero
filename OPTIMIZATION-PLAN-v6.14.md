@@ -200,22 +200,19 @@
 
 ---
 
-## Phase 8 — 功能 B：{{context}} 上下文提示词 + TTS 配置化 + 离线例句兜底
+## Phase 8 — 功能 B：{{context}} 上下文提示词 + TTS 配置化 + 离线例句兜底 — 已完成 2026-08-29
 
-**1. {{context}} 上下文（默认关）**
-- DEFAULTS 加 `promptUseContext: false`；promptUser/promptGlobal 模板支持 `{{context}}` 占位符；
-- 上下文获取：popup 事件时从 PDF iframe 的 selection range 提取选区前后各 ~120 字符作为素材（**仅作上下文，不作为触发依据**——getSelection 不可信的老结论只针对"触发文本"，这里取不到就传空串，不影响主流程）；
-- `_buildPromptMessages(text, context)` 扩展（Phase 2 已抽出，顺路），Claude 路径同步；
-- 偏好页提示词区加开关 + 说明文案；
-- b 版验收：开启后划 `cell` / `plant` 等歧义词，译文应贴合所在句子。
+**1. {{context}}（默认关）**
+- config-schema：`promptUseContext: false`；hotkey.js `_getSelectionContext(reader, word)`：从 reader iframe `getSelection()` 取选区，定位目标词前后各 ~120 字符（仅作素材不作触发依据，取不到返回空串），上限 400 字符；
+- translate.js `_buildPromptParts(text, context)`：开启时模板 `{{context}}` 替换为上下文；模板未写占位符且确有上下文时自动附加"（该词所在上下文：…）"；关闭/无上下文时占位符清空。`translate(text, apiOverride, onChunk, context)` 透传，Claude 适配器签名加 context 同步支持；
+- 缓存互斥：开启且确有上下文时绕过词级译文缓存（读+写都不走），避免跨语境复用译文；
+- 偏好页提示词区加开关与说明（默认关）。
 
-**2. TTS API 配置化**
-- DEFAULTS 加 `ttsApiModel: "tts-1"`、`ttsApiVoice: "alloy"`；normalize 回填；偏好页 TTS API 区两个输入框；
-- `_speakRegistry.api` 与偏好页 `testTTSApi` 读取配置（当前两处硬编码 tts-1/alloy）。
+**2. TTS 配置化**：DEFAULTS `ttsApiModel: "tts-1"` / `ttsApiVoice: "alloy"`（normalize 回填）；偏好页 TTS API 区两个输入框（即时保存+回显）；`_speakRegistry.api` 与偏好页 testTTSApi 读取配置。
 
-**3. ecdict 离线例句兜底**
-- dict.js：ecdict 命中且无例句时，**entry 先返回**（不阻塞首绘），随后异步拉 youdao `blng_sents_part` 例句，合并进 entry 并更新 dict-cache → 触发一次重渲染；
-- 失败静默；断网时保持现状（无例句）。
+**3. 离线例句兜底**：dict.js `_doLookup` 在 ecdict 命中且无例句且非纯离线模式时，调 `_fetchExamplesInBackground(word)`——后台拉 youdao blng_sents_part，合并进缓存条目并落盘、重渲染当前单词本；失败静默；`_exampleFetching` 并发去重。
+
+**回归断言**（_smoke.js S10）：{{context}} 替换/自动附加/清空三态、开关关闭；TTS 配置保留与缺省；离线例句补抓合并+落盘标记。成员基线 234（+_getSelectionContext）。
 
 ---
 

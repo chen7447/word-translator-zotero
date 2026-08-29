@@ -621,6 +621,55 @@ function section(title) { console.log("\n===== " + title + " ====="); }
     }
   }
 
+  // ============================================================
+  // S10 功能 B（Phase 8 回归）：{{context}} / TTS 配置化 / 离线例句兜底
+  // ============================================================
+  section("S10 功能 B（Phase 8 回归）");
+  if (WT) {
+    try {
+      const savedData10 = WT._data;
+      // 1) {{context}} 三态
+      WT._data = WT._normalize({ promptMode: "split", promptUser: "译 {{word}} 上下文：{{context}}", promptUseContext: true });
+      const p1 = WT._buildPromptParts("cell", "The cell divides rapidly.");
+      check("{{context}} 占位符替换", p1.user === "译 cell 上下文：The cell divides rapidly.");
+      WT._data = WT._normalize({ promptMode: "split", promptUser: "译 {{word}}", promptUseContext: true });
+      const p2 = WT._buildPromptParts("cell", "The cell divides.");
+      check("无占位符时自动附加", p2.user.indexOf("译 cell") === 0 && p2.user.indexOf("该词所在上下文：The cell divides.") >= 0);
+      WT._data = WT._normalize({ promptMode: "split", promptUser: "译 {{word}} 上下文：{{context}}", promptUseContext: true });
+      const p3 = WT._buildPromptParts("cell", "");
+      check("无上下文时占位符清空", p3.user === "译 cell 上下文：");
+      WT._data = WT._normalize({ promptMode: "split", promptUser: "译 {{word}} 上下文：{{context}}", promptUseContext: false });
+      const p4 = WT._buildPromptParts("cell", "The cell divides.");
+      check("开关关闭时占位符清空且不带上下文", p4.user === "译 cell 上下文：");
+      // 2) TTS 配置化 + normalize 回填
+      WT._data = WT._normalize({ ttsApiModel: " gpt-4o-mini-tts ", ttsApiVoice: " nova " });
+      check("TTS 模型/音色可配置", WT._data.ttsApiModel === "gpt-4o-mini-tts" && WT._data.ttsApiVoice === "nova");
+      WT._data = WT._normalize(null);
+      check("TTS 缺省 tts-1/alloy", WT._data.ttsApiModel === "tts-1" && WT._data.ttsApiVoice === "alloy" && WT._data.promptUseContext === false);
+
+      // 3) dict 离线例句后台补抓（stub youdao 响应）
+      const savedRequest = mainSb.Zotero.HTTP.request;
+      let persisted = false;
+      const D = mainSb.Zotero.WordTranslatorDict;
+      mainSb.Zotero.HTTP.request = () => Promise.resolve({ status: 200, response: { blng_sents_part: { sents: [
+        { sentence: "The cell divides.", sentence_translation: "细胞分裂。" },
+        { sentence: "Each cell is small.", sentence_translation: "每个细胞很小。" },
+      ] } } });
+      D._cache = {};
+      D._cache.cell = { entry: { word: "cell", phonetic: { us: "sel" }, meanings: [{ pos: "n", def: "细胞" }], examples: [] }, ts: 1 };
+      D._schedulePersist = function () { persisted = true; };
+      const beforeExamples = D._cache.cell.entry.examples.length;
+      await D._fetchExamplesInBackground("cell");
+      const afterExamples = D._cache.cell.entry.examples.length;
+      check("离线命中补抓在线例句", beforeExamples === 0 && afterExamples === 2 && persisted === true);
+      mainSb.Zotero.HTTP.request = savedRequest;
+
+      WT._data = savedData10;
+    } catch (e) {
+      check("S10 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
   console.log("\nRESULT pass=%d fail=%d", pass, fail);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("SMOKE ERROR", e); process.exit(1); });

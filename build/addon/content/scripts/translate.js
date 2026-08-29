@@ -52,7 +52,13 @@ var WordTranslatorModule_translate = {
       }
       Zotero.HTTP.request("POST", apiUrl.replace(/\/+$/, "") + "/audio/speech", {
         headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "tts-1", input: word, voice: "alloy", response_format: "mp3" }),
+        // Phase 8：模型/音色可配置（偏好页 TTS API 区），缺省回落 tts-1/alloy
+        body: JSON.stringify({
+          model: (this._data && this._data.ttsApiModel) || "tts-1",
+          input: word,
+          voice: (this._data && this._data.ttsApiVoice) || "alloy",
+          response_format: "mp3",
+        }),
         responseType: "arraybuffer",
       }).then((resp) => {
         if (resp.status !== 200) {
@@ -127,12 +133,12 @@ var WordTranslatorModule_translate = {
     catch (e) { this._debugLog("speak dispatch ERROR: " + (e && (e.message || e))); }
   },
 
-  async _translateWithTimeout(text, timeoutMs, onChunk) {
+  async _translateWithTimeout(text, timeoutMs, onChunk, context) {
     const timeout = timeoutMs || 15000;
     let timer = null;
     try {
       return await Promise.race([
-        this.translate(text, null, onChunk),
+        this.translate(text, null, onChunk, context),
         new Promise((_, reject) => {
           timer = setTimeout(() => reject(new Error("翻译超时（" + Math.round(timeout / 1000) + " 秒未返回）")), timeout);
         }),
@@ -536,7 +542,7 @@ var WordTranslatorModule_translate = {
     return translation;
   },
 
-  async _translateClaude(text, api) {
+  async _translateClaude(text, api, context) {
     const source = String(text || "").trim();
     if (!source) throw new Error("Claude 翻译文本为空");
     const base = (api.baseUrl || "https://api.anthropic.com/v1").trim().replace(/\/+$/, "");
@@ -548,7 +554,7 @@ var WordTranslatorModule_translate = {
     };
     // 与 OpenAI 兼容路径共用提示词设置（旧版硬编码提示词，忽略偏好页配置）：
     // split 模式 → Anthropic 协议的顶层 system 字段；combined 模式 → 全并入 user 消息。
-    const parts = this._buildPromptParts(source);
+    const parts = this._buildPromptParts(source, context);
     const body = {
       model: api.model,
       max_tokens: 1024,
@@ -753,16 +759,28 @@ var WordTranslatorModule_translate = {
   // 提示词构造单一来源：OpenAI 兼容路径与 Claude 适配器共用。
   // split 模式 → { system, user }；combined 模式 → { system: "", user: 全局模板 }。
   // {{word}} 替换为待翻译文本。
-  _buildPromptParts(text) {
+  // Phase 8 {{context}}：promptUseContext 开启时，模板中的 {{context}} 替换为选区上下文；
+  // 模板未写 {{context}} 且确有上下文时自动附加在末尾；关闭或无上下文时 {{context}} 清空。
+  _buildPromptParts(text, context) {
     const D = WordTranslatorConfig.DEFAULTS;
     const promptMode = (this._data && this._data.promptMode) || "split";
+    const useCtx = !!(this._data && this._data.promptUseContext === true);
+    const ctxText = String(context || "").trim();
+    const applyContext = (user) => {
+      let u = String(user || "");
+      if (useCtx && ctxText) {
+        if (u.indexOf("{{context}}") >= 0) u = u.split("{{context}}").join(ctxText);
+        else u += "\n（该词所在上下文：" + ctxText + "）";
+      }
+      return u.split("{{context}}").join("");
+    };
     if (promptMode === "combined") {
       const globalTemplate = (this._data && this._data.promptGlobal) || D.promptGlobal;
-      return { system: "", user: String(globalTemplate || "").split("{{word}}").join(text) };
+      return { system: "", user: applyContext(String(globalTemplate || "")).split("{{word}}").join(text) };
     }
     const system = (this._data && this._data.promptSystem) || D.promptSystem;
     const userTemplate = (this._data && this._data.promptUser) || D.promptUser;
-    return { system: String(system || ""), user: String(userTemplate || "").split("{{word}}").join(text) };
+    return { system: String(system || ""), user: applyContext(String(userTemplate || "")).split("{{word}}").join(text) };
   },
 
   // SSE 流解析（纯函数，可离线单测）：把 buffer+chunk 拆成完整的 "data: ..." 事件行。
@@ -781,20 +799,21 @@ var WordTranslatorModule_translate = {
     return { events, rest };
   },
 
-  async translate(text, apiOverride, onChunk) {
+  async translate(text, apiOverride, onChunk, context) {
     const api = apiOverride || this.getActiveApi();
     if (!api) throw new Error("未配置 API（请到设置->单词翻译 中添加 API）");
     const provider = api.provider || (api.type === "deepseek" ? "deepseek" : "openai");
     const adapterMethod = this._translateAdapters.get(provider);
     if (adapterMethod && typeof this[adapterMethod] === "function") {
       // 非流式适配器（Google/DeepL 等）一次性返回；若传入 onChunk 则返回后回调一次完整结果
-      const result = await this[adapterMethod](text, api);
+      // （第 4 参 context 仅被 Claude 适配器使用，其余适配器忽略）
+      const result = await this[adapterMethod](text, api, context);
       if (typeof onChunk === "function" && result) {
         try { onChunk(String(result)); } catch (e) {}
       }
       return result;
     }
-    const parts = this._buildPromptParts(text);
+    const parts = this._buildPromptParts(text, context);
     const messages = [];
     if (parts.system) messages.push({ role: "system", content: parts.system });
     messages.push({ role: "user", content: parts.user });
