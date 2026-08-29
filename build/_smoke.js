@@ -336,6 +336,42 @@ function section(title) { console.log("\n===== " + title + " ====="); }
     }
   }
 
+  // ============================================================
+  // S6 渲染 body 解析（Phase 2.6 回归）：陈旧 body 防护
+  // 历史 bug：插件重载后旧 body 仍连接，渲染/刷新全部写进不可见旧 body，
+  // 表现为"保存成功但面板不显示、刷新无反应、重启恢复"。
+  // ============================================================
+  section("S6 渲染 body 解析（Phase 2.6 回归）");
+  if (WT) {
+    try {
+      const mkBody = (uid, connected) => ({ dataset: { wtPaneUid: uid }, isConnected: connected });
+      WT._latestPaneUID = "NEW";
+      const docFake = { querySelectorAll: () => [mkBody("OLD", true), mkBody("NEW", true)] };
+      const b1 = WT._resolvePaneBody(docFake, mkBody("OLD", true));
+      check("陈旧 context body 切换到最新 uid", b1 && b1.dataset.wtPaneUid === "NEW");
+      const b2 = WT._resolvePaneBody(docFake, mkBody("NEW", true));
+      check("最新 body 保持不变", b2 && b2.dataset.wtPaneUid === "NEW");
+      const b3 = WT._resolvePaneBody(docFake, mkBody("OLD", false));
+      check("context 断连时选最新", b3 && b3.dataset.wtPaneUid === "NEW");
+
+      WT._latestPaneUID = null;
+      const doc2 = { querySelectorAll: () => [mkBody("ONLY", true)] };
+      const b4 = WT._resolvePaneBody(doc2, mkBody("OTHER", false));
+      check("无 latest 时回退第一个连接 body", b4 && b4.dataset.wtPaneUid === "ONLY");
+      const b5 = WT._resolvePaneBody(null, mkBody("X", false));
+      check("全不可用时返回 null", b5 === null);
+
+      // 单 body 正常路径：context body 直接使用（不产生切换日志）
+      WT._latestPaneUID = "SAME";
+      const doc3 = { querySelectorAll: () => [mkBody("SAME", true)] };
+      const b6 = WT._resolvePaneBody(doc3, mkBody("SAME", true));
+      check("单 body 正常路径", b6 && b6.dataset.wtPaneUid === "SAME");
+      WT._latestPaneUID = null;
+    } catch (e) {
+      check("S6 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
   console.log("\nRESULT pass=%d fail=%d", pass, fail);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("SMOKE ERROR", e); process.exit(1); });

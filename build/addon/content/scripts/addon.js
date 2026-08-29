@@ -55,6 +55,7 @@ var WordTranslator = {
   _sortMode: "reverse", // 排序模式：forward | reverse | alpha
   _panelUIDs: new Map(),      // itemID -> { paneUID, refresh }
   _paneKey: null,
+  _latestPaneUID: null,
   _prefWindowLoaded: false,
   _paneRefresh: null,
   _selectionFirstPending: null,
@@ -2739,6 +2740,31 @@ _configVersion: 0,
     }
   },
 
+  // 渲染目标 body 解析（统一入口）：
+  //   1) 上下文 body 已连接且就是最新初始化的 → 直接用；
+  //   2) 存在最新 uid 的连接 body（如重载后旧 body 残留）→ 切换过去并留诊断日志；
+  //   3) 兜底取文档中第一个连接的 .wordtranslator-pane-body。
+  // 多个 body 同时连接时一律打日志——这是排查"保存成功但面板不显示"类问题的关键证据。
+  _resolvePaneBody(doc, contextBody) {
+    let body = contextBody && contextBody.isConnected ? contextBody : null;
+    let all = [];
+    try { all = doc && doc.querySelectorAll ? Array.from(doc.querySelectorAll(".wordtranslator-pane-body")) : []; } catch (e) {}
+    if (all.length > 1) {
+      this._debugLog("_resolvePaneBody: " + all.length + " connected pane bodies (uids=" +
+        all.map((b) => (b && b.dataset && b.dataset.wtPaneUid) || "?").join(",") + ")");
+    }
+    const latestUID = this._latestPaneUID;
+    if (latestUID) {
+      const latest = all.find((b) => b && b.dataset && b.dataset.wtPaneUid === latestUID);
+      if (latest && latest.isConnected && latest !== body) {
+        this._debugLog("_resolvePaneBody: stale body switched to latest uid=" + latestUID);
+        body = latest;
+      }
+    }
+    if (!body && all.length) body = all[0];
+    return body || null;
+  },
+
   _refreshItemPane(itemID, viewInfo) {
     const id = Number(itemID);
     if (!Number.isFinite(id) || id <= 0) return;
@@ -2747,9 +2773,7 @@ _configVersion: 0,
       const pane = this._currentPaneContext;
       const win = Zotero.getMainWindow();
       const doc = pane && pane.doc && pane.doc.defaultView ? pane.doc : (win && win.document);
-      const body = pane && pane.body && pane.body.isConnected
-        ? pane.body
-        : (doc && doc.querySelector && doc.querySelector(".wordtranslator-pane-body"));
+      const body = this._resolvePaneBody(doc, pane && pane.body);
       if (!body || !this._renderPaneBody) return;
       this._currentPaneContext = {
         doc,
@@ -3322,6 +3346,9 @@ _configVersion: 0,
           try {
             this._paneRefresh = refresh;
             const uid = Zotero.Utilities.randomString(8);
+            // 记录最新初始化的 body uid：渲染选 body 时优先选它，
+            // 防止把卡片渲染进插件重载后仍连接的旧 body（"保存成功但面板不显示、刷新无反应"）。
+            this._latestPaneUID = uid;
             if (body) {
               body.dataset.wtPaneUid = uid;
               body._wtRefresh = refresh;

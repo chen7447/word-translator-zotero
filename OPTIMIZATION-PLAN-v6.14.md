@@ -96,6 +96,23 @@
 
 ---
 
+## Phase 2.6 — 渲染 body 陈旧防护（用户报告的一次性 bug 追加，2026-08-29）
+
+**现象**：划词后本地数据保存成功，但单词本不显示卡片；点刷新等重渲染按钮无反应；重启 Zotero 恢复；此后关开/重装插件均无法复现（时序竞态）。
+
+**排查结论**：b2~b4 未改动渲染链路（git diff 核对，51 个 hunk 全在翻译/热键/存储函数）。症状与代码注释自认的已知问题吻合——"插件重载后旧 body 可能仍连接"（registerItemPaneSection.onInit 注释）。定位到两个机制：
+- **机制 A（已修）**：`_refreshItemPane` 选渲染 body 时，信任 `_currentPaneContext.body`（仅判 isConnected）或取文档中**第一个** `.wordtranslator-pane-body`，都不校验是否为最新初始化的 body；上下文被旧 body 污染后，渲染与刷新全部写进不可见旧 body。
+- **机制 B（待证据）**：重载竞态下新旧插件实例短暂并存，显示的 pane 属于旧实例（`_itemWords` 停留在旧状态）。无法从代码侧单方面排除，若复现需依赖日志。
+
+**改动点**（addon.js）
+1. `onInit` 记录 `this._latestPaneUID`（最新初始化 body 的 uid）；
+2. 新增统一入口 `_resolvePaneBody(doc, contextBody)`：context body 最新 → 直接用；存在更新 uid 的连接 body → 切换并打日志；兜底取第一个连接 body；**多个 body 同时连接时一律输出诊断日志**（uid 列表），未来 issue 可据此一锤定音；
+3. `_refreshItemPane` 改用该入口。
+
+**回归断言**（_smoke.js S6）：陈旧 context 切换 / 最新保持 / 断连选最新 / 无 latest 回退 / 全不可用返回 null / 单 body 正常路径。
+
+---
+
 ## Phase 3 — 存储与生命周期（bug #3 孤儿文件 / #4 flushAll 语义）
 
 **改动点**
