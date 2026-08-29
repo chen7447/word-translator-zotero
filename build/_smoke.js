@@ -62,6 +62,11 @@ function section(title) { console.log("\n===== " + title + " ====="); }
     "content/scripts/config-schema.js",
     "content/scripts/dict.js",
     "content/scripts/addon.js",
+    // Phase 5 拆分模块：与 bootstrap.js 加载顺序一致
+    "content/scripts/hotkey.js",
+    "content/scripts/xbutton-bridge.js",
+    "content/scripts/wordbook-pane.js",
+    "content/scripts/translate.js",
   ];
   let loadError = null;
   try {
@@ -99,6 +104,16 @@ function section(title) { console.log("\n===== " + title + " ====="); }
   check("dict 关键方法齐全", !!(Z.WordTranslatorDict && [
     "lookup", "getCached", "loadCache", "flush", "_chain",
   ].every((m) => typeof Z.WordTranslatorDict[m] === "function")));
+
+  // Phase 5 拆分校验：成员集合与拆分前基线完全一致（纯移动，无增无减）
+  try {
+    const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, "_wt_keys_baseline.json"), "utf8"));
+    const now = Object.keys(WT).sort();
+    check("成员集合与拆分基线一致", JSON.stringify(now) === JSON.stringify(baseline),
+      "diff: " + now.filter((k) => !baseline.includes(k)).concat(baseline.filter((k) => !now.includes(k))).join(","));
+  } catch (e) {
+    check("成员集合基线校验", false, e && e.message);
+  }
 
   // ============================================================
   // S2 config-schema：单源默认值 + normalize 幂等

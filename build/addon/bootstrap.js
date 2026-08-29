@@ -90,6 +90,13 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
 
     Services.scriptloader.loadSubScript(rootURI + "content/scripts/addon.js", ctx);
 
+    // 拆分后的功能模块（Phase 5，纯移动）：必须晚于 addon.js——它们 Object.assign
+    // 到 addon.js 定义的 WordTranslator 对象上，this 绑定与拆分前完全一致。
+    Services.scriptloader.loadSubScript(rootURI + "content/scripts/hotkey.js", ctx);
+    Services.scriptloader.loadSubScript(rootURI + "content/scripts/xbutton-bridge.js", ctx);
+    Services.scriptloader.loadSubScript(rootURI + "content/scripts/wordbook-pane.js", ctx);
+    Services.scriptloader.loadSubScript(rootURI + "content/scripts/translate.js", ctx);
+
     if (Zotero.WordTranslator) {
       Zotero.WordTranslator.addonID = id;
       Zotero.WordTranslator.addonRoot = rootURI;
