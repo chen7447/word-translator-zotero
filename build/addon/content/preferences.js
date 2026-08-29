@@ -1413,7 +1413,7 @@
           (() => { const b = el("button", { type: "button", class: "wt-btn wt-btn-mini", id: "wt-open-prefs-dir2" }, [txt("浏览")]); return b; })(),
         ]),
       ]),
-      el("p", { class: "wt-hint" }, [txt("以上数据存在 Zotero 配置目录下的 wordtranslator 文件夹中（本地缓存，不会上传）。点击“浏览”可打开该文件夹。")]),
+      el("p", { class: "wt-hint" }, [txt("以上数据存在 Zotero 配置目录下的 wordtranslator 文件夹中（本地缓存，不会上传）。点击“浏览”可打开该文件夹。注意：api-config.json 以明文保存 API Key，请勿把该文件或其备份分享给他人。")]),
     ]);
 
     const aboutVer = typeof Zotero.WordTranslator !== "undefined" && Zotero.WordTranslator.addonVersion

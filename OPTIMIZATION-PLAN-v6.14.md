@@ -230,17 +230,27 @@
 
 **验收**：node --check + smoke 101/101（成员基线 235，+_fitTempEditArea）；真实 DOM 行为（滚动条场景、面板宽度收敛）由 b 版人工验证。
 
+### Phase 8.2 — 宽度预算修正（用户截图反馈，b14）
+
+截图显示：长译文把 textarea 撑到 480px 上限，冲出下拉面板、被右侧边栏遮挡，且创建时整段全选导致整片高亮刺眼。修正：
+1. 宽度上限改为**四者最小**：480px 绝对上限 / 窗口宽 70% / **所在弹窗面板内容宽**（向上遍历找 panel/annotation-popup，宽-24）/ **textarea 左缘到窗口右缘的可用空间**——不再撑破面板、不被侧边栏遮挡；
+2. 创建时不再 `select()` 整段全选，光标置于末尾便于编辑。
+
 ---
 
-## Phase 9 — 文档、声明与发布
+## Phase 9 — 文档、声明与发布 — 文档部分已完成 2026-08-29
 
-1. README 增补三段声明：
-   - **鼠标侧键桥接**：运行时经 PowerShell 编译 bridge-hook.exe，可能触发杀软提示（放行即可）；钩子为系统级，开启期间鼠标侧键在所有应用中由本插件接管；
-   - **非官方接口**：Google / DeepLX 为逆向接口，随时可能失效（偏好页已有标注，README 同步）；
-   - **界面语言**：当前仅中文。
-2. 偏好页"保存目录"区加一句提示：`api-config.json` 含 API Key 明文，请勿把该文件分享给他人。
-3. 定版 6.14.0：manifest.json 版本 → 根目录与 build/addon 两份 update.json 同步新增条目 → 正式版 release（按既有 release 命名规范）。
-4. 合并 `optimize/v6.14` 回 main（等指令执行）。
+**分支盘点结论（合并前必读）**：仓库共 9 个分支。`feature/powertoys-installer` 与 `optimize/p0~p5`（7 个）已完全并入 main，无独有提交，属陈旧指针可随时清理；**`feature/deeplx` 是唯一未并入的分支**（领先 main 3 个提交），但其核心功能 deeplx-selfhosted 已存在于 main/6.14（实现逐字一致），其余内容为历史产物快照（旧版 xpi 存档、api_request_lab 探测文档、参考插件解包），**保留作存档、不并入**（并入会带入 4.6 万行历史内容与大量冲突）；是否删除由用户决定。
+
+**已完成（b15）**：
+1. README 新增「安全与兼容性说明」：① 侧键桥接——PowerShell 编译可能触发杀软提示（误报，放行）、系统级钩子在所有应用中接管侧键；② 非官方接口（Google/DeepL 免费）随时可能失效；③ 界面仅中文。存储树补全 dict-cache/translation-cache/exports。
+2. README 数据隐私与偏好页「保存目录」区：注明 `api-config.json` 明文保存 API Key，勿外分享。
+
+**待用户确认后执行（发布边界）**：
+1. b 系列实测通过 → 定版提交（manifest 6.14.0，去掉 b 后缀）+ 打 `wordtranslator-6.14.0.xpi`；
+2. 合并 `optimize/v6.14` 回 main（快进合并，main 无分叉）；
+3. 推送 + 按 GitHub Release 规范发布（标题「单词翻译 for Zotero 6.14.0」、tag v6.14.0、附 xpi）；
+4. 同步两份 update.json 新增 6.14.0 条目（**必须在 release 发布后**，否则更新源会指向不存在的下载链接）。
 
 ---
 
