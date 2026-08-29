@@ -99,7 +99,6 @@ namespace WordTranslatorBridge
         static IntPtr _hookId = IntPtr.Zero;
         static int _parentPid = 0;
         static string _eventFile = null;   // optional fallback file (may be empty)
-        static string _startedFile = null; // marker file: created when hook is installed, deleted on exit
         static volatile bool _running = true;
         static uint _mainThreadId;
         static object _sync = new object();
@@ -255,10 +254,6 @@ namespace WordTranslatorBridge
                 {
                     _eventFile = args[++i];
                 }
-                else if (args[i] == "-StartedFile" && i + 1 < args.Length)
-                {
-                    _startedFile = args[++i];
-                }
                 else if (args[i] == "-ParentPid" && i + 1 < args.Length)
                 {
                     int pid;
@@ -303,22 +298,6 @@ namespace WordTranslatorBridge
 
             lock (_sync) { _hookInstalled = true; }
 
-            // Write the started-marker file: proves SetWindowsHookEx succeeded.
-            // bridge.ps1 polls for this file to know the hook is healthy
-            // (it cannot rely on the child process exit code, which is null
-            //  when launched via PowerShell Start-Process).
-            if (!string.IsNullOrEmpty(_startedFile))
-            {
-                try
-                {
-                    File.WriteAllText(_startedFile,
-                        "{\"pid\":" + Process.GetCurrentProcess().Id +
-                        ",\"ts\":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "}",
-                        new UTF8Encoding(false));
-                }
-                catch { }
-            }
-
             EmitInit(true, "");
 
             // ---- parent watcher thread ----
@@ -339,12 +318,6 @@ namespace WordTranslatorBridge
 
             // ---- cleanup ----
             CleanupHook();
-
-            // Remove the started marker
-            if (!string.IsNullOrEmpty(_startedFile))
-            {
-                try { File.Delete(_startedFile); } catch { }
-            }
 
             return 0;
         }

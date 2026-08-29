@@ -92,6 +92,18 @@ var WordTranslator = {
   },
   _subprocessModule: null,   // Subprocess 模块缓存
 
+  // —— 运行时状态（此前散落未声明，Phase 4 集中归位）——
+  _lastAutoWord: null,        // 自动翻译去重：上一个自动添加的文本
+  _lastAutoTime: 0,
+  _lastHotkeyKey: null,       // 快捷键触发去重键
+  _lastHotkeyTime: 0,
+  _lastPrefsRefresh: 0,       // 配置读盘节流时间戳
+  _lastPrefsMtime: 0,         // 配置文件 mtime 缓存
+  _readerTabHandlers: null,   // Reader 事件监听记录
+  _hotkeyToolbarHandler: null,// renderToolbar 监听（快捷键绑定入口）
+  _notifierID: null,          // 条目删除观察者 id
+  _prefsPaneID: null,         // 偏好面板注册 id
+
   _getProfileDir() {
     try {
       if (Zotero && Zotero.Profile && Zotero.Profile.dir) {
@@ -148,7 +160,11 @@ var WordTranslator = {
     }
   },
 
-  _debugLog(msg) {
+  _debugLog(msg, level) {
+    const isTrace = level === "trace";
+    // trace 级 = 高频触发路径（划词 popup/按键/鼠标事件等），仅在偏好页显式开启
+    // debugLog 时输出，避免错误控制台被高频日志刷屏；普通日志维持始终输出。
+    if (isTrace && !(this._data && this._data.debugLog)) return;
     try { Zotero.debug("[WordTranslator] " + msg); } catch (e) {}
     // 写文件受 debugLog 开关控制（默认关）；Zotero.debug 控制台输出不受影响
     if (this._data && this._data.debugLog) {
@@ -176,14 +192,14 @@ var WordTranslator = {
         proc.run(false, ["/c", "start", "", url], 4);
         return true;
       } catch (e) { this._debugLog("_openExternalURL cmd start ERROR: " + (e && e.message || e)); }
-      // 最后退耀：nsIExternalProtocolService（可能弹权限框，仅作兜底）
+      // 最后兜底：nsIExternalProtocolService（可能弹权限框，仅作兜底）
       try {
         const io = Services.io;
         const eps = Components.classes["@mozilla.org/uriloader/external-protocol-service;1"].getService(Components.interfaces.nsIExternalProtocolService);
         eps.loadURI(io.newURI(url, null, null), null);
         return true;
       } catch (e) { this._debugLog("_openExternalURL ext-protocol ERROR: " + (e && e.message || e)); }
-      // 最后退耀：复制到剪贴板
+      // 最后兜底：复制到剪贴板
       try {
         const clipboardHelper = Components.classes["@mozilla.org/widget/clipboardhelper;1"].getService(Components.interfaces.nsIClipboardHelper);
         clipboardHelper.copyString(url);
@@ -387,10 +403,6 @@ _configVersion: 0,
         if (Zotero.Notifier && this._notifierID) Zotero.Notifier.unregisterObserver(this._notifierID);
       } catch (e) {}
       try {
-        if (Zotero.Notifier && this._hotkeyNotifierID) Zotero.Notifier.unregisterObserver(this._hotkeyNotifierID);
-      } catch (e) {}
-      this._hotkeyNotifierID = null;
-      try {
         if (this._paneKey && Zotero.ItemPaneManager && Zotero.ItemPaneManager.unregisterSection) {
           Zotero.ItemPaneManager.unregisterSection(this._paneKey);
         }
@@ -407,7 +419,10 @@ _configVersion: 0,
       // 停止鼠标侧键桥接
       try { this._stopXButtonBridge(); } catch (e2) {}
       this._initialized = false;
-    } catch (e) {}
+    } catch (e) {
+      // shutdown 整体异常必须有痕：这里的静默失败曾让注销死代码藏了几十个版本
+      try { Zotero.debug("[WordTranslator] shutdown ERROR: " + (e && (e.stack || e.message || String(e)))); } catch (e2) {}
+    }
   },
 
   async init() {
@@ -742,7 +757,7 @@ _configVersion: 0,
         source: source || "unknown",
         time: Date.now(),
       };
-      this._debugLog("selection translate global keydown: spec=" + this._selectionTranslateKeyState.spec + ", source=" + source);
+      this._debugLog("selection translate global keydown: spec=" + this._selectionTranslateKeyState.spec + ", source=" + source, "trace");
       return true;
     } catch (e) {
       this._debugLog("selection translate global keydown ERROR: " + (e && (e.message || String(e))));
@@ -755,7 +770,7 @@ _configVersion: 0,
       const state = this._selectionTranslateKeyState;
       if (!state || !state.active) return false;
       if (!this._matchConfiguredSelectionTranslateKeyUp(ev, state.spec)) return false;
-      this._debugLog("selection translate global keyup: spec=" + state.spec + ", source=" + source);
+      this._debugLog("selection translate global keyup: spec=" + state.spec + ", source=" + source, "trace");
       this._selectionTranslateKeyState = null;
       this._clearSelectionTranslateState("global keyup");
       return true;
@@ -970,23 +985,6 @@ _configVersion: 0,
       this._debugLog("_writeTextFile ERROR: " + (e && (e.message || e)));
       return false;
     }
-  },
-
-  _readTextFile(path) {
-    try {
-      const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-      f.initWithPath(path);
-      if (!f.exists() || f.fileSize === 0) return "";
-      const stream = Components.classes["@mozilla.org/network/file-input-stream;1"].createInstance(Components.interfaces.nsIFileInputStream);
-      stream.init(f, 0x01, 0, 0); // readonly
-      const conv = Components.classes["@mozilla.org/intl/converter-input-stream;1"].createInstance(Components.interfaces.nsIConverterInputStream);
-      conv.init(stream, "UTF-8", 4096, 0xFFFD);
-      var str = {}, len = 0, content = "";
-      while ((len = conv.readString(4096, str)) > 0) { content += str.value; }
-      conv.close();
-      stream.close();
-      return content;
-    } catch (e) { return ""; }
   },
 
   async _startXButtonBridge() {
@@ -1734,7 +1732,7 @@ _configVersion: 0,
           session.selectionText = "";
           session.selectionTime = Date.now();
           session.popupContext = null;
-          self._debugLog("selection translate mouse down: reader=" + (session.reader && session.reader.tabID));
+          self._debugLog("selection translate mouse down: reader=" + (session.reader && session.reader.tabID), "trace");
         } catch (e) {}
       });
       winAdd("mouseup", function (ev) {
@@ -1750,7 +1748,7 @@ _configVersion: 0,
           session.selectionReady = true;
           session.selectionTime = Date.now();
           if (self._selectionTranslateKeyState) self._selectionTranslateKeyState.time = Date.now();
-          self._debugLog("selection translate mouse up: result=selection-ready, text=" + JSON.stringify((session.popupContext && session.popupContext.text) || ""));
+          self._debugLog("selection translate mouse up: result=selection-ready, text=" + JSON.stringify((session.popupContext && session.popupContext.text) || ""), "trace");
           self._tryTriggerSelectionTranslate(session);
         } catch (e) {}
       });
@@ -1850,14 +1848,15 @@ _configVersion: 0,
       this._debugLog(
         "popup event: reader.itemID=" + (reader && reader.itemID) +
         ", tabID=" + (reader && reader.tabID) +
-        ", keys=" + Object.keys(reader || {}).slice(0, 12).join(",")
+        ", keys=" + Object.keys(reader || {}).slice(0, 12).join(","),
+        "trace"
       );
     } catch (e) {}
     if (!this._data || !this._data.enabled) return;
     const text = (params && params.annotation && params.annotation.text || "").trim();
-    this._debugLog("popup text: len=" + text.length + ", text=" + JSON.stringify(text.slice(0, 120)));
+    this._debugLog("popup text: len=" + text.length + ", text=" + JSON.stringify(text.slice(0, 120)), "trace");
     if (!text) {
-      this._debugLog("popup skip: no selected text");
+      this._debugLog("popup skip: no selected text", "trace");
       return;
     }
     const selectionCheck = this._isSelectionTextAllowed(text);
@@ -1866,7 +1865,8 @@ _configVersion: 0,
         "popup skip: reason=" + selectionCheck.reason +
         ", mode=" + (selectionCheck.mode || "word") +
         ", len=" + text.length +
-        ", max=" + (selectionCheck.maxLength || 0)
+        ", max=" + (selectionCheck.maxLength || 0),
+        "trace"
       );
       return;
     }
@@ -2236,41 +2236,6 @@ _configVersion: 0,
     }
   },
 
-  // 匹配键盘事件（keydown/keyup）与自定义快捷键 spec
-  _matchCustomHotkeyKey(ev, spec) {
-    try {
-      const p = this._parseHotkeySpec(spec);
-      if (!p || p.mouse) return false;
-      const k = (ev.key || "").toLowerCase();
-      if (!k || k === "control" || k === "shift" || k === "alt" || k === "meta") return false;
-      if (k !== p.key) return false;
-      return (
-        (!!ev.ctrlKey) === (!!p.ctrl) &&
-        (!!ev.altKey) === (!!p.alt) &&
-        (!!ev.shiftKey) === (!!p.shift)
-      );
-    } catch (e) {
-      return false;
-    }
-  },
-
-  // 匹配"事件时记录的修饰键状态"与自定义键盘 spec（不依赖 ev 对象，供 popup 路径使用）
-  _matchCustomHotkeyMods(p, mods) {
-    try {
-      if (!p || !mods) return false;
-      if (p.key === "ctrl") return !!mods.ctrl && !mods.alt && !mods.shift;
-      if (p.key === "alt") return !!mods.alt && !mods.ctrl && !mods.shift;
-      if (p.key === "shift") return !!mods.shift && !mods.ctrl && !mods.alt;
-      return (
-        (!!mods.ctrl) === (!!p.ctrl) &&
-        (!!mods.alt) === (!!p.alt) &&
-        (!!mods.shift) === (!!p.shift)
-      );
-    } catch (e) {
-      return false;
-    }
-  },
-
   // 当前是否启用自定义快捷键（划词翻译）
   _customHotkeyActive() {
     return !!(this._data && this._data.customHotkeyEnabled && this._data.customHotkey);
@@ -2399,57 +2364,9 @@ _configVersion: 0,
     return String(text || "").replace(/\s+/g, " ").trim();
   },
 
-  _matchSelectionTranslateKey(ev) {
-    try {
-      const p = this._parseHotkeySpec(this._data && this._data.customHotkey);
-      if (!p) return false;
-      const key = String(ev && ev.key || "").toLowerCase();
-      if (!key) return false;
-      if (p.key === "ctrl") return key === "control" || key === "ctrl";
-      if (p.key === "alt") return key === "alt";
-      if (p.key === "shift") return key === "shift";
-      if (key !== String(p.key || "").toLowerCase()) return false;
-      return (
-        (!!ev.ctrlKey) === (!!p.ctrl) &&
-        (!!ev.altKey) === (!!p.alt) &&
-        (!!ev.shiftKey) === (!!p.shift)
-      );
-    } catch (e) {
-      return false;
-    }
-  },
-
   _clearSelectionTranslateState(reason) {
     this._debugLog("clear selection translate state: " + (reason || "unknown"));
     this._selectionTranslateSession = null;
-  },
-
-  _hasFreshPendingSelection() {
-    const pending = this._selectionFirstPending;
-    return !!(pending && pending.text && Date.now() - (pending.time || 0) <= 10000);
-  },
-
-  // 判断 keyup 释放的是否为当前划词翻译快捷键的按键本体
-  _isSelectionHotkeyKeyUp(ev) {
-    try {
-      if (!ev) return false;
-      const key = String(ev.key || "").toLowerCase();
-      if (this._customHotkeyActive()) {
-        const p = this._parseHotkeySpec(this._data.customHotkey);
-        if (!p || p.mouse) return false;
-        if (p.key === "alt") return key === "alt";
-        if (p.key === "ctrl") return key === "control" || key === "ctrl";
-        if (p.key === "shift") return key === "shift";
-        return key === String(p.key || "").toLowerCase();
-      }
-      const mod = (this._data && this._data.hotkeyModifier) || "ctrl";
-      if (mod === "alt") return key === "alt";
-      if (mod === "ctrl") return key === "control" || key === "ctrl";
-      if (mod === "ctrl+alt") return key === "control" || key === "ctrl" || key === "alt";
-      return false;
-    } catch (e) {
-      return false;
-    }
   },
 
   // 当前选中文本是否有有效“先选区后按绑定键”缓存
@@ -2458,13 +2375,6 @@ _configVersion: 0,
     if (!pending || !pending.text) return null;
     if (Date.now() - (pending.time || 0) > 10000) return null;
     return pending;
-  },
-
-  _inSelectionHotkeySession() {
-    const session = this._selectionTranslateSession;
-    if (!session) return false;
-    const sourceText = this._normalizeSelectionTranslateText(session.selectionText);
-    return !!(session.active && sourceText && session.selectionReady && !session.mouseDown);
   },
 
   // 先选区后按“添加单词”快捷键的适配器；不属于快捷键-划词翻译会话。
@@ -2707,7 +2617,7 @@ _configVersion: 0,
       card.pending = false;
       this._flushAndPersistWords();
       this._applyWordBookView(Number(paneID), { source: "translate-finish" });
-      // Beta: udpate temp edit area
+      // Beta: update temp edit area
       try {
         this._updateTempEditArea(normWord, card.translation);
       } catch (e) {
@@ -4233,8 +4143,7 @@ _configVersion: 0,
     return apis[i] || apis[0] || null;
   },
 
-  // ---- 单词本紓存与读取（跨插件升级/重启）----
-  // ---- 单词本存储与读取（存于 profile/wordtranslator/words/ 下，按条目分文件）---
+  // ---- 单词本存储与读取（存于 profile/wordtranslator/words/ 下，按条目分文件；跨插件升级/重启）----
   _wordsPrefKey: "extensions.zotero.wordtranslator.words",
 
   _loadWordsFromDisk() {
@@ -4324,23 +4233,6 @@ _configVersion: 0,
     } catch (e) {
       this._debugLog("_flushAndPersistWords ERROR: " + (e && (e.stack || e.message || String(e))));
     }
-  },
-
-  _clearAllWordsStore() {
-    try {
-      if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.flushAll === "function") {
-        Zotero.WordTranslatorStorage.flushAll();
-      }
-      for (const itemID of Array.from(this._itemWords.keys())) {
-        try {
-          if (Zotero.WordTranslatorStorage && typeof Zotero.WordTranslatorStorage.saveWordsForItem === "function") {
-            Zotero.WordTranslatorStorage.saveWordsForItem(itemID, []);
-          }
-        } catch (e) {}
-      }
-    } catch (e) {}
-    try { Zotero.Prefs.clear && Zotero.Prefs.clear(this._wordsPrefKey, true); } catch (e) {}
-    this._itemWords = new Map();
   },
 
   _saveData() {

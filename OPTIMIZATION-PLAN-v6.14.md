@@ -142,18 +142,16 @@
 
 ---
 
-## Phase 4 — 全库清理（纯减法，无行为变更）
+## Phase 4 — 全库清理（纯减法，无行为变更）— 已完成 2026-08-29
 
-**改动点**
-1. 删除 7 个死方法（grep 实测全库仅定义无调用）：`_matchSelectionTranslateKey`、`_isSelectionHotkeyKeyUp`、`_inSelectionHotkeySession`、`_matchCustomHotkeyMods`、`_matchCustomHotkeyKey`、`_readTextFile`、`_clearAllWordsStore`。
-2. bridge-hook.cs：删除 `-StartedFile` 参数与 `_startedFile` 相关逻辑（addon.js 从不传该参数）；exe 会在下次启动时重新编译，无兼容问题。
-3. 未声明即用的实例属性集中到对象头部声明：`_lastAutoWord`、`_lastAutoTime`、`_lastHotkeyKey`、`_lastHotkeyTime`、`_lastPrefsRefresh`、`_lastPrefsMtime`、`_readerTabHandlers`、`_hotkeyToolbarHandler`、`_notifierID`、`_prefsPaneID` 等（逐个 grep 归位）。
-4. 编辑残留清理：重复注释（2645-2646）、重复 debugLog（2681-2682）、"udpate"→"update" 等 typo。
-5. 空 catch 治理（addon.js / storage.js / dict.js / preferences.js）：按"吞错必须有痕"原则——兜底路径改 `_debugLog(...)`；确实可忽略的加 `// intentionally ignored` 注释。不做大规模重构，只加日志。
-6. `_debugLog` 降噪分级：`_debugLog(msg, level)`，`level === "trace"`（keydown/mousedown/popup 等高频触发类日志）仅在 debugLog 开启时输出到控制台；普通日志维持现状。
+1. 删除死方法 **8 个**（计划 7 个 + 执行中发现的 `_hasFreshPendingSelection`）：`_matchSelectionTranslateKey`、`_isSelectionHotkeyKeyUp`、`_inSelectionHotkeySession`、`_matchCustomHotkeyMods`、`_matchCustomHotkeyKey`、`_readTextFile`、`_clearAllWordsStore`、`_hasFreshPendingSelection`；shutdown 中 `_hotkeyNotifierID` 死注销块删除。
+2. bridge-hook.cs：`-StartedFile` 参数与 `_startedFile` 相关逻辑（声明/解析/写标记/删除）全部移除。
+3. 未声明实例属性集中到对象头部声明：`_lastAutoWord/_lastAutoTime/_lastHotkeyKey/_lastHotkeyTime/_lastPrefsRefresh/_lastPrefsMtime/_readerTabHandlers/_hotkeyToolbarHandler/_notifierID/_prefsPaneID`。
+4. 编辑残留清理："退耀"×2、"udpate"→"update"、`紓存` 重复注释头合并。
+5. 空 catch 治理（最终决策）：shutdown 外层 catch 加日志（此处静默失败曾让死代码藏数十版本）；其余 123 处均为**单语句可选操作守卫**（预读/可选绑定/清理尝试），判定为有意为之保留——逐个加日志属纯噪音，详见 commit。
+6. `_debugLog(msg, level)` 分级：`level === "trace"` 的高频路径（划词 popup ×4、全局 keydown/keyup、reader mousedown/mouseup ×2）仅在偏好页开启 debugLog 时输出，普通日志维持始终输出。
 
-**验收**：`node --check` 全过；smoke 通过；grep 七个死方法名计数为 0。
-**风险**：低。b 版重点回归快捷键与划词（Phase 4 涉及其文件区域最多）。
+**验收**：node --check ×7 全过；smoke 74/74；死方法 grep 全为 0。
 
 ---
 
