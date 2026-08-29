@@ -1556,7 +1556,6 @@ _configVersion: 0,
     try {
       if (!win) return;
       if (win.__wordTranslatorHotkeyResetBound) return;
-      win.__wordTranslatorHotkeyResetBound = true;
       const self = this;
       if (!this._hotkeyResetHandlers) this._hotkeyResetHandlers = new Map();
       const relRecs = [];
@@ -1579,12 +1578,11 @@ _configVersion: 0,
         const isMainWindow = role === "main-window";
 
         // 主窗口 blur 表示 Zotero 整体失去激活（例如 Alt+Tab）。此时
-        // Windows 可能不会再把匹配的 keyup 发回 Zotero，必须主动清除
-          self._clearSelectionTranslateState("main-window-deactivate");
-          self._debugLog("selection translate main window blur: global state cleared");
+        // Windows 可能不会再把匹配的 keyup 发回 Zotero，必须主动清除。
+        if (reason === "window blur" && isMainWindow) {
           self._selectionTranslateKeyState = null;
-                    self._clearSelectionTranslateState("main-window-deactivate");
-                    self._debugLog("selection translate main window blur: global state cleared");
+          self._clearSelectionTranslateState("main-window-blur");
+          self._debugLog("selection translate main window blur: global state cleared");
           return;
         }
 
@@ -1603,11 +1601,11 @@ _configVersion: 0,
               ", selectionReady=" + session.selectionReady +
               ", popupContext=" + !!session.popupContext
             );
+            return;
+          }
+          self._selectionTranslateKeyState = null;
           self._clearSelectionTranslateState("main-window-deactivate");
           self._debugLog("selection translate main window deactivation: global state cleared");
-          self._selectionTranslateKeyState = null;
-                    self._clearSelectionTranslateState("main-window-deactivate");
-                    self._debugLog("selection translate main window deactivation: global state cleared");
           return;
         }
 
@@ -1650,8 +1648,13 @@ _configVersion: 0,
       if (role === "main-window") {
         relAdd("deactivate", () => clear("window deactivate"));
       }
+      // 全部监听注册成功后才写入 handlers 表并标记“已绑定”：
+      // 旧版先标记后注册，注册路径一旦抛错（被 catch 吞掉）监听永不重建。
       this._hotkeyResetHandlers.set(win, relRecs);
-    } catch (e) {}
+      win.__wordTranslatorHotkeyResetBound = true;
+    } catch (e) {
+      this._debugLog("bindHotkeyResetListener ERROR: " + (e && (e.stack || e.message || String(e))));
+    }
   },
 
   _bindHotkeyModifierListener(win, reader) {

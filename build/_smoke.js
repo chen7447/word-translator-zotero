@@ -177,6 +177,77 @@ function section(title) { console.log("\n===== " + title + " ====="); }
     check("S3 执行无异常", false, e && (e.stack || e.message));
   }
 
+  // ============================================================
+  // S4 热键 reset 监听注册与语义（Phase 1 回归）
+  // 历史 bug：_bindHotkeyResetListener 因编辑事故从未注册成功，
+  // 但窗口已被先标记“已绑定”，监听永不重建。
+  // ============================================================
+  section("S4 热键 reset 监听（Phase 1 回归）");
+  if (WT) {
+    try {
+      const makeWin = () => {
+        const calls = [];
+        return {
+          calls,
+          addEventListener(type, fn, cap) { calls.push({ type, fn, cap }); },
+          removeEventListener() {},
+        };
+      };
+      const H = WT._hotkeyResetHandlers = new Map();
+
+      // 1) main-window：注册 blur/pagehide/deactivate 三个监听
+      const w1 = makeWin();
+      WT._bindHotkeyResetListener(w1, "main-window");
+      check("main-window 注册 3 个监听",
+        w1.calls.length === 3 && w1.calls.map((c) => c.type).join(",") === "blur,pagehide,deactivate");
+      check("注册成功后才标记已绑定", w1.__wordTranslatorHotkeyResetBound === true && H.get(w1).length === 3);
+
+      // 2) blur → 清空会话与 keyState
+      WT._selectionTranslateKeyState = null;
+      WT._selectionTranslateSession = { active: true, mouseDown: false, selectionReady: false, popupContext: null };
+      H.get(w1)[0].handler();
+      check("main-window blur 清空会话", WT._selectionTranslateSession === null && WT._selectionTranslateKeyState === null);
+
+      // 3) 连续划词保护：keyState 活跃且近期 → blur 不清
+      WT._selectionTranslateKeyState = { active: true, time: Date.now() };
+      WT._selectionTranslateSession = { active: true, mouseDown: false, selectionReady: false, popupContext: null };
+      H.get(w1)[0].handler();
+      check("keyState 活跃+近期时 blur 不清（连续划词保护）", !!(WT._selectionTranslateSession && WT._selectionTranslateSession.active));
+
+      // 4) deactivate + 进行中会话 → 保留
+      WT._selectionTranslateKeyState = null;
+      WT._selectionTranslateSession = { active: true, mouseDown: true, selectionReady: false, popupContext: null };
+      H.get(w1)[2].handler();
+      check("deactivate 有 pending 会话时保留", !!(WT._selectionTranslateSession && WT._selectionTranslateSession.active));
+
+      // 5) deactivate 无 pending → 清空
+      WT._selectionTranslateSession = { active: true, mouseDown: false, selectionReady: false, popupContext: null };
+      H.get(w1)[2].handler();
+      check("deactivate 无 pending 时清空", WT._selectionTranslateSession === null);
+
+      // 6) reader-window：不注册 deactivate；blur + pending 选区 → 保留
+      const w2 = makeWin();
+      WT._bindHotkeyResetListener(w2, "reader-window");
+      check("reader-window 只注册 blur/pagehide",
+        w2.calls.length === 2 && w2.calls.map((c) => c.type).join(",") === "blur,pagehide");
+      WT._selectionTranslateSession = { active: true, mouseDown: false, selectionReady: true, popupContext: { text: "w" } };
+      H.get(w2)[0].handler();
+      check("reader blur 有 pending 选区时保留", !!(WT._selectionTranslateSession && WT._selectionTranslateSession.active));
+
+      // 7) reader blur 无 pending 无 keyState → 清空
+      WT._selectionTranslateSession = { active: true, mouseDown: false, selectionReady: false, popupContext: null };
+      H.get(w2)[0].handler();
+      check("reader blur 无 pending 无 keyState 时清空", WT._selectionTranslateSession === null);
+
+      // 8) 注册抛错时不标记“已绑定”，允许下次重试
+      const w3 = { addEventListener() { throw new Error("boom"); }, removeEventListener() {} };
+      WT._bindHotkeyResetListener(w3, "main-window");
+      check("注册失败不标记已绑定", !w3.__wordTranslatorHotkeyResetBound);
+    } catch (e) {
+      check("S4 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
   console.log("\nRESULT pass=%d fail=%d", pass, fail);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("SMOKE ERROR", e); process.exit(1); });
