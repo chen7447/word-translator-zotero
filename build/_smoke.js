@@ -372,6 +372,98 @@ function section(title) { console.log("\n===== " + title + " ====="); }
     }
   }
 
+  // ============================================================
+  // S7 存储与生命周期（Phase 3 回归）：防抖/flush 语义 + 条目删除清理
+  // 历史 bug：flushAll 只取消定时器不落盘（名为 flush 实为 cancel）；
+  // 无 Notifier 观察者，条目删除后 words/<id>.json 孤儿文件永久堆积。
+  // ============================================================
+  section("S7 storage 防抖与 flush（Phase 3 回归）");
+  try {
+    const stSb = {
+      console,
+      setTimeout, clearTimeout,
+      Zotero: { debug: () => {}, Profile: { dir: null } },
+      Components: { classes: {}, interfaces: {} },
+    };
+    stSb.window = stSb;
+    vm.createContext(stSb);
+    vm.runInContext(readAddon("content/scripts/storage.js"), stSb, { filename: "storage.js" });
+    const ST = stSb.WordTranslatorStorage;
+
+    const saved = [];
+    ST.saveWordsForItem = function (itemID, list) { saved.push([itemID, list]); return true; };
+
+    ST.saveWordsForItemDebounced(1, ["a"], 30);
+    ST.saveWordsForItemDebounced(1, ["a", "b"], 30);
+    ST.saveWordsForItemDebounced(2, ["c"], 30);
+    check("防抖待写记录 pending（同键合并）", Object.keys(ST._pendingSaves).length === 2 && ST._pendingSaves["1"].list.length === 2);
+    check("防抖窗口内未落盘", saved.length === 0);
+
+    ST.flushAll();
+    check("flushAll 真正落盘并清空 pending/timers",
+      saved.length === 2 && Object.keys(ST._pendingSaves).length === 0 && Object.keys(ST._timers).length === 0);
+    const entry1 = saved.find((s) => s[0] === 1);
+    const entry2 = saved.find((s) => s[0] === 2);
+    check("flushAll 落盘内容正确", !!entry1 && entry1[1].length === 2 && !!entry2 && entry2[1].length === 1);
+
+    saved.length = 0;
+    ST.saveWordsForItemDebounced(3, ["d"], 10);
+    await new Promise((r) => setTimeout(r, 60));
+    check("防抖到期自动落盘并清 pending", saved.length === 1 && saved[0][0] === 3 && !ST._pendingSaves["3"]);
+
+    saved.length = 0;
+    ST.saveWordsForItemDebounced(4, ["e"], 10);
+    ST.cancelPendingSave(4);
+    await new Promise((r) => setTimeout(r, 40));
+    check("cancelPendingSave 后不落盘", saved.length === 0 && !ST._pendingSaves["4"]);
+
+    ST.flushAll();
+    check("flushAll 空转安全", saved.length === 0);
+  } catch (e) {
+    check("S7 storage 执行无异常", false, e && (e.stack || e.message));
+  }
+
+  section("S7b 条目删除观察（Phase 3 回归）");
+  if (WT) {
+    try {
+      let capturedObserver = null;
+      const savedNotifier = mainSb.Zotero.Notifier;
+      mainSb.Zotero.Notifier = {
+        registerObserver: (obs) => { capturedObserver = obs; return "test-id"; },
+        unregisterObserver: () => {},
+        trigger: () => Promise.resolve(),
+      };
+      const deletedFiles = [];
+      const savedStorage = mainSb.Zotero.WordTranslatorStorage;
+      mainSb.Zotero.WordTranslatorStorage = {
+        cancelPendingSave: () => {},
+        saveWordsForItem: (id, list) => { if (!list || !list.length) deletedFiles.push(id); return true; },
+      };
+
+      WT._notifierID = null;
+      WT.registerItemNotifier();
+      check("notifier 注册成功且捕获 observer", WT._notifierID === "test-id" && !!capturedObserver);
+
+      WT._itemWords = new Map([[777, [{ word: "x", translation: "y", pending: false }]]]);
+      capturedObserver.notify("delete", "item", [777]);
+      check("delete 事件清理内存并删文件", !WT._itemWords.has(777) && deletedFiles.includes(777));
+
+      WT._itemWords.set(777, [{ word: "x", translation: "y", pending: false }]);
+      capturedObserver.notify("trash", "item", [777]);
+      check("trash 事件不清理（回收站可恢复）", WT._itemWords.has(777));
+      capturedObserver.notify("delete", "search", [777]);
+      check("非 item 类型忽略", WT._itemWords.has(777));
+      capturedObserver.notify("delete", "item", [999888]);
+      check("无关条目 id 忽略", WT._itemWords.has(777));
+
+      WT._itemWords.delete(777);
+      mainSb.Zotero.Notifier = savedNotifier;
+      mainSb.Zotero.WordTranslatorStorage = savedStorage;
+    } catch (e) {
+      check("S7b 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
   console.log("\nRESULT pass=%d fail=%d", pass, fail);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("SMOKE ERROR", e); process.exit(1); });

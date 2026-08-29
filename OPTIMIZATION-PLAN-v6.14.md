@@ -132,6 +132,16 @@
 
 ---
 
+## Phase 3 — 存储与生命周期（bug #3 孤儿文件 / #4 flushAll 语义）— 已完成 2026-08-29
+
+1. **Notifier observer**：init 中 `registerItemNotifier()` 注册 `["item"]` 观察者（id 存 `_notifierID`，shutdown 现有注销代码从此生效）；`delete`+`item` 事件逐 id 清理 `_itemWords` / `_wordBookViewState` / 搜索定时器 / `words/<id>.json`（空列表写入 = 删文件）。trash 故意不处理（回收站可恢复）；删除附件 id 不命中 pane id 键，天然安全。删除前先 `cancelPendingSave` 防止防抖定时器把已删文件写回。
+2. **flushAll 真语义**（storage.js）：`saveWordsForItemDebounced` 把待写数据记入 `_pendingSaves`；`flushAll` 清定时器后逐条立即落盘并清空 pending；新增 `cancelPendingSave(itemID)`。
+3. shutdown 顺序复核：`_flushAndPersistWords`（内部先 flushAll 真落盘 + 全量写双保险）→ dict.flush() → 注销 observer/section/pane——现有顺序即正确，未改动。
+
+**回归断言**（_smoke.js S7/S7b）：防抖合并、窗口内不落盘、flushAll 真落盘并清空、到期自动落盘、cancelPendingSave 丢弃、空转安全；observer 注册捕获、delete 清理、trash 忽略、非 item 类型忽略、无关 id 忽略。真实文件 IO 由 b 版人工验证。
+
+---
+
 ## Phase 4 — 全库清理（纯减法，无行为变更）
 
 **改动点**

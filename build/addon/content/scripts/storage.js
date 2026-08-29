@@ -11,6 +11,7 @@ var WordTranslatorStorage = {
   _root: null,          // nsIFile: <profile>/wordtranslator
   _wordsDir: null,      // nsIFile: <profile>/wordtranslator/words
   _timers: {},          // 防抖定时器 map
+  _pendingSaves: {},    // key -> { itemID, list }：防抖窗口内待写数据（flushAll 真正落盘的依据）
   _tmpCleanDone: false, // 启动后只清理一次 .tmp 残留
 
   // ---------- 路径 ----------
@@ -287,22 +288,46 @@ var WordTranslatorStorage = {
     }
   },
 
-  // 防抖保存：多个连续调用合并为一次落盘
+  // 防抖保存：多个连续调用合并为一次落盘；待写数据记入 _pendingSaves，
+  // 保证 flushAll() 能把窗口内数据真正落盘（旧版 flushAll 只取消定时器，名为 flush 实为 cancel）。
   saveWordsForItemDebounced(itemID, list, delayMs) {
     const key = String(itemID);
     const self = this;
+    if (!this._pendingSaves) this._pendingSaves = {};
+    this._pendingSaves[key] = { itemID: itemID, list: list };
     if (this._timers[key]) clearTimeout(this._timers[key]);
     this._timers[key] = setTimeout(function () {
       delete self._timers[key];
-      self.saveWordsForItem(itemID, list);
+      const pending = self._pendingSaves ? self._pendingSaves[key] : null;
+      if (self._pendingSaves) delete self._pendingSaves[key];
+      self.saveWordsForItem(itemID, pending ? pending.list : list);
     }, delayMs || 300);
   },
 
+  // 立即落盘所有防抖窗口内待写数据并清空定时器；无待写时空转安全。
   flushAll() {
     for (const key of Object.keys(this._timers || {})) {
-      clearTimeout(this._timers[key]);
+      try { clearTimeout(this._timers[key]); } catch (e) {}
       delete this._timers[key];
     }
+    if (!this._pendingSaves) return;
+    for (const key of Object.keys(this._pendingSaves)) {
+      const entry = this._pendingSaves[key];
+      delete this._pendingSaves[key];
+      if (entry) {
+        try { this.saveWordsForItem(entry.itemID, entry.list); } catch (e) {}
+      }
+    }
+  },
+
+  // 取消某条目的防抖待写（删除条目时调用，防止防抖定时器随后把已删文件写回来）
+  cancelPendingSave(itemID) {
+    const key = String(itemID);
+    if (this._timers[key]) {
+      try { clearTimeout(this._timers[key]); } catch (e) {}
+      delete this._timers[key];
+    }
+    if (this._pendingSaves) delete this._pendingSaves[key];
   },
 
   // ---------- 字典缓存（按词全局一份，LRU 上限） ----------

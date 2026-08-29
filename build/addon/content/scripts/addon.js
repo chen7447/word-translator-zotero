@@ -493,6 +493,8 @@ _configVersion: 0,
       await this.registerPrefsWindow();
       this.registerReaderEvents();
       this.registerItemPaneSection();
+      // 条目删除观察：同步清理 words/<id>.json 防孤儿文件（Phase 3）
+      this.registerItemNotifier();
       // 鼠标侧键桥接启动：延迟 500ms 确保 Zotero 子系统就绪（升级场景下 Subprocess
       // 等模块可能尚未加载），失败后自动重试 2 次，共 3 次机会。
       const selfBridge = this;
@@ -3401,6 +3403,53 @@ _configVersion: 0,
       this._debugLog("registerItemPaneSection key=" + key);
     } catch (e) {
       this._debugLog("registerItemPaneSection ERROR: " + (e && (e.stack || e.message || e)));
+    }
+  },
+
+  // ---------- 条目生命周期观察（Phase 3） ----------
+  // 条目被彻底删除时同步清理其单词本：内存 Map + words/<id>.json 文件 + 界面状态，
+  // 防止孤儿文件无限堆积（旧版无 Notifier 观察者，shutdown 里的注销是死代码）。
+  // 只处理 delete；trash（移入回收站）故意不处理——回收站恢复后单词本仍在，是合理行为。
+  // 单词数据按 pane id（父条目）存：删除附件 id 不会命中 _itemWords 的键，天然安全。
+  registerItemNotifier() {
+    try {
+      if (!Zotero.Notifier || typeof Zotero.Notifier.registerObserver !== "function") return;
+      if (this._notifierID) return;
+      const self = this;
+      this._notifierID = Zotero.Notifier.registerObserver({
+        notify: function (event, type, ids) {
+          try {
+            if (event !== "delete" || type !== "item" || !Array.isArray(ids) || !ids.length) return;
+            let cleaned = 0;
+            for (const rawID of ids) {
+              const id = Number(rawID);
+              if (!Number.isFinite(id) || id <= 0) continue;
+              if (!self._itemWords.has(id)) continue;
+              self._itemWords.delete(id);
+              try { if (self._wordBookViewState) self._wordBookViewState.delete(id); } catch (e0) {}
+              try {
+                const timer = self._wordBookSearchTimers && self._wordBookSearchTimers.get(id);
+                if (timer) {
+                  clearTimeout(timer);
+                  self._wordBookSearchTimers.delete(id);
+                }
+              } catch (e1) {}
+              try {
+                const S = Zotero.WordTranslatorStorage;
+                if (S && typeof S.cancelPendingSave === "function") S.cancelPendingSave(id);
+                if (S && typeof S.saveWordsForItem === "function") S.saveWordsForItem(id, []); // 删除 words/<id>.json
+              } catch (e2) {}
+              cleaned++;
+            }
+            if (cleaned > 0) self._debugLog("notifier: cleaned word lists for " + cleaned + " deleted item(s)");
+          } catch (e) {
+            self._debugLog("notifier notify ERROR: " + (e && (e.stack || e.message || String(e))));
+          }
+        },
+      }, ["item"], "wordtranslator");
+      this._debugLog("item notifier registered: id=" + this._notifierID);
+    } catch (e) {
+      this._debugLog("registerItemNotifier ERROR: " + (e && (e.stack || e.message || String(e))));
     }
   },
 
