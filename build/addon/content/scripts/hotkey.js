@@ -879,8 +879,8 @@ var WordTranslatorModule_hotkey = {
       textarea.setAttribute("data-tabstop", "1");
       textarea.style.resize = "both";
       textarea.style.boxSizing = "border-box";
-      textarea.style.width = "100%";
-      textarea.style.maxWidth = "100%";
+      // 宽高由 _fitTempEditArea 按内容双向自适应（Phase 8.x），不再固定 100% 宽——
+      // max-width:100% 会把宽度钳死在弹窗当前宽度上，长译文无法撑宽。
       textarea.style.minWidth = "0";
       textarea.style.minHeight = "1.8em";
       textarea.style.height = "auto";
@@ -919,45 +919,106 @@ var WordTranslatorModule_hotkey = {
     }
   },
 
+  // 兼容入口：临时文本框自适应现已升级为宽×高双向（Phase 8.x，用户反馈重设计）
   _resizeTempEditArea(textarea) {
+    return this._fitTempEditArea(textarea);
+  },
+
+  // Phase 8.x：临时文本框双向（宽×高）内容自适应。
+  // 旧实现只调高度、且直接在活体元素上单帧测量——译文长到出现滚动条时，
+  // "改高 → 面板重排 → 滚动条挤占可用宽度 → 换行变化 → 测量值过期"的反馈回路
+  // 会让高度卡在中间（滚动条停在中部）。新函数用幽灵元素离线测量，与活体解耦：
+  //   1) 宽度 = 文本最长自然行宽，夹在 [180px, min(480px, 窗口宽×0.7)]；
+  //      宽度确定后再按该宽度测所需高度（10 行封顶，超出滚动）；
+  //   2) 两帧收敛：应用后下一帧用面板重排落定后的真实布局复核，宽度变了就重算；
+  //   3) 测量器生命周期有兜底清理（rAF 不可达时由超时移除幽灵元素）。
+  _fitTempEditArea(textarea) {
     try {
-      if (!textarea) return;
-      // 双保险：先强制按内容自然高度，再逐次读取 scrollHeight
-      const prevHeight = parseFloat(textarea.style.height || "0") || 0;
-      textarea.style.height = "auto";
-      textarea.style.overflowY = "hidden";
-      const view = textarea.ownerDocument && textarea.ownerDocument.defaultView;
-      const style = view && view.getComputedStyle ? view.getComputedStyle(textarea) : null;
+      if (!textarea || !textarea.isConnected) return false;
+      const doc = textarea.ownerDocument;
+      const view = doc && doc.defaultView;
+      if (!view || !view.getComputedStyle || !view.requestAnimationFrame) return false;
+      const style = view.getComputedStyle(textarea);
       const lineHeight = parseFloat(style && style.lineHeight) || 18;
-      // 长句原文 + "-- 译文"可能超过单行；最大放宽到 10 行，避免内容被截断
-      const maxHeight = lineHeight * 10;
-      const minHeight = lineHeight * 1.35;
-      // 弹窗隐藏/尚未渲染时 scrollHeight 可能为 0：保持原高度不塌缩，交给下方 rAF 重测
-      const raw = textarea.scrollHeight || 0;
-      const next = raw > 0 ? Math.max(minHeight, Math.min(raw, maxHeight)) : Math.max(minHeight, prevHeight);
-      textarea.style.height = next + "px";
-      textarea.style.overflowY = (textarea.scrollHeight || 0) > maxHeight ? "auto" : "hidden";
-      // PDF.js 沙箱中 scrollHeight 在设置 height=auto 后可能尚未重排，下一帧再校正
-      // 一次；偏大或偏小都校正（流式输出时每次增量都会再触发本函数，可自我修复）
-      try {
-        const win = view || (textarea.ownerDocument && textarea.ownerDocument.defaultView);
-        if (win && typeof win.requestAnimationFrame === "function") {
-          win.requestAnimationFrame(() => {
-            try {
-              if (!textarea || !textarea.isConnected) return;
-              const sc = textarea.scrollHeight || 0;
-              if (sc <= 0) return;
-              const h = Math.max(minHeight, Math.min(sc, maxHeight));
-              const cur = parseFloat(textarea.style.height || "0") || 0;
-              if (Math.abs(h - cur) > 0.5) {
-                textarea.style.height = h + "px";
-                textarea.style.overflowY = sc > maxHeight ? "auto" : "hidden";
-              }
-            } catch (e) {}
-          });
-        }
-      } catch (e) {}
-    } catch (e) {}
+      const padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+        + (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+      const MIN_H = lineHeight * 1.35 + padY;
+      const MAX_H = lineHeight * 10 + padY;
+      const MIN_W = 180;
+      const MAX_W = Math.max(MIN_W, Math.min(480, (view.innerWidth || 1200) * 0.7));
+      const value = String(textarea.value || "");
+
+      const host = doc.body || doc.documentElement;
+      if (!host) return false;
+      const ghost = doc.createElement("div");
+      // 与 textarea 一致的排版属性（字体/内边距/换行规则），测量值可直接套用
+      const base = {
+        position: "absolute", left: "-9999px", top: "0", visibility: "hidden",
+        boxSizing: "border-box", margin: "0",
+        fontFamily: style.fontFamily, fontSize: style.fontSize, fontWeight: style.fontWeight,
+        fontStyle: style.fontStyle, lineHeight: style.lineHeight, letterSpacing: style.letterSpacing,
+        padding: style.padding, border: style.border,
+      };
+      for (const k of Object.keys(base)) ghost.style[k] = base[k];
+      host.appendChild(ghost);
+
+      let done = false;
+      let appliedW = 0;
+      let passes = 0;
+      const finish = () => {
+        done = true;
+        try { if (ghost.parentNode) ghost.parentNode.removeChild(ghost); } catch (e0) {}
+      };
+      // wrapWidth 为空 → 单行自然宽（pre + max-content）；否则按该宽度预包裹测高
+      const measure = (wrapWidth) => {
+        if (done || !ghost.isConnected) return null;
+        ghost.style.whiteSpace = wrapWidth == null ? "pre" : "pre-wrap";
+        ghost.style.overflowWrap = "anywhere";
+        ghost.style.width = wrapWidth == null ? "max-content" : wrapWidth + "px";
+        ghost.style.height = "auto";
+        ghost.textContent = value;
+        const rect = ghost.getBoundingClientRect();
+        return { w: rect.width, h: rect.height };
+      };
+      const fitOnce = () => {
+        try {
+          if (done || !textarea.isConnected) return;
+          const natural = measure(null);
+          if (!natural || !(natural.w > 0)) return;
+          const targetW = Math.max(MIN_W, Math.min(natural.w, MAX_W));
+          const need = measure(targetW);
+          if (!need || !(need.h > 0)) return;
+          textarea.style.width = targetW + "px";
+          textarea.style.height = Math.max(MIN_H, Math.min(need.h, MAX_H)) + "px";
+          textarea.style.overflowY = need.h > MAX_H + 0.5 ? "auto" : "hidden";
+          appliedW = targetW;
+        } catch (e) {}
+      };
+
+      fitOnce();
+      const step = () => {
+        try {
+          if (done) return;
+          if (!textarea.isConnected) { finish(); return; }
+          const before = appliedW;
+          fitOnce();
+          passes++;
+          // 宽度在帧间变化说明面板布局仍在收敛，继续；稳定或到 3 帧即结束
+          if (passes < 3 && Math.abs(appliedW - before) > 1) {
+            view.requestAnimationFrame(step);
+          } else {
+            finish();
+          }
+        } catch (e) { finish(); }
+      };
+      view.requestAnimationFrame(step);
+      // 兜底：rAF 不可达（窗口隐藏）时也要移除幽灵元素
+      setTimeout(() => { if (!done) finish(); }, 400);
+      return true;
+    } catch (e) {
+      this._debugLog("_fitTempEditArea ERROR: " + (e && (e.stack || e.message || String(e))));
+      return false;
+    }
   },
 
   // 翻译完成后更新临时编辑框内容
