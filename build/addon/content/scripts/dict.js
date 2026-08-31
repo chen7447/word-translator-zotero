@@ -117,25 +117,30 @@ var WordTranslatorDict = {
     const cfg = this._loadConfig();
     if (!cfg || cfg.enabled === false) return null;
     const chain = this._chain(cfg.provider);
-    // 先试原词整条链（常见情形）；全部未命中再试屈折变体（离线词库不对外服务词形回查）
-    for (const v of this._variants(w)) {
-      for (const name of chain) {
-        const fn = this._providers[name];
-        if (typeof fn !== "function") continue;
-        try {
-          const entry = await fn(v);
-          if (entry && Array.isArray(entry.meanings) && entry.meanings.length) {
-            entry.word = w; // 统一按原词缓存
-            this._cache[w] = { entry, ts: Date.now() };
-            this._schedulePersist();
-            // Phase 8：离线命中且无例句 → 后台异步补在线例句（纯离线模式跳过；不阻塞返回）
-            if (name === "ecdict" && cfg.provider !== "ecdict" && (!entry.examples || !entry.examples.length)) {
-              this._fetchExamplesInBackground(w);
-            }
-            return entry;
+    // 离线词库先过一遍全部屈折变体（本地查表近零成本，studies→study 这类直接秒命中）；
+    // 网络源只查原词（有道接口自带词形回查），避免断网时每个变体白烧 5s 超时×N 源。
+    // ponytail: freedict 不做词形回查；若有人反馈屈折词走 freedict 时查不到，再给网络源补变体重试。
+    const offline = chain.indexOf("ecdict") >= 0 ? ["ecdict"] : [];
+    const online = chain.filter((n) => n !== "ecdict");
+    const rounds = [];
+    for (const v of this._variants(w)) for (const name of offline) rounds.push({ name, v });
+    for (const name of online) rounds.push({ name, v: w });
+    for (const r of rounds) {
+      const fn = this._providers[r.name];
+      if (typeof fn !== "function") continue;
+      try {
+        const entry = await fn(r.v);
+        if (entry && Array.isArray(entry.meanings) && entry.meanings.length) {
+          entry.word = w; // 统一按原词缓存
+          this._cache[w] = { entry, ts: Date.now() };
+          this._schedulePersist();
+          // Phase 8：离线命中且无例句 → 后台异步补在线例句（纯离线模式跳过；不阻塞返回）
+          if (r.name === "ecdict" && cfg.provider !== "ecdict" && (!entry.examples || !entry.examples.length)) {
+            this._fetchExamplesInBackground(w);
           }
-        } catch (e) {} // 静默降级到下一个源
-      }
+          return entry;
+        }
+      } catch (e) {} // 静默降级到下一个源
     }
     return null;
   },
