@@ -685,14 +685,14 @@ var WordTranslatorModule_translate = {
       if (client !== _googleClientId) { _googleClientId = client; }
       return translation;
     }
-    // 兜底：Google 全部候选 client 均被限流/不可达时，自动转 MyMemory（无密钥翻译记忆库）。
-    // MyMemory 匿名配额按 IP 约 5000 字符/天，单词/短语质量好、整句较弱；仅当 Google 整体不可用时才会走到这里。
-    this._debugLog("Google 全部 client 失效，转 MyMemory 兜底：" + (lastError && (lastError.message || lastError)));
-    return await this._translateMyMemory(text, {});
+    // 不自动转其他引擎：静默兜底会让结果质量漂移且无信号（MyMemory 是 TM 库，质量与 Google 不同）。
+    // 想要兜底的用户可在服务商里选 MyMemory，或添加多个 API 在面板一键切换。
+    throw lastError || new Error("Google 翻译失败：所有候选 client 均被限流；可在服务商中选择 MyMemory，或改用官方 API / 大模型服务");
   },
 
   // MyMemory 无密钥通道：官方开放接口，非 Google 域（大陆可达性待实测），响应里自带 responseStatus。
-  // 触发条件（当初决定只做兜底不做主力）：Google 三个候选 client 同时失效，或 /translate_a/single 路径本身 404。
+  // 定位是"手动可选的免费服务商"，不是自动兜底（当初的触发条件——Google 整体端点死亡——未发生，
+  // 实测限流发生在 client 维度，已用候选重试解决）；匿名配额按 IP 约 5000 字符/天，单词/短语质量好、整句较弱。
   async _translateMyMemory(text, api) {
     const source = String(text || "").trim();
     if (!source) throw new Error("MyMemory 翻译文本为空");
