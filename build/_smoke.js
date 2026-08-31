@@ -189,7 +189,7 @@ function section(title) { console.log("\n===== " + title + " ====="); }
 
     check("cache stable", D.getCached("the") === D.getCached("the"));
 
-    // 排序回归（b16）：离线轮先过全部变体；网络源只查原词，断网不再按变体烧超时
+    // 排序回归（b16）：离线轮先查变体；网络源只查原词，断网不再按变体烧超时
     {
       const calls = [];
       const save = {};
@@ -199,11 +199,17 @@ function section(title) { console.log("\n===== " + title + " ====="); }
       }
       delete D._cache["studies"];
       const e5 = await D.lookup("studies");
-      check("离线变体命中零网络调用", !!e5 && !calls.some((c) => /^(youdao|freedict):/.test(c)) && calls.includes("ecdict:studies") && calls.includes("ecdict:study"));
+      check("离线变体命中零网络调用", !!e5 && !calls.some((c) => /^(youdao|freedict):/.test(c)));
       calls.length = 0;
       const e6 = await D.lookup("finges"); // 全链未命中：网络源各查一次且只查原词
       const net = calls.filter((c) => !c.startsWith("ecdict:"));
       check("网络源只查原词不烧变体", e6 === null && net.length === 2 && net.includes("youdao:finges") && net.includes("freedict:finges"));
+      // exchange 屈折反查表：不规则变形（去后缀猜不出）离线命中
+      for (const [inf, gloss] of [["ran", "跑"], ["children", "孩子"], ["went", "去"]]) {
+        calls.length = 0;
+        const e = await D.lookup(inf);
+        check("屈折反查 " + inf + " 离线命中", !!e && (e.meanings[0].def || "").includes(gloss) && !calls.some((c) => /^(youdao|freedict):/.test(c)));
+      }
       for (const n of ["ecdict", "youdao", "freedict"]) D._providers[n] = save[n];
     }
   } catch (e) {

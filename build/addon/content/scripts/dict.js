@@ -14,6 +14,7 @@ var WordTranslatorDict = {
   _persistTimer: null,
   _ecdDict: null,     // 内置离线词库（懒加载，dict-ecdict.json）
   _ecdDictPromise: null,
+  _ecdX: null,        // 屈折反查 Map：变形→原形（来自词库 "_x" 字段，覆盖 ran/children 等不规则变形）
 
   // ---------- 工具 ----------
   _norm(word) {
@@ -29,8 +30,8 @@ var WordTranslatorDict = {
     return ["ecdict", "youdao", "freedict"]; // auto
   },
 
-  // 极简词形回退：在线接口自带词形回查，离线词库不处理屈折。
-  // ponytail: 不覆盖不规则动词（ran→run）等，真遇到再加映射表。
+  // 极简词形回退：规则后缀猜测（不规则变形如 ran→run 由 ecdict 的 exchange 反查表兜底）。
+  // ponytail: 反查表没盖到的（如自造词）仍会漏，真遇到再加映射表。
   _variants(word) {
     const out = [word];
     const s = String(word || "").toLowerCase();
@@ -202,6 +203,15 @@ var WordTranslatorDict = {
         const obj = await resp.json();
         if (!obj || typeof obj !== "object") return null;
         self._ecdDict = obj;
+        // 屈折反查表："_x" = "变形:原形" 空格分隔（构建期由 ECDICT exchange 列生成）
+        if (typeof obj._x === "string" && obj._x) {
+          const x = new Map();
+          for (const pair of obj._x.split(" ")) {
+            const i = pair.indexOf(":");
+            if (i > 0) x.set(pair.slice(0, i), pair.slice(i + 1));
+          }
+          self._ecdX = x;
+        }
         return obj;
       } catch (e) {
         self._ecdDictPromise = null; // 允许下次重试
@@ -331,10 +341,14 @@ var WordTranslatorDict = {
           if (!WordTranslatorDict._ecdDict) return null;
         }
         const dict = WordTranslatorDict._ecdDict;
-        const w = String(word || "").toLowerCase();
-        if (!Object.prototype.hasOwnProperty.call(dict, w)) return null;
+        let w = String(word || "").toLowerCase();
+        if (!Array.isArray(dict[w])) {
+          // 直接表未命中 → 屈折反查（ran→run / children→child，覆盖规则猜测的盲区）
+          const base = WordTranslatorDict._ecdX && WordTranslatorDict._ecdX.get(w);
+          if (base) w = base;
+        }
         const e = dict[w];
-        if (!e || !Array.isArray(e) || !e[2]) return null; // [音标, 词性, 中文释义]
+        if (!Array.isArray(e) || !e[2]) return null; // [音标, 词性, 中文释义]
         return {
           word,
           phonetic: { us: String(e[0] || ""), uk: "" },

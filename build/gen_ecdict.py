@@ -74,7 +74,7 @@ def main():
 
     header = [h.strip().lower() for h in rows[0]]
     idx = {name: header.index(name) for name in
-           ("word", "phonetic", "translation", "pos", "collins", "oxford", "tag", "bnc", "frq")
+           ("word", "phonetic", "translation", "pos", "collins", "oxford", "tag", "bnc", "frq", "exchange")
            if name in header}
     if "word" not in idx:
         sys.stderr.write("ERROR: unexpected header: %r\n" % header)
@@ -84,6 +84,7 @@ def main():
     out = {}
     # 词频排序用：保留 (frq, bnc) 以便按常用度裁剪
     freq = {}  # word -> (frq or 999999, bnc or 999999)
+    exch = {}  # word -> ECDICT exchange 原始字段（屈折变化，用于生成反查表）
     probe = {}  # 自检：常见词原始字段
     PROBES = {"hello", "study", "assay", "analysis", "the", "zebrafish"}
     for r in rows[1:]:
@@ -109,6 +110,7 @@ def main():
         except ValueError:
             frq = None
         out[word] = [g(r, "phonetic"), g(r, "pos"), translation]
+        exch[word] = g(r, "exchange")
         # ECDICT 用 0 表示"语料库无此词"（低频哨兵），须视为无数据排最后，
         # 否则几十万 frq=0 的杂词会把 the/study 等高频词挤出前 3 万。
         freq[word] = (frq if (frq is not None and frq > 0) else 999999,
@@ -123,8 +125,26 @@ def main():
         ranked = sorted(out.keys(), key=lambda w: freq.get(w, (999999, 999999)))
         out = {w: out[w] for w in ranked[:MAX_WORDS]}
 
-    out = {"_source": src, **out}
+    # 屈折反查表（exchange 字段）：变形 -> 原形。只收「变形自身不在词表、原形在词表」的对，
+    # 变形自己有条目时让它直接命中自身释义（如 running 的名词义），不遮挡。
+    # 价值：不规则变形（ran→run / children→child / better→good）离线可查，补 _variants 规则的盲区。
+    alias = {}
+    for w in out:
+        for part in (exch.get(w) or "").split("/"):
+            if ":" not in part:
+                continue
+            inf = part.split(":", 1)[1].strip().lower()
+            if not inf or inf == w or inf in out or not WORD_RE.match(inf):
+                continue
+            prev = alias.get(inf)
+            if prev is None or w < prev:
+                alias[inf] = w  # 一个变形对应多个原形时取字典序最小，保证可复现
+
+    out = {"_source": src,
+           "_x": " ".join(k + ":" + v for k, v in sorted(alias.items())),
+           **out}
     # 自检输出
+    print("  exchange alias pairs=%d" % len(alias))
     for w in ("hello", "study", "assay", "analysis", "the", "zebrafish"):
         print("  probe", w, "raw=", probe.get(w), "in-out=", w in out)
     print("  stats: has-frq=%d has-bnc=%d has-tag=%d collins>=3=%d oxford1=%d" % (
@@ -137,7 +157,7 @@ def main():
                         "addon", "content", "scripts", "dict-ecdict.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
-    print("OK words=%d size=%.2f MB -> %s" % (len(out) - 1, os.path.getsize(path) / 1048576, path))
+    print("OK words=%d size=%.2f MB -> %s" % (len(out) - 2, os.path.getsize(path) / 1048576, path))
     for probe in ("hello", "study", "assay", "analysis", "qPCR", "zebrafish"):
         print("  sample", probe, "=", out.get(probe))
 
