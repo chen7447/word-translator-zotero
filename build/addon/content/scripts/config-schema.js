@@ -65,7 +65,8 @@ WordTranslatorConfig.normalize = function (raw) {
   return {
     ...base,
     ...raw,
-    apis: Array.isArray(raw.apis) ? raw.apis : [],
+    // deeplx（逆向 www2.deepl.com/jsonrpc）已下线：加载时丢弃旧条目，避免留下无法使用的服务商
+    apis: Array.isArray(raw.apis) ? raw.apis.filter((a) => a && a.provider !== "deeplx") : [],
     activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
     sortMode: typeof raw.sortMode === "string" ? raw.sortMode : "reverse",
     searchStrategy: typeof raw.searchStrategy === "string" ? raw.searchStrategy : "prefix",

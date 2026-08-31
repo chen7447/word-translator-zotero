@@ -12,7 +12,7 @@ Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人�
 
 - PDF 阅读器划词后显示可自定义名称的菜单项（默认「添加单词并翻译」）。
 - 调用大模型或机器翻译接口，将英文单词 / 短语 / 句子译为中文。
-- 支持多家服务商：OpenAI 兼容、DeepSeek、Gemini、Claude、Qwen-MT，以及百度 / 腾讯 / 阿里 / 火山 / 彩云 / 小牛 / 有道 / 讯飞、DeepL、微软翻译；另有 Google / DeepLX 免费接口和 LibreTranslate / DeepLX 自建服务。
+- 支持多家服务商：OpenAI 兼容、DeepSeek、Gemini、Claude、Qwen-MT，以及百度 / 腾讯 / 阿里 / 火山 / 彩云 / 小牛 / 有道 / 讯飞、DeepL、微软翻译；另有 Google 免费接口和 LibreTranslate / DeepLX 自建服务。
 - 可配置多个 API，并在右侧单词本面板中切换。
 - 支持系统+用户提示词，或一段式全局提示词；`{{word}}` 会替换为选中文本。
 - 支持选中后自动翻译并加入单词本。
@@ -93,7 +93,7 @@ Qwen-MT         https://dashscope.aliyuncs.com/compatible-mode/v1
 | 有道智云 | `AppKey#AppSecret` |
 | 讯飞机器翻译 | `AppID#APIKey#APISecret` |
 
-Google 翻译、DeepL 免费（非官方逆向）无需密钥，可能随时失效。LibreTranslate 和自建 DeepLX 的密钥可选。
+Google 翻译（非官方逆向）无需密钥，可能随时失效。LibreTranslate 和自建 DeepLX 的密钥可选。
 
 填写后可用「测试」「获取模型」「保存」。配置多个 API 后，可在单词本右上方下拉框切换。
 
@@ -301,7 +301,7 @@ wordtranslator/
 
 ### 非官方接口
 
-「免费翻译」分组中的 **Google 翻译** 与 **DeepL 免费** 为非官方逆向接口，随时可能因服务方调整而失效；失效时请改用官方 API 或大模型服务。
+「免费翻译」分组中的 **Google 翻译** 为非官方逆向接口，随时可能因服务方调整而失效；失效时请改用官方 API 或大模型服务。
 
 ### 界面语言
 

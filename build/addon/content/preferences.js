@@ -285,7 +285,6 @@
       group: "免费翻译",
       options: [
         { value: "google", label: "Google 翻译（非官方逆向接口，可能随时失效）", enabled: true, managedConfig: true, baseUrl: "https://translate.googleapis.com/translate_a/single", noCredentials: true, requiresModel: false },
-        { value: "deeplx", label: "DeepL 免费（非官方逆向接口，可能随时失效）", enabled: true, managedConfig: true, baseUrl: "https://www2.deepl.com/jsonrpc", noCredentials: true, requiresModel: false },
       ],
     },
     {

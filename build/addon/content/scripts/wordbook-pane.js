@@ -280,7 +280,7 @@ var WordTranslatorModule_pane = {
     }
   },
 
-  // 翻译超时兜底：provider 长时间无响应（如 DeepL 免费版挂起）时按失败处理，
+  // 翻译超时兜底：provider 长时间无响应（如 Google 免费接口被限流后挂起）时按失败处理，
   // 走词典服务兜底显示，避免"翻译中…"永远不结束。
   async _retryTranslationForCard(itemID, index, card) {
     const id = Number(itemID);

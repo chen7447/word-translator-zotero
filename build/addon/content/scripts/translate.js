@@ -158,7 +158,6 @@ var WordTranslatorModule_translate = {
     ["libretranslate", "_translateLibreTranslate"],
     ["baidu", "_translateBaidu"],
     ["baidu-field", "_translateBaiduField"],
-    ["deeplx", "_translateDeepLX"],
     ["deeplx-selfhosted", "_translateDeepLXSelfhosted"],
     ["youdaozhiyun", "_translateYoudaoZhiyun"],
     ["tencent", "_translateTencent"],
@@ -225,64 +224,6 @@ var WordTranslatorModule_translate = {
       catch (e) { throw new Error(serviceName + " 返回的不是有效 JSON：" + data.slice(0, 200)); }
     }
     return data;
-  },
-
-  async _translateDeepLX(text, api) {
-    const source = String(text || "").trim();
-    if (!source) throw new Error("DeepL 免费翻译文本为空");
-    const id = 1000 * (Math.floor(Math.random() * 99999) + 8300000) + 1;
-    const iCount = (source.match(/i/g) || []).length + 1;
-    const ts = Date.now();
-    const timestamp = ts - (ts % iCount) + iCount;
-    let reqBody = JSON.stringify({
-      jsonrpc: "2.0",
-      method: "LMT_handle_texts",
-      id,
-      params: {
-        texts: [{ text: source, requestAlternatives: 3 }],
-        splitting: "newlines",
-        lang: { source_lang_user_selected: "EN", target_lang: "ZH" },
-        timestamp,
-        commonJobParams: { wasSpoken: false, transcribe_as: "" }
-      }
-    });
-    if ((id + 5) % 29 === 0 || (id + 3) % 13 === 0) {
-      reqBody = reqBody.replace('"method":"', '"method" : "');
-    } else {
-      reqBody = reqBody.replace('"method":"', '"method": "');
-    }
-    const endpoint = (api.baseUrl || "https://www2.deepl.com/jsonrpc").trim().replace(/\/+$/, "");
-    const url = endpoint + "?client=chrome-extension,1.28.0&method=LMT_handle_jobs";
-    this._debugLog("DeepLX request URL: " + endpoint + " | textLength=" + source.length);
-    const resp = await Zotero.HTTP.request("POST", url, {
-      headers: {
-        "Accept": "*/*",
-        "Authorization": "None",
-        "Cache-Control": "no-cache",
-        "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh-TW;q=0.7,zh-HK;q=0.6,zh;q=0.5",
-        "Content-Type": "application/json",
-        "DNT": "1",
-        "Origin": "chrome-extension://cofdbpoegempjloogbagkncekinflcnj",
-        "Pragma": "no-cache",
-        "Priority": "u=1, i",
-        "Referer": "https://www.deepl.com/",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "none",
-        "Sec-GPC": "1",
-        "User-Agent": "DeepLBrowserExtension/1.28.0 Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36"
-      },
-      body: reqBody,
-      responseType: "json",
-    });
-    const data = this._parseJsonResponse(resp, "DeepL 免费翻译");
-    if (resp.status < 200 || resp.status >= 300) {
-      const detail = data && data.error && (data.error.message || data.error.code) || resp.statusText || "";
-      throw new Error("DeepL 免费翻译错误(" + resp.status + "): " + detail);
-    }
-    const translation = data && data.result && data.result.texts && data.result.texts[0] && data.result.texts[0].text;
-    if (!translation) throw new Error("DeepL 免费翻译返回中没有 result.texts[0].text：" + JSON.stringify(data).slice(0, 500));
-    return String(translation).trim();
   },
 
   async _translateDeepLXSelfhosted(text, api) {
