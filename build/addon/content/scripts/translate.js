@@ -2,6 +2,12 @@
 // 依赖：本文件在 addon.js 之后经 loadSubScript 注入，Object.assign 挂到同一 WordTranslator 对象上，this 绑定不变。
 "use strict";
 
+// Google 无密钥通道：限流是按 client 维度做的——gtx（历史默认，人人都在用）自 2026-08 起被全局 429，
+// 而 dict-chrome-ex（Chrome 词典扩展同一端点）不在限流名单且 tk 参数可省略（实测 200、连发不封）。
+// 会话内记住当前可用的 client，被限流再按候选顺序重试。
+var _googleClientId = "dict-chrome-ex";
+var _GOOGLE_CLIENT_CANDIDATES = ["dict-chrome-ex", "tw-ob", "gtx"];
+
 var WordTranslatorModule_translate = {
   async _enrichDict(word) {
     try {
@@ -165,31 +171,6 @@ var WordTranslatorModule_translate = {
     ["volcengine", "_translateVolcengine"],
     ["xfyun", "_translateXfyun"],
   ]),
-
-  _googleTranslateRL(value, operations) {
-    for (let i = 0; i < operations.length - 2; i += 3) {
-      let shift = operations.charAt(i + 2);
-      shift = shift >= "a" ? shift.charCodeAt(0) - 87 : Number(shift);
-      const shifted = operations.charAt(i + 1) === "+" ? value >>> shift : value << shift;
-      value = operations.charAt(i) === "+" ? (value + shifted) & 0xFFFFFFFF : value ^ shifted;
-    }
-    return value;
-  },
-
-  _getGoogleTranslateToken(text) {
-    let value = 406644;
-    const seed = 3293161072;
-    const bytes = new TextEncoder().encode(String(text || ""));
-    for (const byte of bytes) {
-      value += byte;
-      value = this._googleTranslateRL(value, "+-a^+6");
-    }
-    value = this._googleTranslateRL(value, "+-3^+b+-f");
-    value ^= seed;
-    if (value < 0) value = (value & 0x7FFFFFFF) + 0x80000000;
-    value %= 1000000;
-    return value + "." + (value ^ 406644);
-  },
 
   _bytesToHex(buffer) {
     return Array.from(new Uint8Array(buffer)).map(function (byte) { return byte.toString(16).padStart(2, "0"); }).join("");
@@ -669,32 +650,41 @@ var WordTranslatorModule_translate = {
     const endpoint = (api.baseUrl || "https://translate.googleapis.com/translate_a/single")
       .trim()
       .replace(/\/+$/, "");
-    const query = [
-      "client=gtx",
-      "sl=en",
-      "tl=zh",
-      "dt=t",
-      "q=" + encodeURIComponent(source),
-      "tk=" + encodeURIComponent(this._getGoogleTranslateToken(source)),
-    ].join("&");
-    const url = endpoint + "?" + query;
-    this._debugLog("Google request URL: " + endpoint + " | textLength=" + source.length);
-    const resp = await Zotero.HTTP.request("GET", url, { responseType: "json" });
-    let responseData = resp.response;
-    if (typeof responseData === "string") {
-      try { responseData = JSON.parse(responseData); }
-      catch (e) { throw new Error("Google 翻译返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+    // 429/403 与网络错误视为"此 client 被限流/不可达"，换下一个 client 重试；其余 HTTP 错误直接抛出。
+    let lastError = null;
+    for (const client of [_googleClientId].concat(_GOOGLE_CLIENT_CANDIDATES.filter((c) => c !== _googleClientId))) {
+      const url = endpoint + "?client=" + client + "&sl=en&tl=zh&dt=t&q=" + encodeURIComponent(source);
+      let resp = null;
+      try {
+        resp = await Zotero.HTTP.request("GET", url, { responseType: "json" });
+      } catch (e) {
+        lastError = e;
+        this._debugLog("Google client=" + client + " request ERROR: " + (e && (e.message || e)));
+        continue;
+      }
+      this._debugLog("Google client=" + client + " status=" + (resp && resp.status) + " | textLength=" + source.length);
+      if (resp.status === 429 || resp.status === 403) {
+        lastError = new Error("Google 翻译被限流(" + resp.status + ") client=" + client);
+        continue;
+      }
+      if (resp.status < 200 || resp.status >= 300) {
+        const detail = resp.statusText || ("HTTP " + resp.status);
+        throw new Error("Google 翻译错误(" + resp.status + "): " + detail);
+      }
+      let responseData = resp.response;
+      if (typeof responseData === "string") {
+        try { responseData = JSON.parse(responseData); }
+        catch (e) { throw new Error("Google 翻译返回的不是有效 JSON：" + responseData.slice(0, 200)); }
+      }
+      const segments = responseData && responseData[0];
+      const translation = Array.isArray(segments)
+        ? segments.map(function (segment) { return segment && segment[0] || ""; }).join("").trim()
+        : "";
+      if (!translation) throw new Error("Google 翻译返回中没有 [0][].0：" + JSON.stringify(responseData).slice(0, 500));
+      if (client !== _googleClientId) { _googleClientId = client; }
+      return translation;
     }
-    if (resp.status < 200 || resp.status >= 300) {
-      const detail = responseData && responseData.error && (responseData.error.message || responseData.error) || resp.statusText || "";
-      throw new Error("Google 翻译错误(" + resp.status + "): " + detail);
-    }
-    const segments = responseData && responseData[0];
-    const translation = Array.isArray(segments)
-      ? segments.map(function (segment) { return segment && segment[0] || ""; }).join("").trim()
-      : "";
-    if (!translation) throw new Error("Google 翻译返回中没有 [0][].0：" + JSON.stringify(responseData).slice(0, 500));
-    return translation;
+    throw lastError || new Error("Google 翻译失败：所有候选 client 均被限流");
   },
 
   // 提示词构造单一来源：OpenAI 兼容路径与 Claude 适配器共用。
