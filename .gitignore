@@ -24,3 +24,4 @@ Thumbs.db
 _ecdict.csv
 build/*b*.xpi
 # 正式版 xpi 需提交进仓库（skill 铁律），仅忽略 b 测试版
+.research/
