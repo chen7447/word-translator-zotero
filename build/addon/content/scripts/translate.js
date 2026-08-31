@@ -156,6 +156,7 @@ var WordTranslatorModule_translate = {
 
   _translateAdapters: new Map([
     ["google", "_translateGoogle"],
+    ["mymemory", "_translateMyMemory"],
     ["deepl", "_translateDeepL"],
     ["microsoft", "_translateMicrosoft"],
     ["caiyun", "_translateCaiyun"],
@@ -684,7 +685,33 @@ var WordTranslatorModule_translate = {
       if (client !== _googleClientId) { _googleClientId = client; }
       return translation;
     }
-    throw lastError || new Error("Google 翻译失败：所有候选 client 均被限流");
+    // 兜底：Google 全部候选 client 均被限流/不可达时，自动转 MyMemory（无密钥翻译记忆库）。
+    // MyMemory 匿名配额按 IP 约 5000 字符/天，单词/短语质量好、整句较弱；仅当 Google 整体不可用时才会走到这里。
+    this._debugLog("Google 全部 client 失效，转 MyMemory 兜底：" + (lastError && (lastError.message || lastError)));
+    return await this._translateMyMemory(text, {});
+  },
+
+  // MyMemory 无密钥通道：官方开放接口，非 Google 域（大陆可达性待实测），响应里自带 responseStatus。
+  // 触发条件（当初决定只做兜底不做主力）：Google 三个候选 client 同时失效，或 /translate_a/single 路径本身 404。
+  async _translateMyMemory(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("MyMemory 翻译文本为空");
+    const endpoint = ((api && api.baseUrl) || "https://api.mymemory.translated.net/get").trim().replace(/\/+$/, "");
+    // 插件主场景英译中，与 Google 适配器的 sl=en/tl=zh 保持一致
+    const url = endpoint + "?langpair=en|zh-CN&q=" + encodeURIComponent(source);
+    this._debugLog("MyMemory request URL: " + endpoint + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("GET", url, { responseType: "json" });
+    const data = this._parseJsonResponse(resp, "MyMemory");
+    // 配额耗尽等业务错误常以 HTTP 200 + responseStatus=4xx 返回
+    const status = data && typeof data.responseStatus === "number" ? data.responseStatus : resp.status;
+    if (status < 200 || status >= 300) {
+      throw new Error("MyMemory 翻译错误(" + status + "): " + (data && data.responseDetails || resp.statusText || ""));
+    }
+    const translation = data && data.responseData && data.responseData.translatedText;
+    if (!translation || /^(MYMEMORY WARNING|QUERY LENGTH LIMIT)/i.test(translation)) {
+      throw new Error("MyMemory 返回中没有有效译文：" + JSON.stringify(data).slice(0, 300));
+    }
+    return String(translation).trim();
   },
 
   // 提示词构造单一来源：OpenAI 兼容路径与 Claude 适配器共用。

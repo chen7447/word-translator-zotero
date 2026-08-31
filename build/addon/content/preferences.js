@@ -285,6 +285,7 @@
       group: "免费翻译",
       options: [
         { value: "google", label: "Google 翻译（非官方逆向接口，可能随时失效）", enabled: true, managedConfig: true, baseUrl: "https://translate.googleapis.com/translate_a/single", noCredentials: true, requiresModel: false },
+        { value: "mymemory", label: "MyMemory（翻译记忆库，单词/短语质量好，匿名日限额约 5000 字符）", enabled: true, managedConfig: true, baseUrl: "https://api.mymemory.translated.net/get", noCredentials: true, requiresModel: false },
       ],
     },
     {

@@ -93,7 +93,7 @@ Qwen-MT         https://dashscope.aliyuncs.com/compatible-mode/v1
 | 有道智云 | `AppKey#AppSecret` |
 | 讯飞机器翻译 | `AppID#APIKey#APISecret` |
 
-Google 翻译（非官方逆向）无需密钥，可能随时失效。LibreTranslate 和自建 DeepLX 的密钥可选。
+Google 翻译（非官方逆向）与 MyMemory（翻译记忆库）无需密钥；MyMemory 匿名日限额约 5000 字符，单词/短语质量好、整句较弱。LibreTranslate 和自建 DeepLX 的密钥可选。
 
 填写后可用「测试」「获取模型」「保存」。配置多个 API 后，可在单词本右上方下拉框切换。
 
@@ -301,7 +301,7 @@ wordtranslator/
 
 ### 非官方接口
 
-「免费翻译」分组中的 **Google 翻译** 为非官方逆向接口，随时可能因服务方调整而失效；失效时请改用官方 API 或大模型服务。
+「免费翻译」分组中的 **Google 翻译** 为非官方逆向接口，随时可能因服务方调整而失效；Google 被限流时插件会自动按候选 client 重试，仍失败则自动转用 **MyMemory** 兜底出词。失效时也可改用官方 API 或大模型服务。
 
 ### 界面语言
 
