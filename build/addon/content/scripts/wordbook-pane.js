@@ -978,7 +978,7 @@ var WordTranslatorModule_pane = {
     }, [txt("单词本 " + wordsFileName)]);
     titleGroup.append(title);
 
-    const apiSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换翻译 API", "aria-label": "当前翻译 API" });
+    const apiSelect = el("select", { class: "wt-api-select", style: "flex:1 1 0;min-width:0;width:0;max-width:100%;font-size:12px;padding:2px 6px;", title: "切换翻译 API", "aria-label": "当前翻译 API" });
     this._fillApiSelect(doc, apiSelect);
     apiSelect.addEventListener("change", () => {
       const idx = parseInt(apiSelect.value, 10);
@@ -1129,7 +1129,7 @@ var WordTranslatorModule_pane = {
 
     // 字典行（controlsRow 与 navRow 之间）：字典源下拉 + 合/单/典显示模式按钮
     const dictRow = el("div", { style: "display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;margin-top:2px;flex-wrap:wrap;" });
-    const dictSourceSelect = el("select", { style: "flex:1;min-width:0;font-size:12px;padding:2px 6px;", title: "切换字典源", "aria-label": "字典源" });
+    const dictSourceSelect = el("select", { class: "wt-api-select", style: "flex:1 1 0;min-width:0;width:0;max-width:100%;font-size:12px;padding:2px 6px;", title: "切换字典源", "aria-label": "字典源" });
     const dictSources = [
       { v: "auto", l: "自动（离线词库优先，在线源兜底）" },
       { v: "youdao", l: "有道网页词典" },
@@ -1343,7 +1343,9 @@ var WordTranslatorModule_pane = {
     apis.forEach((api, i) => {
       const opt = doc.createElementNS("http://www.w3.org/1999/xhtml", "option");
       opt.value = String(i);
-      opt.textContent = (api.name || "API " + (i + 1)) + (api.model ? "（" + api.model + "）" : "");
+      const label = (api.name || "API " + (i + 1)) + (api.model ? "（" + api.model + "）" : "");
+      opt.textContent = label;
+      opt.title = label;
       select.append(opt);
     });
     const cur = (this._data && this._data.activeApiIndex) || 0;
@@ -1355,6 +1357,8 @@ var WordTranslatorModule_pane = {
       ".wordtranslator-pane-body { color-scheme: light dark; position: relative; }",
       ".wordtranslator-pane-body button:hover { background: color-mix(in srgb, Canvas 92%, CanvasText); }",
       ".wordtranslator-pane-body select { color: FieldText; background: Field; }",
+      // native <select> 默认按最长 option 撑宽；width:0 + flex-basis:0 让它吃剩余空间而不撑侧栏
+      ".wordtranslator-pane-body .wt-api-select { flex:1 1 0; min-width:0; width:0; max-width:100%; }",
       ".wt-card { position:relative; overflow:visible; background:Canvas; border:1px solid ThreeDShadow; border-radius:8px; }",
       ".wt-card-text { user-select: text; -webkit-user-select: text; cursor: text; }",
       ".wt-card-hl { border-left-width: 3px; border-left-style: solid; }",
