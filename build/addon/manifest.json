@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "单词翻译",
-  "version": "6.16.0b1",
-  "description": "专业英文单词划词翻译，生成 [单词--译文] 单词卡片，支持多 API 配置与自定义提示词。",
+  "name": "鍗曡瘝缈昏瘧",
+  "version": "6.16.0b2",
+  "description": "涓撲笟鑻辨枃鍗曡瘝鍒掕瘝缈昏瘧锛岀敓鎴?[鍗曡瘝--璇戞枃] 鍗曡瘝鍗＄墖锛屾敮鎸佸 API 閰嶇疆涓庤嚜瀹氫箟鎻愮ず璇嶃€?,
   "author": "chen7447",
   "homepage_url": "https://github.com/chen7447/word-translator-zotero",
   "icons": {
