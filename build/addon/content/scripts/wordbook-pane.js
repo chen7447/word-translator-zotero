@@ -5,6 +5,7 @@
 var WordTranslatorModule_pane = {
   _itemWords: new Map(),      // itemID -> [{word, translation, pending, highlight?}]
   _cardMenu: null,            // 单词本卡片右键菜单 { el, doc, onDoc, onKey, onScroll }
+  _cardEdit: null,            // 单词本卡片「修」编辑态 { el, doc, onDoc, onKey, textWrap, actionWrap }
   _wordBookViewState: new Map(), // itemID -> { page, search } 分页/搜索临时界面状态（不写盘）
   _wordBookSearchTimers: new Map(), // itemID -> debounce timer
   _wordBookSearchStrategies: new Map([
@@ -156,6 +157,21 @@ var WordTranslatorModule_pane = {
     this._cardMenu = null;
   },
 
+  // 「修」编辑态清理：摘监听、摘编辑器、还原被隐藏的卡片文本/按钮区。
+  _hideCardEdit() {
+    const edit = this._cardEdit;
+    if (!edit) return;
+    try { if (edit.onDoc) edit.doc.removeEventListener("mousedown", edit.onDoc, true); } catch (e) {}
+    try { if (edit.onKey) edit.doc.removeEventListener("keydown", edit.onKey, true); } catch (e) {}
+    try { if (edit.el && edit.el.parentNode) edit.el.parentNode.removeChild(edit.el); } catch (e) {}
+    try {
+      // 还原隐藏前的原始 display（textWrap 无内联 display，actionWrap 内联是 flex；置 "" 会毁掉 flex 布局）
+      if (edit.textWrap) edit.textWrap.style.display = edit.textWrapDisplay || "";
+      if (edit.actionWrap) edit.actionWrap.style.display = edit.actionWrapDisplay || "";
+    } catch (e) {}
+    this._cardEdit = null;
+  },
+
   // P5/P6：字典显示模式文案（合/单/典）
   _dictModeLabel(mode) {
     return mode === "dan" ? "单" : mode === "dian" ? "典" : "合";
@@ -224,6 +240,20 @@ var WordTranslatorModule_pane = {
         });
         menu.append(mb);
       });
+      // 「修」：卡片原地编辑 [单词 -- 翻译]（只写本地数据，不动词典、不触发翻译）
+      const editBtn = el("button", {
+        type: "button",
+        class: "wt-card-menu-btn",
+        title: "修改单词与翻译",
+        "aria-label": "修改",
+      }, [txt("修")]);
+      editBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const cardEl = e.currentTarget && e.currentTarget.closest ? e.currentTarget.closest(".wt-card") : null;
+        self._hideCardMenu();
+        self._showCardEdit(itemID, index, card, cardEl);
+      });
       const retryBtn = el("button", {
         type: "button",
         class: "wt-card-menu-btn",
@@ -248,7 +278,7 @@ var WordTranslatorModule_pane = {
         self._hideCardMenu();
         self._deleteWordForItem(itemID, index);
       });
-      menu.append(retryBtn, delBtn);
+      menu.append(editBtn, retryBtn, delBtn);
       cardEl.append(menu);
 
       const cardRect = cardEl.getBoundingClientRect();
@@ -277,6 +307,97 @@ var WordTranslatorModule_pane = {
       this._debugLog("_showCardMenu: itemID=" + itemID + ", index=" + index);
     } catch (e) {
       this._debugLog("_showCardMenu ERROR: " + (e && (e.stack || e.message || e)));
+    }
+  },
+
+  // 「修」：卡片原地编辑 [单词 -- 翻译]。保存只改 _itemWords 并落盘（_persistWordsForItem 防抖），
+  // 不触发翻译 API、不写译文缓存、不动词典缓存；用户之后可自行点 ↻ 重新翻译（届时才重查词典）。
+  // 单词改后词典行自然消失（渲染按新词查缓存、未命中不显示）——词典内容本身从未被修改。
+  // ponytail: 若编辑期间在途翻译完成，其结果会覆盖译文（与既有 pending 语义一致），不额外加锁。
+  _showCardEdit(itemID, index, card, cardEl) {
+    this._hideCardEdit();
+    try {
+      const id = Number(itemID);
+      const doc = cardEl && cardEl.ownerDocument;
+      const list = this._itemWords.get(id);
+      if (!doc || !cardEl || !cardEl.isConnected || !list || list[index] !== card) return;
+      const self = this;
+      const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
+      const txt = (s) => this._createTxt(doc, s);
+      const btnCss = "border:1px solid ThreeDShadow;background:ButtonFace;color:ButtonText;border-radius:6px;cursor:pointer;font-size:12px;line-height:20px;padding:2px 9px;box-sizing:border-box;white-space:nowrap;";
+      const inputCss = "width:100%;min-width:0;font-size:12px;padding:3px 8px;border:1px solid ThreeDShadow;border-radius:6px;background:Field;color:FieldText;box-sizing:border-box;";
+
+      const wordInput = el("input", { type: "text", class: "wt-card-edit-input", placeholder: "单词", "aria-label": "单词", title: "单词", style: inputCss });
+      wordInput.value = String(card.word || "");
+      const transInput = el("input", { type: "text", class: "wt-card-edit-input", placeholder: "翻译", "aria-label": "翻译", title: "翻译", style: inputCss });
+      transInput.value = String(card.translation || "");
+      const okBtn = el("button", { type: "button", class: "wt-card-edit-btn", title: "保存修改（Enter）", "aria-label": "保存修改", style: btnCss }, [txt("保存")]);
+      const cancelBtn = el("button", { type: "button", class: "wt-card-edit-btn", title: "取消（Esc）", "aria-label": "取消", style: btnCss }, [txt("取消")]);
+      const btnRow = el("div", { style: "display:flex;align-items:center;gap:6px;justify-content:flex-end;" });
+      btnRow.append(cancelBtn, okBtn);
+      const wrap = el("div", { class: "wt-card-edit", role: "form", "aria-label": "编辑卡片", style: "display:flex;flex-direction:column;gap:4px;flex:1;min-width:0;" });
+      wrap.append(wordInput, transInput, btnRow);
+
+      const save = () => {
+        const nw = String(wordInput.value || "").trim();
+        const nt = String(transInput.value || "").trim();
+        const cur = self._itemWords.get(id);
+        if (!cur || cur[index] !== card) { self._hideCardEdit(); return; } // 卡片已被并发改动，放弃编辑
+        if (!nw) { try { wordInput.focus(); } catch (e0) {} return; }     // 单词必填，不落盘
+        const changed = nw !== card.word || nt !== card.translation;
+        if (changed) {
+          card.word = nw;
+          card.translation = nt; // 直接写本地数据，不触发翻译
+          self._persistWordsForItem(id);
+          self._debugLog("card edit saved: itemID=" + id + ", index=" + index);
+        }
+        self._hideCardEdit();
+        if (changed) self._applyWordBookView(id, { source: "card-edit" });
+      };
+      okBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        save();
+      });
+      cancelBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        self._hideCardEdit();
+      });
+      [wordInput, transInput].forEach((inp) => {
+        inp.addEventListener("keydown", (e) => {
+          if (e.isComposing) return; // 中文输入法选字回车不当保存
+          if (e.key === "Enter") { e.preventDefault(); save(); }
+        });
+      });
+
+      // 点击编辑器外 = 保存（原地编辑惯例：失焦即提交）；Esc = 取消
+      const onDoc = (e) => {
+        if (wrap.contains(e.target)) return;
+        save();
+      };
+      const onKey = (e) => {
+        if (e.isComposing) return; // 组字中的 Esc 是取消候选词，不关编辑器
+        if ((e.key || "").toLowerCase() === "escape") {
+          e.stopPropagation();
+          self._hideCardEdit();
+        }
+      };
+      doc.addEventListener("mousedown", onDoc, true);
+      doc.addEventListener("keydown", onKey, true);
+
+      const textWrap = cardEl.querySelector(".wt-card-text");
+      const actionWrap = cardEl.querySelector(".wt-card-actions");
+      const textWrapDisplay = textWrap ? textWrap.style.display : "";
+      const actionWrapDisplay = actionWrap ? actionWrap.style.display : "";
+      if (textWrap) textWrap.style.display = "none";
+      if (actionWrap) actionWrap.style.display = "none";
+      cardEl.append(wrap);
+      this._cardEdit = { el: wrap, doc, onDoc, onKey, textWrap, actionWrap, textWrapDisplay, actionWrapDisplay };
+      try { wordInput.focus(); } catch (e0) {}
+      this._debugLog("_showCardEdit: itemID=" + id + ", index=" + index);
+    } catch (e) {
+      this._debugLog("_showCardEdit ERROR: " + (e && (e.stack || e.message || e)));
     }
   },
 
@@ -853,6 +974,7 @@ var WordTranslatorModule_pane = {
 
   _renderPaneBody(doc, body, item) {
     try { this._hideCardMenu(); } catch (e) {}
+    try { this._hideCardEdit(); } catch (e) {}
     // 使用 HTML 命名空间创建元素（body 是 html:div，doc 是 XUL document）
     const HTML_NS = "http://www.w3.org/1999/xhtml";
     const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
@@ -1177,6 +1299,7 @@ var WordTranslatorModule_pane = {
   _renderCardList(doc, body, itemID, rawWords, pageInfo) {
     try {
       try { this._hideCardMenu(); } catch (e0) {}
+      try { this._hideCardEdit(); } catch (e0) {}
       const list = body && body.querySelector ? body.querySelector(".wordtranslator-pane-list") : null;
       if (!list) return false;
       const st = this._getWordBookViewState(itemID);
@@ -1293,7 +1416,7 @@ var WordTranslatorModule_pane = {
         }
       } catch (e) {}
     }
-    const actionWrap = el("div", { style: "display:flex;align-items:center;gap:2px;flex-shrink:0;" });
+    const actionWrap = el("div", { class: "wt-card-actions", style: "display:flex;align-items:center;gap:2px;flex-shrink:0;" });
     // 发音按钮（P2：ttsEnabled 关闭时隐藏）
     const ttsEnabled = this._data && this._data.ttsEnabled !== false;
     if (ttsEnabled) {
@@ -1312,7 +1435,7 @@ var WordTranslatorModule_pane = {
     actionWrap.append(retryBtn, delBtn);
     card.append(textWrap, actionWrap);
     card.addEventListener("dblclick", (ev) => {
-      if (ev.target && ev.target.closest && ev.target.closest("button")) return;
+      if (ev.target && ev.target.closest && ev.target.closest("button, .wt-card-edit")) return;
       ev.preventDefault();
       try {
         const sel = doc.defaultView && doc.defaultView.getSelection && doc.defaultView.getSelection();
@@ -1321,7 +1444,7 @@ var WordTranslatorModule_pane = {
       this._toggleCardHighlight(itemID, idx);
     });
     card.addEventListener("contextmenu", (ev) => {
-      if (ev.target && ev.target.closest && ev.target.closest("button")) return;
+      if (ev.target && ev.target.closest && ev.target.closest("button, .wt-card-edit")) return; // 编辑态保留原生右键（复制/粘贴）
       ev.preventDefault();
       this._showCardMenu(ev, itemID, idx, w);
     });

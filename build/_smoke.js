@@ -694,6 +694,42 @@ function section(title) { console.log("\n===== " + title + " ====="); }
     }
   }
 
+  // ============================================================
+  // S11 卡片「修」原地编辑（6.16.0b4）：编辑态只写本地数据，
+  // 不触发翻译 API、不写译文缓存、不动词典缓存
+  // ============================================================
+  section("S11 卡片「修」编辑");
+  if (WT) {
+    try {
+      // 1) 方法与状态字段存在
+      check("_showCardEdit/_hideCardEdit 存在",
+        typeof WT._showCardEdit === "function" && typeof WT._hideCardEdit === "function");
+      check("_cardEdit 状态字段存在", "_cardEdit" in WT);
+      // 2) 保存路径不触发翻译：_showCardEdit 源码不调用翻译/词典/译文缓存
+      const paneSrc = readAddon("content/scripts/wordbook-pane.js");
+      const editSrc = paneSrc.slice(paneSrc.indexOf("_showCardEdit(itemID, index, card, cardEl)"));
+      const editBody = editSrc.slice(0, editSrc.indexOf("_retryTranslationForCard"));
+      check("编辑保存不调翻译 API", editBody.indexOf("_translateWithTimeout") < 0);
+      check("编辑保存不写译文缓存", editBody.indexOf("_setCachedTranslation") < 0);
+      check("编辑保存不动词典", editBody.indexOf("_enrichDict") < 0);
+      // 3) 菜单含「修」按钮且在 ↻/✕ 前
+      const menuSrc = paneSrc.slice(paneSrc.indexOf("_showCardMenu(ev, itemID, index, card)"));
+      const menuBody = menuSrc.slice(0, menuSrc.indexOf("翻译超时兜底"));
+      check("卡片菜单含「修」按钮", /txt\("修"\)/.test(menuBody));
+      check("菜单顺序 修→↻→✕",
+        menuBody.indexOf('txt("修")') < menuBody.indexOf('txt("↻")') &&
+        menuBody.indexOf('txt("↻")') < menuBody.indexOf('txt("✕")'));
+      // 4) _renderCard 手势屏蔽已扩展到编辑态
+      check("dblclick/contextmenu 屏蔽编辑态", /\.wt-card-edit"\)\) return/.test(paneSrc.replace(/\n/g, "")) || /\.wt-card-edit/.test(menuBody));
+      // 5) _renderPaneBody/_renderCardList 清理编辑态
+      check("全量重绘清理编辑态", /_renderPaneBody\(doc, body, item\) \{\s*try \{ this\._hideCardMenu\(\); \} catch \(e\) \{\}\s*try \{ this\._hideCardEdit\(\); \} catch/.test(paneSrc.replace(/\r/g, "")));
+      // 6) 编辑态隐藏的 actionWrap 恢复原 display（防 flex 布局被毁）
+      check("actionWrap 恢复原 display", /actionWrapDisplay \|\| ""/.test(paneSrc));
+    } catch (e) {
+      check("S11 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
   console.log("\nRESULT pass=%d fail=%d", pass, fail);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("SMOKE ERROR", e); process.exit(1); });
