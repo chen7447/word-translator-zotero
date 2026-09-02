@@ -8,6 +8,17 @@
 var _googleClientId = "dict-chrome-ex";
 var _GOOGLE_CLIENT_CANDIDATES = ["dict-chrome-ex", "tw-ob", "gtx"];
 
+// 免费直连（provider=free）智能切换链：按大陆直连可达性排序，成功通道会话内记忆。
+// 均为逆向网页版接口，无 SLA，可能随时失效——失效时链自动降级到下一通道。
+var _freeChainIndex = 0;
+var _FREE_CHAIN = [
+  { provider: "bing", label: "Bing" },
+  { provider: "tencenttransmart", label: "腾讯交互翻译" },
+  { provider: "youdao-free", label: "有道" },
+  { provider: "google", label: "Google" },
+  { provider: "mymemory", label: "MyMemory" },
+];
+
 var WordTranslatorModule_translate = {
   async _enrichDict(word) {
     try {
@@ -167,6 +178,10 @@ var WordTranslatorModule_translate = {
     ["baidu-field", "_translateBaiduField"],
     ["deeplx-selfhosted", "_translateDeepLXSelfhosted"],
     ["youdaozhiyun", "_translateYoudaoZhiyun"],
+    ["bing", "_translateBing"],
+    ["tencenttransmart", "_translateTencentTransmart"],
+    ["youdao-free", "_translateYoudaoFree"],
+    ["free", "_translateFreeChain"],
     ["tencent", "_translateTencent"],
     ["aliyun", "_translateAliyun"],
     ["volcengine", "_translateVolcengine"],
@@ -238,6 +253,101 @@ var WordTranslatorModule_translate = {
     // 非 200：HTTP 状态或业务 code 错误；DLX 错误响应为 {code, message}
     const detail = (data && data.message) || (data && data.error && (data.error.message || data.error)) || resp.statusText || "";
     throw new Error("DeepLX 自建服务错误(" + (resp.status || (data && data.code) || "?") + "): " + detail);
+  },
+
+  // ===== 免费直连（免注册逆向接口，参考 zotero-pdf-translate）=====
+
+  // Bing：Edge 浏览器内置翻译接口，无 token，仅需伪装 Edge UA。
+  async _translateBing(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("Bing 翻译文本为空");
+    const url = "https://edge.microsoft.com/translate/translatetext?from=en&to=zh-Hans&isEnterpriseClient=false";
+    const headers = {
+      "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36 Edg/113.0.1774.42",
+    };
+    this._debugLog("Bing request URL: " + url + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, { headers, body: JSON.stringify([source]), responseType: "json" });
+    const data = this._parseJsonResponse(resp, "Bing");
+    if (resp.status < 200 || resp.status >= 300) throw new Error("Bing 翻译错误(" + resp.status + "): " + (resp.statusText || ""));
+    const translation = data && data[0] && data[0].translations && data[0].translations[0] && data[0].translations[0].text;
+    if (!translation) throw new Error("Bing 返回中没有 [].translations[].text：" + JSON.stringify(data).slice(0, 500));
+    return String(translation).trim();
+  },
+
+  // 腾讯交互翻译（transmart.qq.com 网页版接口）：固定 client_key + referer。
+  async _translateTencentTransmart(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("腾讯交互翻译文本为空");
+    const url = "https://transmart.qq.com/api/imt";
+    const body = {
+      header: {
+        fn: "auto_translation",
+        client_key: "browser-chrome-110.0.0-Mac OS-df4bd4c5-a65d-44b2-a40f-42f34f3535f2-1677486696487",
+      },
+      type: "plain",
+      model_category: "normal",
+      source: { lang: "en", text_list: [source] },
+      target: { lang: "zh" },
+    };
+    const headers = {
+      "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+      Referer: "https://transmart.qq.com/zh-CN/index",
+    };
+    this._debugLog("TencentTransmart request URL: " + url + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, { headers, body: JSON.stringify(body), responseType: "json" });
+    const data = this._parseJsonResponse(resp, "腾讯交互翻译");
+    if (resp.status < 200 || resp.status >= 300) throw new Error("腾讯交互翻译错误(" + resp.status + "): " + (resp.statusText || ""));
+    const rows = data && data.auto_translation;
+    if (!rows) throw new Error("腾讯交互翻译返回中没有 auto_translation：" + JSON.stringify(data).slice(0, 500));
+    const translation = Array.isArray(rows) ? rows.join("\n").trim() : String(rows).trim();
+    if (!translation) throw new Error("腾讯交互翻译返回空译文");
+    return translation;
+  },
+
+  // 有道网页 demo（aidemo.youdao.com/trans）：表单直投，无签名。旧公开端点已 302 失效。
+  async _translateYoudaoFree(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("有道翻译文本为空");
+    const url = ((api && api.baseUrl) || "https://aidemo.youdao.com/trans").trim();
+    const form = "from=en&to=zh-CHS&q=" + encodeURIComponent(source);
+    this._debugLog("YoudaoFree request URL: " + url + " | textLength=" + source.length);
+    const resp = await Zotero.HTTP.request("POST", url, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form,
+      responseType: "json",
+    });
+    const data = this._parseJsonResponse(resp, "有道");
+    if (resp.status < 200 || resp.status >= 300) throw new Error("有道翻译错误(" + resp.status + "): " + (resp.statusText || ""));
+    if (data && data.errorCode && data.errorCode !== "0") throw new Error("有道翻译错误(" + data.errorCode + ")");
+    const rows = data && data.translation;
+    const translation = Array.isArray(rows) ? rows.join("\n").trim() : "";
+    if (!translation) throw new Error("有道返回中没有 translation：" + JSON.stringify(data).slice(0, 500));
+    return translation;
+  },
+
+  // 免费直连：不是真实服务，是一个按 _FREE_CHAIN 顺序自动尝试的调度伪 provider。
+  // 每次翻译从上次成功的通道开始；通道抛错（限流/失效/不可达）就换下一个，全链失败才报错。
+  async _translateFreeChain(text, api) {
+    const source = String(text || "").trim();
+    if (!source) throw new Error("免费直连翻译文本为空");
+    const tried = [];
+    for (let i = 0; i < _FREE_CHAIN.length; i++) {
+      const hop = _FREE_CHAIN[(_freeChainIndex + i) % _FREE_CHAIN.length];
+      const synthApi = { provider: hop.provider, baseUrl: "", apiKey: "", model: "" };
+      try {
+        const method = this._translateAdapters.get(hop.provider);
+        const result = await this[method](text, synthApi);
+        if (i > 0) _freeChainIndex = (_freeChainIndex + i) % _FREE_CHAIN.length;
+        return result;
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        tried.push(hop.label + "（" + msg.slice(0, 80) + "）");
+        this._debugLog("FreeChain " + hop.label + " failed: " + msg);
+      }
+    }
+    throw new Error("免费直连失败：所有通道均不可用（" + tried.join("；") + "）");
   },
 
   async _translateYoudaoZhiyun(text, api) {

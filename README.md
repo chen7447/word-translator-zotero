@@ -1,6 +1,6 @@
 # 单词翻译 Word Translator for Zotero
 
-当前版本：**6.16.0**
+当前版本：**6.16.1**
 
 Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人单词本，支持可配置的 AI 翻译 API。
 
@@ -12,6 +12,7 @@ Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人�
 
 - PDF 阅读器划词后显示可自定义名称的菜单项（默认「添加单词并翻译」）。
 - 调用大模型或机器翻译接口，将英文单词 / 短语 / 句子译为中文。
+- **零配置免费直连**：全新安装自带「免费直连·智能切换」默认通道（Bing → 腾讯交互翻译 → 有道 → Google → MyMemory 自动轮换），无需注册任何账号即可使用；也可单独选用各免费接口。
 - 支持多家服务商：OpenAI 兼容、DeepSeek、Gemini、Claude、Qwen-MT，以及百度 / 腾讯 / 阿里 / 火山 / 彩云 / 小牛 / 有道 / 讯飞、DeepL、微软翻译；另有 Google 免费接口和 LibreTranslate / DeepLX 自建服务。
 - 可配置多个 API，并在右侧单词本面板中切换。
 - 支持系统+用户提示词，或一段式全局提示词；`{{word}}` 会替换为选中文本。
@@ -41,7 +42,7 @@ Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人�
 1. 从 [Release](https://github.com/chen7447/word-translator-zotero/releases) 或仓库 `build/` 下载最新 `.xpi`，例如：
 
    ```text
-   wordtranslator-6.16.0.xpi
+   wordtranslator-6.16.1.xpi
    ```
 
 2. 打开 Zotero → `工具 → 插件`。
@@ -61,6 +62,8 @@ Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人�
 ```
 
 ### 添加翻译 API
+
+> 6.16.1 起，全新安装已默认启用「免费直连·智能切换」，不添加任何 API 也能直接划词翻译；以下配置仅在使用大模型或官方翻译接口时需要。
 
 在「翻译 API」区域点击 `+ 添加服务商`。
 
@@ -376,7 +379,7 @@ locale/
 重新打包：
 
 ```powershell
-python build/pack_xpi.py build/addon build/wordtranslator-6.16.0.xpi
+python build/pack_xpi.py build/addon build/wordtranslator-6.16.1.xpi
 ```
 
 压缩包根目录必须直接包含 `manifest.json` 和 `bootstrap.js`，不要再套一层文件夹。

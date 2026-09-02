@@ -251,6 +251,18 @@
   // 已实现的 provider 保持可选；尚未接入请求层的 provider 暂时禁用，避免保存后误走 OpenAI 逻辑。
   const PROVIDER_CATALOG = [
     {
+      // 免费分组排第一：零基础用户打开下拉第一眼就是无需注册的选项（free 为智能切换伪服务）
+      group: "免费翻译",
+      options: [
+        { value: "free", label: "免费直连·智能切换（推荐新手：无需注册，多通道自动切换）", enabled: true, managedConfig: true, noCredentials: true, requiresModel: false },
+        { value: "bing", label: "Bing 微软翻译（Edge 内置接口，无需注册）", enabled: true, managedConfig: true, baseUrl: "https://edge.microsoft.com/translate/translatetext", noCredentials: true, requiresModel: false },
+        { value: "tencenttransmart", label: "腾讯交互翻译（网页版接口，无需注册）", enabled: true, managedConfig: true, baseUrl: "https://transmart.qq.com/api/imt", noCredentials: true, requiresModel: false },
+        { value: "youdao-free", label: "有道翻译（网页 demo 接口，无需注册）", enabled: true, managedConfig: true, baseUrl: "https://aidemo.youdao.com/trans", noCredentials: true, requiresModel: false },
+        { value: "google", label: "Google 翻译（非官方逆向接口，可能随时失效）", enabled: true, managedConfig: true, baseUrl: "https://translate.googleapis.com/translate_a/single", noCredentials: true, requiresModel: false },
+        { value: "mymemory", label: "MyMemory（翻译记忆库，单词/短语质量好，匿名日限额约 5000 字符）", enabled: true, managedConfig: true, baseUrl: "https://api.mymemory.translated.net/get", noCredentials: true, requiresModel: false },
+      ],
+    },
+    {
       group: "AI / 大模型",
       options: [
         { value: "openai", label: "OpenAI 兼容", enabled: true, baseUrl: "https://api.openai.com/v1" },
@@ -279,13 +291,6 @@
       options: [
         { value: "deepl", label: "DeepL（免费 API 调用量有限）", enabled: true, managedConfig: true, baseUrl: "https://api-free.deepl.com/v2", requiresModel: false },
         { value: "microsoft", label: "微软翻译", enabled: true, managedConfig: true, baseUrl: "https://api.cognitive.microsofttranslator.com/translate", requiresModel: false },
-      ],
-    },
-    {
-      group: "免费翻译",
-      options: [
-        { value: "google", label: "Google 翻译（非官方逆向接口，可能随时失效）", enabled: true, managedConfig: true, baseUrl: "https://translate.googleapis.com/translate_a/single", noCredentials: true, requiresModel: false },
-        { value: "mymemory", label: "MyMemory（翻译记忆库，单词/短语质量好，匿名日限额约 5000 字符）", enabled: true, managedConfig: true, baseUrl: "https://api.mymemory.translated.net/get", noCredentials: true, requiresModel: false },
       ],
     },
     {
@@ -540,6 +545,8 @@
     if (hint) {
       if (prov === "deeplx-selfhosted") {
         hint.textContent = "填写自建 DeepLX 服务地址（不带 /translate，插件会自动拼接；测试失败？或许可以填上 /translate 试试）。";
+      } else if (prov === "free") {
+        hint.textContent = "无需注册、无需填 Key：按 Bing → 腾讯交互翻译 → 有道 → Google → MyMemory 顺序自动尝试，通道失效自动切换。均为非官方接口，可能随网站改版失效。";
       } else if (managed) {
         hint.textContent = "官方翻译服务已固定 API 地址，填写所需凭证后即可保存。";
       } else if (meta.enabled) {

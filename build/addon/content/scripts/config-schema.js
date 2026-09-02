@@ -61,12 +61,21 @@ WordTranslatorConfig.normalize = function (raw) {
       base[k] = WordTranslatorConfig.DEFAULTS[k];
     }
   }
-  if (!raw || typeof raw !== "object") return base;
+  // 首次安装（磁盘无配置，或从未保存过 apis 字段）注入免配置「免费直连」并设为默认（activeApiIndex=0）；
+  // apis 已存在（含空数组——用户主动删光）则尊重现状，不再注入。
+  var FREE_DEFAULT_API = { name: "免费直连（智能切换，无需注册）", provider: "free", baseUrl: "", apiKey: "", model: "" };
+  if (!raw || typeof raw !== "object") {
+    base.apis = [FREE_DEFAULT_API];
+    return base;
+  }
   return {
     ...base,
     ...raw,
-    // deeplx（逆向 www2.deepl.com/jsonrpc）已下线：加载时丢弃旧条目，避免留下无法使用的服务商
-    apis: Array.isArray(raw.apis) ? raw.apis.filter((a) => a && a.provider !== "deeplx") : [],
+    // deeplx（逆向 www2.deepl.com/jsonrpc）已下线：加载时丢弃旧条目，避免留下无法使用的服务商；
+    // 无 apis 字段视为首次安装，注入免费直连默认项
+    apis: Array.isArray(raw.apis)
+      ? raw.apis.filter((a) => a && a.provider !== "deeplx")
+      : [FREE_DEFAULT_API],
     activeApiIndex: typeof raw.activeApiIndex === "number" ? raw.activeApiIndex : 0,
     sortMode: typeof raw.sortMode === "string" ? raw.sortMode : "reverse",
     searchStrategy: typeof raw.searchStrategy === "string" ? raw.searchStrategy : "prefix",
