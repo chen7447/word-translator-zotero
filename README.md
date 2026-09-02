@@ -1,6 +1,6 @@
 # 单词翻译 Word Translator for Zotero
 
-当前版本：**6.15.1**
+当前版本：**6.16.0**
 
 Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人单词本，支持可配置的 AI 翻译 API。
 
@@ -21,7 +21,7 @@ Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人�
 - 单词卡片支持 **朗读发音**：系统 TTS 引擎（免费离线）或 TTS API（OpenAI 兼容格式）。
 - 单词模式最长 500 字符；句子模式最长 5000 字符。
 - 单词本按 Zotero 条目分别保存，支持搜索、排序、分页、单条删除、重新翻译、全部清空、调节字体。
-- 单词卡片支持双击高亮、右键换色；偏好页可设默认高亮色。
+- 单词卡片支持双击高亮、右键换色、右键「修」原地编辑 [单词--翻译]（只改本地数据，不触发翻译、不动词典）；偏好页可设默认高亮色。
 - 单词本标题显示对应的 `words/<itemID>.json`，悬停可看完整路径。
 - 偏好页可检查插件更新。
 - API 配置和单词本保存在本地 Zotero 配置目录中。
@@ -41,7 +41,7 @@ Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人�
 1. 从 [Release](https://github.com/chen7447/word-translator-zotero/releases) 或仓库 `build/` 下载最新 `.xpi`，例如：
 
    ```text
-   wordtranslator-6.15.1.xpi
+   wordtranslator-6.16.0.xpi
    ```
 
 2. 打开 Zotero → `工具 → 插件`。
@@ -265,7 +265,7 @@ Authorization: Bearer {API Key}
 wordtranslator/
 ├── api-config.json
 ├── bridge-hook.cs
-├── bridge-hook.exe          # Windows 侧键钩子，首次启用时编译
+├── bridge-hook.exe          # Windows 侧键钩子（随包预编译，开机释放）
 ├── bridge-events.json       # 侧键事件（运行时）
 ├── dict-cache.json          # 词典查询缓存（音标/词性/释义/例句）
 ├── translation-cache.json   # 译文缓存（同一单词跨文献复用，↻ 重译会更新）
@@ -296,7 +296,7 @@ wordtranslator/
 
 ### 鼠标侧键桥接（Windows）
 
-- 启用「鼠标侧键」触发方式后，插件会把随包的 `bridge-hook.cs` 编译为 `bridge-hook.exe` 并在后台运行。**编译过程调用 PowerShell，可能触发杀毒软件提示**，属于误报，放行即可。
+- 启用「鼠标侧键」触发方式后，插件会把随包的预编译 `bridge-hook.exe` 释放到数据目录并在后台运行（不再在用户机上现场编译，避免个别机器 PowerShell/.NET 受限导致侧键失效）。`bridge-hook.cs` 仍随包保留，仅在 exe 释放失败时回退到现场编译（此时会调用 PowerShell，可能触发杀软误报，放行即可）。
 - 该钩子是**系统级**低级鼠标钩子：启用期间，鼠标侧键（XButton1/2）在**所有应用**中都会被本插件接管（用于触发划词翻译），浏览器的前进/后退等默认行为不再生效。不使用侧键功能时可在设置中关闭。
 
 ### 非官方接口
@@ -377,7 +377,7 @@ locale/
 重新打包：
 
 ```powershell
-python build/pack_xpi.py build/addon build/wordtranslator-6.15.1.xpi
+python build/pack_xpi.py build/addon build/wordtranslator-6.16.0.xpi
 ```
 
 压缩包根目录必须直接包含 `manifest.json` 和 `bootstrap.js`，不要再套一层文件夹。

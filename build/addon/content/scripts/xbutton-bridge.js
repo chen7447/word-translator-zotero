@@ -220,11 +220,68 @@ var WordTranslatorModule_bridge = {
     this._debugLog("xbutton bridge: stopped");
   },
 
+  // 二进制提取（原样写回，勿走 _writeTextFile：它是 UTF-8 文本流，会破坏 exe 字节）。
+  async _extractAddonBinary(uri, destPath) {
+    try {
+      let u8 = null;
+      if (typeof fetch === "function") {
+        try {
+          const r = await fetch(uri);
+          if (r && r.ok) { const buf = await r.arrayBuffer(); u8 = new Uint8Array(buf); }
+        } catch (e) {}
+      }
+      if ((!u8 || !u8.length) && typeof NetUtil !== "undefined") {
+        u8 = await new Promise(function (resolve) {
+          try {
+            NetUtil.asyncFetch({ uri: uri, loadUsingSystemPrincipal: true }, function (stream, status) {
+              try {
+                if (stream && Components.isSuccessCode(status)) {
+                  const bis = Components.classes["@mozilla.org/binaryinput-stream;1"]
+                    .createInstance(Components.interfaces.nsIBinaryInputStream);
+                  bis.setInputStream(stream);
+                  const s = bis.readBytes(stream.available());
+                  const arr = new Uint8Array(s.length);
+                  for (let i = 0; i < s.length; i++) arr[i] = s.charCodeAt(i) & 0xFF;
+                  resolve(arr);
+                } else resolve(null);
+              } catch (e) { resolve(null); }
+            });
+          } catch (e) { resolve(null); }
+        });
+      }
+      if (!u8 || !u8.length) { this._debugLog("xbutton bridge: binary not found " + uri); return false; }
+      const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+      f.initWithPath(destPath);
+      const stream = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
+      stream.init(f, 0x02 | 0x08 | 0x10, 0o666, 0); // write | create | truncate
+      const bos = Components.classes["@mozilla.org/binaryoutput-stream;1"].createInstance(Components.interfaces.nsIBinaryOutputStream);
+      bos.setOutputStream(stream);
+      bos.writeByteArray(u8, u8.length);
+      bos.close();
+      stream.close();
+      return true;
+    } catch (e) {
+      this._debugLog("xbutton bridge: binary extract error: " + (e && (e.message || e)));
+      return false;
+    }
+  },
+
   async _extractBridgeFiles() {
     const hookSourcePath = this._xbuttonBridge.hookSourcePath;
+    const exePath = this._xbuttonBridge.exePath;
     let anyOk = false;
 
-    // 提取 bridge-hook.cs（C# 钩子源文件，用于编译 exe）
+    // 优先直接释放随插件打包的 bridge-hook.exe——彻底跳过「在用户机上现场编译」这一
+    // 脆弱环节（不同机器的 PowerShell 语言模式 / .NET 编译器 / 杀软拦截都会让 Add-Type
+    // 编译失败 → 没有 exe → 侧键失效）。exe 正被占用（运行中）时写入会失败，此时保留旧
+    // exe，下面编译兜底也会因「exe 已存在」直接跳过。
+    if (exePath) {
+      const exeOk = await this._extractAddonBinary(this._addonRoot + "content/scripts/bridge-hook.exe", exePath);
+      this._debugLog("xbutton bridge: bundled exe extracted (" + (exeOk ? "ok" : "fail") + ")");
+      anyOk = anyOk || exeOk;
+    }
+
+    // 提取 bridge-hook.cs（C# 源文件，仅作 exe 释放失败时的编译兜底）
     if (hookSourcePath) {
       try {
         const uri = this._addonRoot + "content/scripts/bridge-hook.cs";
