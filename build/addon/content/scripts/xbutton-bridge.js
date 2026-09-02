@@ -5,10 +5,10 @@
 var WordTranslatorModule_bridge = {
   _xbuttonBridge: {
     active: false,           // 桥接是否运行
-    process: null,           // Subprocess 进程对象（bridge-hook.exe）
+    process: null,           // Subprocess 进程对象（后台 powershell.exe，内存加载钩子）
     pollTimer: null,         // 事件文件轮询定时器
     eventFile: null,         // 事件文件路径
-    exePath: null,           // 编译后的 bridge-hook.exe 路径
+    exePath: null,           // 旧版遗留 bridge-hook.exe 路径（启动时清理用；现已不落地 exe）
     hookSourcePath: null,    // 提取后的 bridge-hook.cs 路径（C# 钩子源文件）
     restartCount: 0,         // 连续重启计数（退避用）
     startedAt: 0,            // 最近启动时间戳
@@ -66,6 +66,10 @@ var WordTranslatorModule_bridge = {
       if (withBom && String(content).charCodeAt(0) !== 0xFEFF) content = "\uFEFF" + content;
       const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
       f.initWithPath(path);
+      // 先删旧文件再建——部分机器的 Gecko 不执行 nsIFileOutputStream 的 TRUNCATE 标志，
+      // 会把整份内容追加到旧文件后面，导致 bridge-hook.cs 变成 N 份源码拼接、Add-Type
+      // 编译报「using 子句必须位于…」。显式删除后重建保证永远只有一份干净内容。
+      try { if (f.exists()) f.remove(false); } catch (e) {}
       const stream = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
       stream.init(f, 0x02 | 0x08 | 0x10, 0o666, 0); // write | create | truncate
       const conv = Components.classes["@mozilla.org/intl/converter-output-stream;1"].createInstance(Components.interfaces.nsIConverterOutputStream);
@@ -98,7 +102,22 @@ var WordTranslatorModule_bridge = {
       this._xbuttonBridge.exePath = dataDir + sep + "bridge-hook.exe";
       this._xbuttonBridge.hookSourcePath = dataDir + sep + "bridge-hook.cs";
 
-      // 提取 bridge-hook.cs（C# 钩子源文件）
+      // 清理历史遗留的 bridge-hook.exe：旧版本在数据目录留下过预编译/现场编译的
+      // exe，杀软常把它当可疑全局钩子秒删（tmp.exe 出现即消失即此症状）。现在改为
+      // PowerShell 内存加载，不再有 exe，遗留在盘上的只会不断触发误报，直接删掉。
+      try {
+        const oldExe = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+        oldExe.initWithPath(this._xbuttonBridge.exePath);
+        if (oldExe.exists()) { try { oldExe.remove(false); } catch (e) {} }
+      } catch (e) {}
+      // 也尝试清理旧版可能残留的临时编译产物名
+      try {
+        const oldTmp = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+        oldTmp.initWithPath(this._xbuttonBridge.exePath + "-tmp.exe");
+        if (oldTmp.exists()) { try { oldTmp.remove(false); } catch (e) {} }
+      } catch (e) {}
+
+      // 提取 bridge-hook.cs（C# 钩子源文件，供 PowerShell 内存加载）
       const extracted = await this._extractBridgeFiles();
       if (!extracted) {
         this._debugLog("xbutton bridge: failed to extract bridge files");
@@ -119,37 +138,46 @@ var WordTranslatorModule_bridge = {
       }
       const zoteroPid = Services && Services.appinfo && Services.appinfo.processID ? Services.appinfo.processID : 0;
 
-      // ── 仅使用 C# WH_MOUSE_LL 钩子 exe（不再有 bridge-fallback.ps1）。
-      // 理由：GetAsyncKeyState 轮询对多数游戏鼠标无效（驱动拦截），且
-      // bridge-fallback.ps1 文件残留在数据目录会破坏此路径，导致重新打包后失效。
-      // 若 exe 编译/启动失败，记录错误并显示错误状态，由重启退避重试。
+      // ── WH_MOUSE_LL 钩子：PowerShell Add-Type 内存加载 C#，不落地任何 exe。
+      // 旧方案（Add-Type -OutputAssembly 生成 bridge-hook.exe）在装了杀软的机器上
+      // 会被静默删除刚生成的 exe（现象：bridge-hook.exe-tmp.exe 闪现即消失 → 无 exe
+      // → 侧键失效）。内存加载不落 PE 文件，绕开该误报，且不再依赖写权限/编译产物留存。
       let bridgeProc = null;
+      try {
+        // 编译失败时把错误写进事件文件（_bridgeInit:false），由轮询器显示状态；
+        // 不用 stderr 管道——进程是长驻的，stderr 一旦写满会阻塞钩子消息泵。
+        const evtQ = this._xbuttonBridge.eventFile.replace(/'/g, "''");
+        const csQ = this._xbuttonBridge.hookSourcePath.replace(/'/g, "''");
+        const psCommand =
+          "$ErrorActionPreference='Stop';" +
+          "try { Add-Type -TypeDefinition (Get-Content -LiteralPath '" + csQ + "' -Raw) } catch {" +
+          " $e = $_.Exception.Message -replace '[\\r\\n\"\\\\]',' ';" +
+          " try { [IO.File]::WriteAllText('" + evtQ + "', ('{\"_bridgeInit\":false,\"error\":\"CS compile: ' + $e + '\"}'), (New-Object System.Text.UTF8Encoding($false))) } catch {};" +
+          " exit 1 };" +
+          "try { [WordTranslatorBridge.Program]::Run(@('-EventFile','" + evtQ + "','-ParentPid','" + String(zoteroPid) + "')) | Out-Null } catch { exit 2 }";
 
-      const compiled = await this._compileBridgeExe();
-      if (compiled) {
-        try {
-          bridgeProc = await Subprocess.call({
-            command: this._xbuttonBridge.exePath,
-            arguments: [
-              "-EventFile", this._xbuttonBridge.eventFile,
-              "-ParentPid", String(zoteroPid),
-            ],
-            stderr: "ignore",
-          });
-          this._debugLog("xbutton bridge: hook exe started, PID=" + (bridgeProc.pid || "?"));
-          this._writeBridgeDebug("hook exe started, PID=" + (bridgeProc.pid || "?") + ", parentPid=" + zoteroPid);
-          this._xbuttonBridge.hookMode = true;
-        } catch (e) {
-          this._debugLog("xbutton bridge: hook exe launch FAILED: " + (e && (e.message || e)));
-          this._writeBridgeDebug("hook exe launch FAILED: " + (e && (e.message || e)));
-          bridgeProc = null;
-        }
+        bridgeProc = await Subprocess.call({
+          command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          arguments: [
+            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden", "-Command", psCommand,
+          ],
+          stderr: "ignore",
+          stdout: "ignore",
+        });
+        this._debugLog("xbutton bridge: hook (in-memory) started, PID=" + (bridgeProc.pid || "?"));
+        this._writeBridgeDebug("hook in-memory started via powershell PID=" + (bridgeProc.pid || "?") + ", parentPid=" + zoteroPid);
+        this._xbuttonBridge.hookMode = true;
+      } catch (e) {
+        this._debugLog("xbutton bridge: hook launch FAILED: " + (e && (e.message || e)));
+        this._writeBridgeDebug("hook launch FAILED: " + (e && (e.message || e)));
+        bridgeProc = null;
       }
 
-      // 编译或启动失败：记录错误并显示状态，交由保活退避重试
+      // 启动失败：记录错误并显示状态，交由保活退避重试
       if (!bridgeProc) {
         this._xbuttonBridge.hookMode = false;
-        this._debugLog("xbutton bridge: FAILED to start WH_MOUSE_LL hook (compile or launch)");
+        this._debugLog("xbutton bridge: FAILED to start WH_MOUSE_LL hook");
         this._writeBridgeDebug("FAILED to start WH_MOUSE_LL hook");
         this._updateXButtonBridgeStatus({ running: false, error: "bridge-failed", confirmed: false, hookMode: false });
         return;
@@ -220,85 +248,21 @@ var WordTranslatorModule_bridge = {
     this._debugLog("xbutton bridge: stopped");
   },
 
-  // 二进制提取（原样写回，勿走 _writeTextFile：它是 UTF-8 文本流，会破坏 exe 字节）。
-  async _extractAddonBinary(uri, destPath) {
-    try {
-      let u8 = null;
-      if (typeof fetch === "function") {
-        try {
-          const r = await fetch(uri);
-          if (r && r.ok) { const buf = await r.arrayBuffer(); u8 = new Uint8Array(buf); }
-        } catch (e) {}
-      }
-      if ((!u8 || !u8.length) && typeof NetUtil !== "undefined") {
-        u8 = await new Promise(function (resolve) {
-          try {
-            NetUtil.asyncFetch({ uri: uri, loadUsingSystemPrincipal: true }, function (stream, status) {
-              try {
-                if (stream && Components.isSuccessCode(status)) {
-                  const bis = Components.classes["@mozilla.org/binaryinput-stream;1"]
-                    .createInstance(Components.interfaces.nsIBinaryInputStream);
-                  bis.setInputStream(stream);
-                  const s = bis.readBytes(stream.available());
-                  const arr = new Uint8Array(s.length);
-                  for (let i = 0; i < s.length; i++) arr[i] = s.charCodeAt(i) & 0xFF;
-                  resolve(arr);
-                } else resolve(null);
-              } catch (e) { resolve(null); }
-            });
-          } catch (e) { resolve(null); }
-        });
-      }
-      if (!u8 || !u8.length) { this._debugLog("xbutton bridge: binary not found " + uri); return false; }
-      const f = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-      f.initWithPath(destPath);
-      const stream = Components.classes["@mozilla.org/network/file-output-stream;1"].createInstance(Components.interfaces.nsIFileOutputStream);
-      stream.init(f, 0x02 | 0x08 | 0x10, 0o666, 0); // write | create | truncate
-      const bos = Components.classes["@mozilla.org/binaryoutput-stream;1"].createInstance(Components.interfaces.nsIBinaryOutputStream);
-      bos.setOutputStream(stream);
-      bos.writeByteArray(u8, u8.length);
-      bos.close();
-      stream.close();
-      return true;
-    } catch (e) {
-      this._debugLog("xbutton bridge: binary extract error: " + (e && (e.message || e)));
-      return false;
-    }
-  },
-
+  // 提取 bridge-hook.cs（C# 源文件，供 PowerShell 内存加载；纯文本，杀软不拦）。
   async _extractBridgeFiles() {
     const hookSourcePath = this._xbuttonBridge.hookSourcePath;
-    const exePath = this._xbuttonBridge.exePath;
-    let anyOk = false;
-
-    // 优先直接释放随插件打包的 bridge-hook.exe——彻底跳过「在用户机上现场编译」这一
-    // 脆弱环节（不同机器的 PowerShell 语言模式 / .NET 编译器 / 杀软拦截都会让 Add-Type
-    // 编译失败 → 没有 exe → 侧键失效）。exe 正被占用（运行中）时写入会失败，此时保留旧
-    // exe，下面编译兜底也会因「exe 已存在」直接跳过。
-    if (exePath) {
-      const exeOk = await this._extractAddonBinary(this._addonRoot + "content/scripts/bridge-hook.exe", exePath);
-      this._debugLog("xbutton bridge: bundled exe extracted (" + (exeOk ? "ok" : "fail") + ")");
-      anyOk = anyOk || exeOk;
+    if (!hookSourcePath) return false;
+    try {
+      const uri = this._addonRoot + "content/scripts/bridge-hook.cs";
+      const content = await this._readAddonResource(uri);
+      if (!content) { this._debugLog("xbutton bridge: bridge-hook.cs not found in addon"); return false; }
+      const ok = this._writeTextFile(hookSourcePath, content, false);
+      this._debugLog("xbutton bridge: hook source extracted (" + (ok ? "ok" : "fail") + ")");
+      return ok;
+    } catch (e) {
+      this._debugLog("xbutton bridge: bridge-hook.cs extraction error: " + (e && (e.message || e)));
+      return false;
     }
-
-    // 提取 bridge-hook.cs（C# 源文件，仅作 exe 释放失败时的编译兜底）
-    if (hookSourcePath) {
-      try {
-        const uri = this._addonRoot + "content/scripts/bridge-hook.cs";
-        const content = await this._readAddonResource(uri);
-        if (content) {
-          const ok = this._writeTextFile(hookSourcePath, content, false);
-          this._debugLog("xbutton bridge: hook source extracted (" + (ok ? "ok" : "fail") + ")");
-          anyOk = anyOk || ok;
-        } else {
-          this._debugLog("xbutton bridge: bridge-hook.cs not found in addon");
-        }
-      } catch (e) {
-        this._debugLog("xbutton bridge: bridge-hook.cs extraction error: " + (e && (e.message || e)));
-      }
-    }
-
-    return anyOk;
   },
 
   // 向数据目录 bridge-debug.log 追加一行（不受 debugLog 开关控制，用于桥接诊断）。
@@ -318,145 +282,6 @@ var WordTranslatorModule_bridge = {
       wconv.close();
       wout.close();
     } catch (e) {}
-  },
-
-  // 编译 bridge-hook.exe。核心策略：
-  //   - 若 bridge-hook.exe 已存在且有效 → 跳过编译直接使用（避免「先删旧 exe
-  //     → 编译失败 → exe 缺失」的时序问题，这是重载后侧键失效的根因）。
-  //   - 仅当 exe 不存在/无效时才编译。编译目标为临时文件（以 .exe 结尾，
-  //     确保 Add-Type 生成有效 PE），成功后原子替换为最终路径。
-  //   - 编译失败时捕获 Add-Type 错误信息写入 bridge-debug.log 便于诊断。
-  async _compileBridgeExe() {
-    const exePath = this._xbuttonBridge.exePath;
-    const csPath = this._xbuttonBridge.hookSourcePath;
-    if (!exePath || !csPath) return false;
-
-    const Subprocess = this._getSubprocess();
-    if (!Subprocess) return false;
-
-    // 1) 杀掉所有残留的 bridge-hook.exe 进程，并等待句柄释放。
-    //    注意：此时不删除 exe 文件——保留旧 exe 作为兜底。
-    try {
-      await Subprocess.call({
-        command: "C:\\Windows\\System32\\taskkill.exe",
-        arguments: ["/F", "/IM", "bridge-hook.exe"],
-        stderr: "ignore",
-      }).then((p) => p.wait()).catch(() => {});
-      await new Promise((r) => setTimeout(r, 300)); // 等 Windows 释放文件句柄
-    } catch (e) {}
-
-    // 2) 关键修复：exe 已存在且有效 → 跳过编译，直接使用。
-    //    避免「删 exe → 编译失败 → 没有 exe」的时序问题。
-    try {
-      const exeFile = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-      exeFile.initWithPath(exePath);
-      if (exeFile.exists() && exeFile.fileSize > 0) {
-        this._debugLog("xbutton bridge: exe exists, skip compile");
-        this._writeBridgeDebug("exe exists, skip compile");
-        return true;
-      }
-    } catch (e) {}
-
-    // 3) 仅当 exe 缺失/无效时才编译。
-    const tmpExe = exePath + "-tmp.exe";
-    let compiled = false;
-    for (let attempt = 1; attempt <= 2 && !compiled; attempt++) {
-      try {
-        const tmp = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-        tmp.initWithPath(tmpExe);
-        if (tmp.exists()) { try { tmp.remove(false); } catch (e) {} }
-      } catch (e) {}
-
-      this._debugLog("xbutton bridge: exe missing, compiling (attempt " + attempt + ")...");
-      this._writeBridgeDebug("compile attempt " + attempt + " start (exe missing)");
-
-      const tmpQ = "'" + tmpExe.replace(/'/g, "''") + "'";
-      const csQ = "'" + csPath.replace(/'/g, "''") + "'";
-      // 编译失败时把 Add-Type 错误信息输出到 stdout（Write-Output），
-      // 便于后续读取并写入 bridge-debug.log。
-      const psCommand = "try { Add-Type -OutputAssembly " + tmpQ +
-        " -OutputType ConsoleApplication -TypeDefinition (Get-Content " + csQ +
-        " -Raw) -ErrorAction Stop } catch { Write-Output ('CSHARP_ERROR: ' + $_.Exception.Message); exit 1 }";
-
-      try {
-        const compileProc = await Subprocess.call({
-          command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-          arguments: [
-            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-Command", psCommand,
-          ],
-          stderr: "pipe",
-          stdout: "pipe",
-        });
-        // wait() 返回退出码（数字）。不要用对象解构——wait() 不返回对象。
-        const exitCode = await compileProc.wait();
-        // 读取编译输出，捕获 Add-Type 错误信息
-        let outText = "";
-        try {
-          if (compileProc.stdout) outText = compileProc.stdout.readString();
-        } catch (e2) {}
-        if (outText) this._writeBridgeDebug("compile output: " + outText);
-
-        const tmp = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-        tmp.initWithPath(tmpExe);
-        if (exitCode === 0 && tmp.exists() && tmp.fileSize > 0) {
-          this._writeBridgeDebug("compile OK to temp, size=" + tmp.fileSize);
-          compiled = true;
-          break;
-        }
-        this._writeBridgeDebug("compile attempt " + attempt + " failed, exitCode=" + exitCode);
-      } catch (e) {
-        this._writeBridgeDebug("compile attempt " + attempt + " ERROR: " + (e && (e.message || e)));
-      }
-    }
-
-    if (!compiled) {
-      this._debugLog("xbutton bridge: compile FAILED (no exe produced)");
-      this._writeBridgeDebug("compile FAILED after retries");
-      return false;
-    }
-
-    // 4) 原子替换：把临时编译产物安装为最终 bridge-hook.exe（带重试 + 再次 taskkill）
-    const tmp = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-    tmp.initWithPath(tmpExe);
-    for (let retry = 0; retry < 4; retry++) {
-      try {
-        // 删除旧 exe（进程已被杀，一般可删；若被锁则走 catch 重试）
-        const oldExe = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-        oldExe.initWithPath(exePath);
-        if (oldExe.exists()) { try { oldExe.remove(false); } catch (e) {} }
-
-        // 移动临时文件 → 最终路径（同一目录：moveTo 需父目录 + 叶名）
-        const leaf = exePath.indexOf("\\") >= 0 ? exePath.substring(exePath.lastIndexOf("\\") + 1) : exePath.split("/").pop();
-        tmp.moveTo(null, leaf);
-
-        const fe = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
-        fe.initWithPath(exePath);
-        if (fe.exists() && fe.fileSize > 0) {
-          this._debugLog("xbutton bridge: exe installed, size=" + fe.fileSize);
-          this._writeBridgeDebug("exe installed, size=" + fe.fileSize);
-          // 清理临时文件
-          try { tmp.remove(false); } catch (e) {}
-          return true;
-        }
-        this._writeBridgeDebug("install verify failed (exe not found after move)");
-      } catch (e) {
-        this._writeBridgeDebug("install attempt " + (retry + 1) + " failed: " + (e && (e.message || e)));
-        // 被锁 → 再杀一次 + 等待
-        try {
-          await Subprocess.call({
-            command: "C:\\Windows\\System32\\taskkill.exe",
-            arguments: ["/F", "/IM", "bridge-hook.exe"],
-            stderr: "ignore",
-          }).then((p) => p.wait()).catch(() => {});
-          await new Promise((r) => setTimeout(r, 700));
-        } catch (e2) {}
-      }
-    }
-
-    this._debugLog("xbutton bridge: exe install FAILED after retries (temp exe at " + tmpExe + ")");
-    this._writeBridgeDebug("exe install FAILED after retries");
-    return false;
   },
 
   _startXButtonPolling() {

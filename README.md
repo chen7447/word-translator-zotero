@@ -165,7 +165,7 @@ Google 翻译（非官方逆向）与 MyMemory（翻译记忆库）无需密钥�
 
 ### 鼠标侧键（Windows）
 
-浏览器层会把鼠标侧键当成前进 / 后退，JS 听不到。插件会启动系统层 `WH_MOUSE_LL` 钩子（`bridge-hook.exe`），在操作系统层捕获侧键并通知插件。
+浏览器层会把鼠标侧键当成前进 / 后退，JS 听不到。插件会启动系统层 `WH_MOUSE_LL` 钩子（后台 `powershell.exe` 内存加载 `bridge-hook.cs`），在操作系统层捕获侧键并通知插件。
 
 - 先选中文本，再按侧键，才会翻译。
 - 钩子运行时，侧键的前进 / 后退导航会被拦住。
@@ -264,8 +264,7 @@ Authorization: Bearer {API Key}
 ```text
 wordtranslator/
 ├── api-config.json
-├── bridge-hook.cs
-├── bridge-hook.exe          # Windows 侧键钩子（随包预编译，开机释放）
+├── bridge-hook.cs           # Windows 侧键钩子 C# 源码（运行时由 PowerShell 内存编译加载）
 ├── bridge-events.json       # 侧键事件（运行时）
 ├── dict-cache.json          # 词典查询缓存（音标/词性/释义/例句）
 ├── translation-cache.json   # 译文缓存（同一单词跨文献复用，↻ 重译会更新）
@@ -296,7 +295,7 @@ wordtranslator/
 
 ### 鼠标侧键桥接（Windows）
 
-- 启用「鼠标侧键」触发方式后，插件会把随包的预编译 `bridge-hook.exe` 释放到数据目录并在后台运行（不再在用户机上现场编译，避免个别机器 PowerShell/.NET 受限导致侧键失效）。`bridge-hook.cs` 仍随包保留，仅在 exe 释放失败时回退到现场编译（此时会调用 PowerShell，可能触发杀软误报，放行即可）。
+- 启用「鼠标侧键」触发方式后，插件会启动一个后台 `powershell.exe`，用 `Add-Type` 把随包的 `bridge-hook.cs` **在内存中**编译并加载 `WH_MOUSE_LL` 钩子运行——**不在磁盘上生成任何 `.exe`**。这样即便装了杀软也不会出现「新生成的 bridge-hook.exe 被秒删 → 侧键失效」的问题。调用 PowerShell 属正常行为，个别机器杀软可能提示，放行即可。
 - 该钩子是**系统级**低级鼠标钩子：启用期间，鼠标侧键（XButton1/2）在**所有应用**中都会被本插件接管（用于触发划词翻译），浏览器的前进/后退等默认行为不再生效。不使用侧键功能时可在设置中关闭。
 
 ### 非官方接口

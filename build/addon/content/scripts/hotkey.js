@@ -334,8 +334,8 @@ var WordTranslatorModule_hotkey = {
 
   // ==============================================================
   // 鼠标侧键桥接（XButton1/XButton2 系统层检测）
-  // 编译 bridge-hook.cs 为 exe 并直接启动（WH_MOUSE_LL 全局钩子）。
-  // exe 写事件文件，插件 100ms 轮询读取。
+  // 用 PowerShell Add-Type 把 bridge-hook.cs 内存编译加载为 WH_MOUSE_LL 全局钩子（不落地 exe）。
+  // 钩子进程写事件文件，插件 100ms 轮询读取。
   // ==============================================================
 
   _bindHotkeyForReaderInstance(reader) {

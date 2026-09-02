@@ -1,7 +1,8 @@
 // WordTranslator XButton Low-Level Mouse Hook (WH_MOUSE_LL)
 // Detects XButton1/XButton2 at the OS level, BEFORE the browser sees them,
 // and BLOCKS the event so the browser never receives back/forward navigation.
-// Compiled to bridge-hook.exe by bridge.ps1 (Add-Type -OutputAssembly).
+// Loaded IN-MEMORY by xbutton-bridge.js via PowerShell Add-Type (no -OutputAssembly,
+// so nothing is written as an .exe — avoids AV quarantining a dropped global-hook binary).
 // Compatible with .NET Framework 4.x (no NuGet dependencies).
 
 using System;
@@ -12,8 +13,12 @@ using System.Text;
 
 namespace WordTranslatorBridge
 {
-    class Program
+    public class Program
     {
+        // Entry point for in-memory Add-Type loading (PowerShell calls this directly;
+        // it blocks in the message pump until the parent process dies or a ctrl event).
+        public static int Run(string[] args) { return Main(args); }
+
         // ==================== P/Invoke ====================
 
         delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -262,8 +267,8 @@ namespace WordTranslatorBridge
             }
 
             _mainThreadId = GetCurrentThreadId();
-            SetConsoleCtrlHandler(OnConsoleCtrl, true);
-            Console.OutputEncoding = Encoding.UTF8;
+            try { SetConsoleCtrlHandler(OnConsoleCtrl, true); } catch { }
+            try { Console.OutputEncoding = Encoding.UTF8; } catch { } // may throw when stdout is redirected/no console
 
             // ---- install the low-level mouse hook ----
             _hookProc = HookCallback;
