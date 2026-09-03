@@ -347,7 +347,7 @@ var WordTranslatorModule_translate = {
         this._debugLog("FreeChain " + hop.label + " failed: " + msg);
       }
     }
-    throw new Error("免费直连失败：所有通道均不可用（" + tried.join("；") + "）");
+    throw new Error("免费直连失败：所有通道均不可用（" + tried.join("；") + "）。可改用官方 API / 大模型服务，或到 GitHub 提交 issue 反馈：github.com/chen7447/word-translator-zotero/issues");
   },
 
   async _translateYoudaoZhiyun(text, api) {

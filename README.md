@@ -1,6 +1,6 @@
 # 单词翻译 Word Translator for Zotero
 
-当前版本：**6.16.1**
+当前版本：**6.16.2**
 
 Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人单词本，支持可配置的 AI 翻译 API。
 
@@ -42,7 +42,7 @@ Zotero 插件：在 PDF 阅读器中划词翻译单词和短语，管理个人�
 1. 从 [Release](https://github.com/chen7447/word-translator-zotero/releases) 或仓库 `build/` 下载最新 `.xpi`，例如：
 
    ```text
-   wordtranslator-6.16.1.xpi
+   wordtranslator-6.16.2.xpi
    ```
 
 2. 打开 Zotero → `工具 → 插件`。
@@ -379,7 +379,7 @@ locale/
 重新打包：
 
 ```powershell
-python build/pack_xpi.py build/addon build/wordtranslator-6.16.1.xpi
+python build/pack_xpi.py build/addon build/wordtranslator-6.16.2.xpi
 ```
 
 压缩包根目录必须直接包含 `manifest.json` 和 `bootstrap.js`，不要再套一层文件夹。

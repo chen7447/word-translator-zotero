@@ -863,7 +863,34 @@
       #wordtranslator-pref-root { font-family: system-ui, "Segoe UI", sans-serif; font-size: 13px; line-height: 1.5; color: CanvasText; color-scheme: light dark; }
       #wordtranslator-pref-root h2 { font-size: 16px; margin: 0 0 16px; }
       #wordtranslator-pref-root h3 { font-size: 14px; margin: 18px 0 8px; }
-      #wordtranslator-pref-root .wt-section { margin-bottom: 18px; }
+      /* 卡片化分区：圆角浅底轻阴影，全部系统配色变量，暗色模式自动适配 */
+      #wordtranslator-pref-root .wt-section {
+        margin-bottom: 16px; padding: 14px 18px 12px; background: Canvas;
+        border: 1px solid color-mix(in srgb, ThreeDShadow 55%, transparent);
+        border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      }
+      #wordtranslator-pref-root .wt-section h3 { display: flex; align-items: center; gap: 7px; }
+      #wordtranslator-pref-root .wt-section h3::before { content: ""; width: 3px; height: 14px; border-radius: 2px; background: Highlight; flex: 0 0 auto; }
+      /* 顶部三组页内 tab（翻译/划词/数据与关于），粘性吸顶 */
+      #wordtranslator-pref-root .wt-tabs {
+        position: sticky; top: 0; z-index: 10; display: flex; gap: 6px; padding: 8px 0; margin: 0 0 14px;
+        background: color-mix(in srgb, Canvas 90%, transparent); backdrop-filter: blur(8px);
+        border-bottom: 1px solid color-mix(in srgb, ThreeDShadow 50%, transparent);
+      }
+      #wordtranslator-pref-root .wt-tab {
+        border: 1px solid transparent; background: transparent; color: GrayText;
+        padding: 5px 18px; border-radius: 8px; font-size: 13px; cursor: pointer; font-weight: 500;
+      }
+      #wordtranslator-pref-root .wt-tab:hover { color: ButtonText; background: color-mix(in srgb, ButtonText 6%, transparent); }
+      #wordtranslator-pref-root .wt-tab:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+      #wordtranslator-pref-root .wt-tab-active { background: Highlight; color: HighlightText; font-weight: 600; }
+      #wordtranslator-pref-root .wt-panel { display: none; }
+      #wordtranslator-pref-root .wt-panel-active { display: block; }
+      /* 底部状态栏：粘性置底，保存/测试结果统一在此显示 */
+      #wordtranslator-pref-root .wt-status {
+        position: sticky; bottom: 0; z-index: 10; margin: 4px 0 0; padding: 8px 14px;
+        background: Canvas; border: 1px solid color-mix(in srgb, ThreeDShadow 55%, transparent); border-radius: 10px;
+      }
       #wordtranslator-pref-root .wt-row { margin: 8px 0; display: flex; flex-direction: column; gap: 4px; }
       #wordtranslator-pref-root .wt-row-inline { margin: 8px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       #wordtranslator-pref-root .wt-label { font-weight: 500; }
@@ -945,7 +972,7 @@
     `)]);
 
     const header = el("div", { class: "wt-header", style: "display:flex;align-items:center;justify-content:space-between;margin:0 0 16px;gap:12px;" }, [
-      el("h2", { style: "margin:0 0 0 0;" }, [txt("说明")]),
+      el("h2", { style: "margin:0 0 0 0;" }, [txt("单词翻译 · 偏好设置")]),
       el("div", { class: "wt-update-wrap" }, [
         el("span", {
           id: "wt-check-update",
@@ -1341,6 +1368,11 @@
           return b;
         })(),
       ]),
+      el("p", { class: "wt-hint", style: "margin-top:10px;" }, [
+        txt("免费接口可能随网站改版失效，智能切换会自动换用其他通道；若全部失败，欢迎到 "),
+        el("a", { href: "https://github.com/chen7447/word-translator-zotero/issues", target: "_blank", rel: "noopener noreferrer", style: "color:LinkText;text-decoration:underline;cursor:pointer;" }, [txt("GitHub 提交 issue 反馈")]),
+        txt("（附错误信息截图更佳）。"),
+      ]),
 
       // 编辑面板（名称 + 获取模型 + 测试）
       el("div", { id: "wt-api-editor", class: "wt-api-editor", hidden: "hidden" }, [
@@ -1437,7 +1469,12 @@
       ]),
       el("div", { class: "wt-row-inline", style: "margin:4px 0;" }, [
         (() => {
-          const a = el("a", { id: "wt-github-link", href: "https://github.com/chen7447/word-translator-zotero", target: "_blank", rel: "noopener noreferrer", style: "color:LinkText;text-decoration:underline;cursor:pointer;" }, [txt("Github")]);
+          const a = el("a", { id: "wt-github-link", href: "https://github.com/chen7447/word-translator-zotero", target: "_blank", rel: "noopener noreferrer", style: "color:LinkText;text-decoration:underline;cursor:pointer;" }, [txt("GitHub 仓库")]);
+          return a;
+        })(),
+        el("span", { style: "color:GrayText;" }, [txt(" · ")]),
+        (() => {
+          const a = el("a", { href: "https://github.com/chen7447/word-translator-zotero/issues", target: "_blank", rel: "noopener noreferrer", style: "color:LinkText;text-decoration:underline;cursor:pointer;" }, [txt("Issue 反馈（接口失效 / 功能建议）")]);
           return a;
         })(),
       ]),
@@ -1448,7 +1485,27 @@
     ]);
     const statusBar = el("p", { id: "wt-status", class: "wt-status", style: "margin: 8px 0 0;" }, [txt("就绪")]);
 
-    root.append(style, header, intro, sectionGeneral, sectionTTS, sectionAppearance, sectionSearch, sectionPrompt, sectionApis, sectionDictionary, statusBar, sectionSaveDir, sectionAbout, footer);
+    // —— 三组页内 tab：翻译 / 划词 / 数据与关于 ——
+    // 面板常驻 DOM 仅显隐切换，保证隐藏面板里的 get() 查找与事件绑定始终有效。
+    const tabBar = el("div", { class: "wt-tabs", id: "wt-tabs", role: "tablist" }, [
+      el("button", { type: "button", class: "wt-tab wt-tab-active", "data-panel": "wt-panel-fanyi", role: "tab" }, [txt("翻译")]),
+      el("button", { type: "button", class: "wt-tab", "data-panel": "wt-panel-huaci", role: "tab" }, [txt("划词")]),
+      el("button", { type: "button", class: "wt-tab", "data-panel": "wt-panel-data", role: "tab" }, [txt("数据与关于")]),
+    ]);
+    const panelFanyi = el("div", { class: "wt-panel wt-panel-active", id: "wt-panel-fanyi" });
+    const panelHuaci = el("div", { class: "wt-panel", id: "wt-panel-huaci" });
+    const panelData = el("div", { class: "wt-panel", id: "wt-panel-data" });
+    panelFanyi.append(sectionApis, sectionPrompt, sectionDictionary);
+    panelHuaci.append(sectionGeneral, sectionTTS, sectionAppearance, sectionSearch);
+    panelData.append(sectionSaveDir, sectionAbout);
+    tabBar.addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest && ev.target.closest(".wt-tab");
+      if (!btn) return;
+      for (const t of tabBar.querySelectorAll(".wt-tab")) t.classList.toggle("wt-tab-active", t === btn);
+      for (const p of root.querySelectorAll(".wt-panel")) p.classList.toggle("wt-panel-active", p.id === btn.dataset.panel);
+    });
+
+    root.append(style, header, intro, tabBar, panelFanyi, panelHuaci, panelData, footer, statusBar);
     return true;
   }
 

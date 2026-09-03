@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>单词翻译偏好设置 — UI 改版预览（6.16.1 设计稿）</title>
+<style>
+  /* ============ 主题变量（实装时映射为系统配色 Canvas/Field/ButtonFace/ThreeDShadow/Highlight，此处为等价视觉预览） ============ */
+  :root[data-theme="light"] {
+    --bg: #f2f3f5; --card: #ffffff; --card-sub: #f7f8fa;
+    --text: #1f2328; --muted: #6b7280; --border: #d5d9de; --border-soft: #e5e8ec;
+    --accent: #2563eb; --accent-soft: #eaf1fe; --danger: #c2453a;
+    --shadow: 0 1px 3px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.04);
+    --field: #fbfbfc;
+  }
+  :root[data-theme="dark"] {
+    --bg: #1b1f26; --card: #242a33; --card-sub: #1f242c;
+    --text: #e6ebf1; --muted: #97a0ab; --border: #3d454f; --border-soft: #313943;
+    --accent: #5b93ff; --accent-soft: #24304a; --danger: #e5857a;
+    --shadow: 0 1px 3px rgba(0,0,0,.25);
+    --field: #1d222a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.55 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .stage { max-width: 880px; margin: 0 auto; padding: 20px 16px 60px; }
+
+  /* ============ 顶部 ============ */
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  .topbar h2 { font-size: 17px; margin: 0; font-weight: 650; }
+  .intro { color: var(--muted); margin: 2px 0 14px; }
+
+  /* 主题切换（仅预览用，实装无此控件） */
+  .theme-toggle {
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+    border-radius: 999px; padding: 3px 12px; font-size: 12px; cursor: pointer;
+  }
+
+  /* ============ Tab 导航（粘性） ============ */
+  .tabs {
+    position: sticky; top: 0; z-index: 10; display: flex; gap: 4px;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px); padding: 8px 0; margin: 0 0 14px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .tab {
+    flex: 0 0 auto; border: 1px solid transparent; background: transparent; color: var(--muted);
+    padding: 6px 18px; border-radius: 8px; font-size: 13px; cursor: pointer; font-weight: 500;
+  }
+  .tab:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .tab.active { background: var(--accent); color: #fff; font-weight: 600; box-shadow: 0 1px 4px rgba(37,99,235,.3); }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* ============ 卡片分区 ============ */
+  .card {
+    background: var(--card); border: 1px solid var(--border-soft); border-radius: 12px;
+    padding: 16px 18px 14px; margin-bottom: 16px; box-shadow: var(--shadow);
+  }
+  .card h3 {
+    margin: 0 0 10px; font-size: 14px; font-weight: 650;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .card h3 .bar { width: 3px; height: 14px; border-radius: 2px; background: var(--accent); }
+  .row { margin: 10px 0; display: flex; flex-direction: column; gap: 4px; }
+  .row-inline { margin: 8px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .lbl { font-weight: 500; }
+  .hint { color: var(--muted); font-size: 12px; margin: 3px 0 0; }
+
+  input[type=text], input[type=password], input[type=number], textarea, select {
+    padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--field); color: var(--text); font: inherit; width: 360px; max-width: 100%;
+  }
+  textarea { width: 100%; resize: vertical; }
+  select { width: 240px; }
+  input:focus, textarea:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 0; border-color: var(--accent); }
+  input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 15px; height: 15px; }
+
+  .btn {
+    padding: 6px 15px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--card); color: var(--text); cursor: pointer; font-size: 13px;
+  }
+  .btn:hover { background: color-mix(in srgb, var(--text) 6%, var(--card)); }
+  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-primary:hover { background: color-mix(in srgb, var(--accent) 86%, black); }
+  .btn-mini { padding: 2px 10px; font-size: 12px; }
+  .btn-danger { border-color: var(--danger); color: var(--danger); }
+  .btn-test { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+
+  a { color: var(--accent); text-decoration: underline; cursor: pointer; text-underline-offset: 2px; }
+
+  /* ============ API 表格 ============ */
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  th, td { border-bottom: 1px solid var(--border-soft); padding: 7px 8px; text-align: left; vertical-align: middle; }
+  th { background: var(--card-sub); font-weight: 600; font-size: 12px; color: var(--muted); }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  tbody tr.selected td { background: var(--accent-soft); }
+  td .op { color: var(--accent); font-size: 12px; margin-right: 8px; white-space: nowrap; }
+  .badge {
+    display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+    background: color-mix(in srgb, #16a34a 14%, transparent); color: #16a34a; font-weight: 600;
+  }
+  :root[data-theme=dark] .badge { color: #4ade80; }
+  .badge.muted { background: color-mix(in srgb, var(--muted) 15%, transparent); color: var(--muted); }
+
+  /* ============ API 编辑器 ============ */
+  .editor {
+    border: 1px solid var(--border-soft); border-radius: 10px; padding: 14px 16px; margin-top: 12px;
+    background: var(--card-sub); box-shadow: 0 1px 4px rgba(0,0,0,.05);
+  }
+  .editor h4 { margin: 0 0 8px; font-size: 13px; }
+  .zero-tip {
+    display: flex; gap: 8px; align-items: flex-start; padding: 9px 12px; margin: 8px 0;
+    border: 1px dashed color-mix(in srgb, #16a34a 55%, var(--border)); border-radius: 8px;
+    background: color-mix(in srgb, #16a34a 7%, transparent); font-size: 12px; color: var(--text);
+  }
+
+  /* ============ 失效报错示例 ============ */
+  details { margin-top: 10px; }
+  details summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; }
+  details summary:hover { color: var(--text); }
+  .err-box {
+    margin-top: 8px; padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.6;
+    border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+    background: color-mix(in srgb, var(--danger) 7%, transparent); color: var(--text);
+    font-family: ui-monospace, Consolas, monospace; word-break: break-all;
+  }
+
+  /* ============ 高亮色板 / 滑杆 ============ */
+  .swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border); cursor: pointer; padding: 0; }
+  .swatch.active { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .amber { background: #d8b96a; } .sage { background: #7d9c80; } .blue { background: #7b93b5; } .rose { background: #bd8993; }
+  input[type=range] { accent-color: var(--accent); width: 180px; }
+
+  /* ============ 底部状态栏 ============ */
+  .statusbar {
+    position: sticky; bottom: 0; margin-top: 8px; padding: 9px 14px;
+    background: var(--card); border: 1px solid var(--border-soft); border-radius: 10px;
+    box-shadow: 0 -2px 10px rgba(0,0,0,.05); display: flex; justify-content: space-between; align-items: center;
+  }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; display: inline-block; margin-right: 6px; }
+
+  .note {
+    margin-top: 26px; padding: 10px 14px; border-radius: 8px; font-size: 12px; color: var(--muted);
+    border: 1px dashed var(--border); line-height: 1.7;
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <!-- 顶部 -->
+  <div class="topbar">
+    <h2>单词翻译 · 偏好设置</h2>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button class="btn btn-mini" id="themeBtn">🌗 暗色</button>
+      <span class="btn btn-mini" style="border-radius:999px;">检查更新</span>
+    </div>
+  </div>
+  <p class="intro">划词后点击「添加单词并翻译」，翻译结果会追加到 PDF 右侧的单词本面板。</p>
+
+  <!-- Tab 导航 -->
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-tab="p-fanyi">翻译</button>
+    <button class="tab" data-tab="p-huaci">划词</button>
+    <button class="tab" data-tab="p-data">数据与关于</button>
+  </div>
+
+  <!-- ============================================================ Tab 1 翻译 -->
+  <div class="panel active" id="p-fanyi">
+
+    <!-- 翻译 API -->
+    <section class="card">
+      <h3><span class="bar"></span>翻译 API</h3>
+      <p class="hint" style="margin-top:-2px;">支持多个服务商（中转站）。点击行可编辑；点「+ 添加服务商」可新增。</p>
+
+      <table>
+        <thead>
+          <tr><th style="width:56px;">默认</th><th>名称</th><th style="width:120px;">服务商</th><th style="width:92px;">分类</th><th>模型</th><th style="width:84px;">状态</th><th style="width:110px;">操作</th></tr>
+        </thead>
+        <tbody>
+          <tr class="selected">
+            <td>⦿</td>
+            <td>免费直连（智能切换，无需注册）</td>
+            <td>免费直连·智能切换</td>
+            <td>免费翻译</td>
+            <td style="color:var(--muted)">—</td>
+            <td><span class="badge">已配置</span></td>
+            <td><span class="op">编辑</span><span class="op">删除</span></td>
+          </tr>
+          <tr>
+            <td>○</td>
+            <td>DeepSeek 官方</td>
+            <td>DeepSeek 官方</td>
+            <td>AI / 大模型</td>
+            <td>deepseek-chat</td>
+            <td><span class="badge">已配置</span></td>
+            <td><span class="op">编辑</span><span class="op">删除</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="row-inline" style="margin-top:6px;">
+        <button class="btn btn-primary">＋ 添加服务商</button>
+        <span class="hint" style="margin:0;">首次安装已自动添加免费直连，无需任何注册即可划词翻译。</span>
+      </div>
+
+      <p class="hint" style="margin-top:10px;">
+        免费接口可能随网站改版失效，智能切换会自动换用其他通道；若全部失败，欢迎到
+        <a href="https://github.com/chen7447/word-translator-zotero/issues" target="_blank">GitHub 提交 issue 反馈</a>
+        （附错误信息截图更佳）。
+      </p>
+
+      <!-- 编辑器示例：免费直连（managed 零输入形态） -->
+      <div class="editor">
+        <h4>编辑服务商 — 免费直连</h4>
+        <div class="row">
+          <label class="lbl">服务商</label>
+          <select style="width:100%;">
+            <optgroup label="免费翻译">
+              <option selected>免费直连·智能切换（推荐新手：无需注册，多通道自动切换）</option>
+              <option>Bing 微软翻译（Edge 内置接口，无需注册）</option>
+              <option>腾讯交互翻译（网页版接口，无需注册）</option>
+              <option>有道翻译（网页 demo 接口，无需注册）</option>
+              <option>Google 翻译（非官方逆向接口，可能随时失效）</option>
+              <option>MyMemory（翻译记忆库…）</option>
+            </optgroup>
+            <optgroup label="AI / 大模型"><option>OpenAI 兼容</option><option>DeepSeek 官方</option></optgroup>
+            <optgroup label="国内翻译平台"><option>百度翻译</option><option>腾讯云机器翻译</option></optgroup>
+          </select>
+        </div>
+        <div class="zero-tip">✅ 免费直连无需注册、无需填 Key：按 Bing → 腾讯交互翻译 → 有道 → Google → MyMemory 顺序自动尝试，通道失效自动切换，保存后即可使用。</div>
+        <div class="row-inline" style="margin-top:6px;">
+          <button class="btn btn-test">测试</button>
+          <button class="btn btn-primary">保存</button>
+          <button class="btn">取消</button>
+          <span class="hint" style="margin:0;">就绪</span>
+        </div>
+      </div>
+
+      <details>
+        <summary>▸ 失效时用户看到的报错示例（点开）</summary>
+        <div class="err-box">免费直连失败：所有通道均不可用（Bing（HTTP 429 被限流）；腾讯交互翻译（错误 403…）；有道（…）；Google（…）；MyMemory（…））。可改用官方 API / 大模型服务，或到 GitHub 提交 issue 反馈：github.com/chen7447/word-translator-zotero/issues</div>
+      </details>
+    </section>
+
+    <!-- 提示词 -->
+    <section class="card">
+      <h3><span class="bar"></span>提示词</h3>
+      <p class="hint" style="margin-top:-2px;">提示词用于告诉翻译模型怎么翻译你划选的单词/短语。可选择「系统+用户」分开设置，或「全局提示词」一段式设置。</p>
+      <div class="row-inline" style="gap:16px;">
+        <label style="display:inline-flex;align-items:center;gap:5px;"><input type="radio" name="pm" checked> 系统提示词 + 用户提示词</label>
+        <label style="display:inline-flex;align-items:center;gap:5px;"><input type="radio" name="pm"> 全局提示词</label>
+      </div>
+      <div class="row-inline" style="gap:8px;">
+        <input type="checkbox" id="ctx"><label for="ctx">携带选区上下文（{{context}}）</label>
+      </div>
+      <p class="hint">开启后划词会把单词前后的原句作为上下文发给模型，歧义词（如 cell/plant）译文更准。默认关闭。</p>
+      <div class="row">
+        <label class="lbl">系统提示词（System）</label>
+        <textarea rows="4">你是一位专业的英文文献翻译助手。请将用户给出的英文单词或短语翻译为最准确、最专业的中文译法……只输出翻译结果本身。</textarea>
+        <p class="hint">默认：定义翻译身份为「专业英文文献翻译助手」，要求只输出译法本身。</p>
+      </div>
+      <div class="row">
+        <label class="lbl">用户提示词（User）</label>
+        <textarea rows="2">请将以下英文单词或短语翻译为专业中文：{{word}}</textarea>
+      </div>
+      <div class="row-inline"><button class="btn">恢复默认</button></div>
+    </section>
+
+    <!-- 字典服务 -->
+    <section class="card">
+      <h3><span class="bar"></span>字典服务</h3>
+      <p class="hint" style="margin-top:-2px;">划词后自动补全音标、词性、中文释义、例句和原生发音（后台异步，不阻塞翻译）。</p>
+      <div class="row-inline"><input type="checkbox" id="dicten" checked><label for="dicten">启用字典服务（关闭后卡片只显示译文行）</label></div>
+      <div class="row">
+        <label class="lbl">字典源</label>
+        <div class="row-inline" style="margin:0;">
+          <select style="flex:1;">
+            <option selected>自动：离线词库优先，联网补全例句与发音</option>
+            <option>有道词典（网页）</option>
+            <option>FreeDictionary API</option>
+          </select>
+          <button class="btn btn-test">测试</button>
+        </div>
+        <p class="hint">自动：内置离线词库（音标+词性+中文释义）优先，断网也能用；联网再补有道网页（例句）与 FreeDictionary（原生音频）。</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============================================================ Tab 2 划词 -->
+  <div class="panel" id="p-huaci">
+
+    <!-- 常规 -->
+    <section class="card">
+      <h3><span class="bar"></span>常规</h3>
+      <div class="row">
+        <label class="lbl">阅读器划词菜单项名称</label>
+        <input type="text" value="添加单词并翻译">
+        <p class="hint">划选文字后，在阅读器弹出菜单中显示的入口名称。</p>
+      </div>
+      <div class="row-inline"><input type="checkbox" id="en1" checked><label for="en1">启用「添加单词并翻译」菜单项</label></div>
+      <div class="row-inline"><input type="checkbox" id="en2"><label for="en2">选中文本后自动翻译并加入单词本</label></div>
+      <div class="row-inline"><input type="checkbox" id="en3"><label for="en3">启用调试日志（写入 wordtranslator-debug.log，默认关闭）</label></div>
+      <div class="row-inline" style="margin-top:10px;">
+        <input type="checkbox" id="hk" checked><label for="hk">绑定「添加单词并翻译」快捷键：</label>
+        <select style="width:110px;"><option>Ctrl</option><option>Alt</option><option>Shift</option></select>
+        <select style="width:150px;"><option>鼠标侧键 1（XButton1）</option><option>自定义按键…</option></select>
+      </div>
+      <p class="hint">先选中文本，再按快捷键即可触发翻译。鼠标侧键翻译目前仅 Windows 可用。</p>
+    </section>
+
+    <!-- 发音 -->
+    <section class="card">
+      <h3><span class="bar"></span>发音</h3>
+      <div class="row-inline"><input type="checkbox" id="ttsen" checked><label for="ttsen">启用发音（关闭后单词卡隐藏播放按钮）</label></div>
+      <div class="row" style="margin-left:22px;">
+        <div class="row-inline" style="margin:0;">
+          <label class="lbl">引擎</label>
+          <select>
+            <option selected>系统 TTS 引擎语音（英）</option>
+            <option>词典原生音频</option>
+            <option>TTS API</option>
+          </select>
+          <button class="btn">设置 TTS 引擎</button>
+          <button class="btn">说明</button>
+        </div>
+        <p class="hint">打开系统设置中的语音设置页，或查看支持的语言和语音列表。</p>
+      </div>
+    </section>
+
+    <!-- 外观 -->
+    <section class="card">
+      <h3><span class="bar"></span>外观</h3>
+      <div class="row-inline">
+        <label class="lbl">默认高亮色</label>
+        <button class="swatch amber active" title="琥珀"></button>
+        <button class="swatch sage" title="苔绿"></button>
+        <button class="swatch blue" title="雾蓝"></button>
+        <button class="swatch rose" title="玫瑰"></button>
+      </div>
+      <p class="hint">双击单词卡片时使用此颜色。在单词本右键选色也会更新这里。</p>
+      <div class="row-inline" style="margin-top:12px;">
+        <label class="lbl">单词本字体大小</label>
+        <input type="range" min="9" max="24" value="13">
+        <input type="number" value="13" style="width:64px;"> <span style="color:var(--muted);font-size:12px;">px</span>
+        <button class="btn btn-mini">恢复默认</button>
+      </div>
+      <div class="row-inline">
+        <label class="lbl">每页显示单词数</label>
+        <input type="number" value="10" style="width:64px;"> <span style="color:var(--muted);font-size:12px;">个</span>
+        <button class="btn btn-mini">恢复默认</button>
+      </div>
+    </section>
+
+    <!-- 搜索 -->
+    <section class="card">
+      <h3><span class="bar"></span>搜索-匹配层设置</h3>
+      <div class="row-inline">
+        <label class="lbl">搜索策略</label>
+        <select style="flex:1;min-width:260px;">
+          <option selected>前缀匹配：按单词开头匹配</option>
+          <option>所有匹配：匹配单词或释义</option>
+          <option>只搜单词：仅匹配英文单词</option>
+          <option>精确匹配：完全匹配单词</option>
+        </select>
+      </div>
+      <p class="hint">选择搜索单词本时使用的匹配策略。更改后立即生效。</p>
+    </section>
+  </div>
+
+  <!-- ============================================================ Tab 3 数据与关于 -->
+  <div class="panel" id="p-data">
+
+    <!-- 保存目录 -->
+    <section class="card">
+      <h3><span class="bar"></span>保存目录</h3>
+      <div class="row">
+        <label class="lbl">单词本保存在</label>
+        <div class="row-inline" style="margin:4px 0;">
+          <input type="text" readonly value="C:\Users\chen7447\Zotero\Profiles\xxxx\zotero\wordtranslator\words" style="flex:1;color:var(--muted);font-size:12px;">
+          <button class="btn btn-mini">浏览</button>
+        </div>
+      </div>
+      <div class="row">
+        <label class="lbl">接口配置保存在</label>
+        <div class="row-inline" style="margin:4px 0;">
+          <input type="text" readonly value="C:\Users\chen7447\Zotero\Profiles\xxxx\zotero\wordtranslator\api-config.json" style="flex:1;color:var(--muted);font-size:12px;">
+          <button class="btn btn-mini">浏览</button>
+        </div>
+      </div>
+      <p class="hint">以上数据存在 Zotero 配置目录下的 wordtranslator 文件夹中（本地缓存，不会上传）。注意：api-config.json 以明文保存 API Key，请勿把该文件或其备份分享给他人。</p>
+    </section>
+
+    <!-- 关于 -->
+    <section class="card">
+      <h3><span class="bar"></span>关于</h3>
+      <div class="row-inline" style="margin:4px 0;">
+        <span class="lbl">Word Translator 版本 6.16.1</span>
+        <span class="hint" style="margin:0;">修改时间 2026-09-03</span>
+      </div>
+      <div class="row-inline" style="margin:4px 0;">
+        <a href="https://github.com/chen7447/word-translator-zotero" target="_blank">GitHub 仓库</a>
+        <span style="color:var(--muted)">·</span>
+        <a href="https://github.com/chen7447/word-translator-zotero/issues" target="_blank">Issue 反馈（接口失效 / 功能建议）</a>
+      </div>
+    </section>
+  </div>
+
+  <!-- 底部状态栏（置底，修复原先夹在页面中间的问题） -->
+  <div class="statusbar">
+    <span><span class="status-dot"></span>就绪</span>
+    <span class="hint" style="margin:0;">UI 改版预览稿 · 实装时全部控件映射为 Zotero 系统配色变量</span>
+  </div>
+
+  <div class="note">
+    <b>设计稿说明</b>（仅预览页可见，实装无）：<br>
+    ① 主题切换按钮用于预览亮/暗两种模式——实装用 <code>Canvas/Field/ButtonFace/ThreeDShadow/Highlight</code> 系统变量自动适配，无需此按钮；<br>
+    ② Tab 为页内锚点切换（三个分组：翻译 / 划词 / 数据），非路由跳转；<br>
+    ③ API 表格行、色板、滑杆为可交互示例；免费直连行默认选中并展开「零配置」编辑形态（managed：只显示服务商下拉）；<br>
+    ④ issue 反馈入口共三处：API 区 hint、关于区链接、以及「失效报错示例」里的报错文案末尾（第三处在阅读器报错里出现，非偏好页）。
+  </div>
+</div>
+
+<script>
+  // 主题切换
+  const themeBtn = document.getElementById("themeBtn");
+  themeBtn.onclick = () => {
+    const html = document.documentElement;
+    const dark = html.dataset.theme === "dark";
+    html.dataset.theme = dark ? "light" : "dark";
+    themeBtn.textContent = dark ? "🌗 暗色" : "☀️ 亮色";
+  };
+  // Tab 切换
+  document.getElementById("tabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab"); if (!btn) return;
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === btn));
+    document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.id === btn.dataset.tab));
+  });
+  // 色板选中态
+  document.querySelectorAll(".swatch").forEach(s => s.onclick = () => {
+    document.querySelectorAll(".swatch").forEach(x => x.classList.toggle("active", x === s));
+  });
+</script>
+</body>
+</html>
