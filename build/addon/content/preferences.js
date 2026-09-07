@@ -254,12 +254,12 @@
       // 免费分组排第一：零基础用户打开下拉第一眼就是无需注册的选项（free 为智能切换伪服务）
       group: "免费翻译",
       options: [
-        { value: "free", label: "免费直连·智能切换（推荐新手：无需注册，多通道自动切换）", enabled: true, managedConfig: true, noCredentials: true, requiresModel: false },
-        { value: "bing", label: "Bing 微软翻译（Edge 内置接口，无需注册）", enabled: true, managedConfig: true, baseUrl: "https://edge.microsoft.com/translate/translatetext", noCredentials: true, requiresModel: false },
-        { value: "tencenttransmart", label: "腾讯交互翻译（网页版接口，无需注册）", enabled: true, managedConfig: true, baseUrl: "https://transmart.qq.com/api/imt", noCredentials: true, requiresModel: false },
-        { value: "youdao-free", label: "有道翻译（网页 demo 接口，无需注册）", enabled: true, managedConfig: true, baseUrl: "https://aidemo.youdao.com/trans", noCredentials: true, requiresModel: false },
-        { value: "google", label: "Google 翻译（非官方逆向接口，可能随时失效）", enabled: true, managedConfig: true, baseUrl: "https://translate.googleapis.com/translate_a/single", noCredentials: true, requiresModel: false },
-        { value: "mymemory", label: "MyMemory（翻译记忆库，单词/短语质量好，匿名日限额约 5000 字符）", enabled: true, managedConfig: true, baseUrl: "https://api.mymemory.translated.net/get", noCredentials: true, requiresModel: false },
+        { value: "free", label: "免费直连·智能切换（免注册即用，多通道自动切换）", enabled: true, managedConfig: true, noCredentials: true, requiresModel: false },
+        { value: "bing", label: "Bing 微软翻译（Edge 内置，免注册）", enabled: true, managedConfig: true, baseUrl: "https://edge.microsoft.com/translate/translatetext", noCredentials: true, requiresModel: false },
+        { value: "tencenttransmart", label: "腾讯交互翻译（网页版接口，免注册）", enabled: true, managedConfig: true, baseUrl: "https://transmart.qq.com/api/imt", noCredentials: true, requiresModel: false },
+        { value: "youdao-free", label: "有道翻译（网页版接口，免注册）", enabled: true, managedConfig: true, baseUrl: "https://aidemo.youdao.com/trans", noCredentials: true, requiresModel: false },
+        { value: "google", label: "Google 翻译（非官方接口，可能随时失效）", enabled: true, managedConfig: true, baseUrl: "https://translate.googleapis.com/translate_a/single", noCredentials: true, requiresModel: false },
+        { value: "mymemory", label: "MyMemory（翻译记忆库，单词短语质量好，匿名日限额约 5000 字符）", enabled: true, managedConfig: true, baseUrl: "https://api.mymemory.translated.net/get", noCredentials: true, requiresModel: false },
       ],
     },
     {
@@ -463,7 +463,8 @@
   }
 
   function providerLabel(api) {
-    return getProviderMeta(api.provider).label.replace(/（后续接入）$/, "");
+    // 服务商列只显示短名（括号内为选择用补充说明，不占表格宽度）
+    return getProviderMeta(api.provider).label.replace(/（后续接入）$/, "").split("（")[0];
   }
 
   function providerStatus(api) {
