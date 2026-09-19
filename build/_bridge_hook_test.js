@@ -12,7 +12,9 @@ const bad = path.join(d, "bad.cs");
 fs.writeFileSync(bad, "this is not valid C# @@@ class {{{", "utf8");
 
 function buildPsCommand(csPath, eventFile, zoteroPid) {
-  // ---- 与 xbutton-bridge.js 中的构造保持逐字一致 ----
+  // ---- 与 xbutton-bridge.js 中的构造保持逐字一致（含 -Block / -ConsumerKeys） ----
+  const blockFlag = 1; // 与 _xbuttonBlockFlag() 默认一致
+  const consumerFlag = 1; // 与 _xbuttonConsumerKeysFlag() 默认一致
   const evtQ = String(eventFile).replace(/'/g, "''");
   const csQ = String(csPath).replace(/'/g, "''");
   const psCommand =
@@ -21,7 +23,7 @@ function buildPsCommand(csPath, eventFile, zoteroPid) {
     " $e = $_.Exception.Message -replace '[\\r\\n\"\\\\]',' ';" +
     " try { [IO.File]::WriteAllText('" + evtQ + "', ('{\"_bridgeInit\":false,\"error\":\"CS compile: ' + $e + '\"}'), (New-Object System.Text.UTF8Encoding($false))) } catch {};" +
     " exit 1 };" +
-    "try { [WordTranslatorBridge.Program]::Run(@('-EventFile','" + evtQ + "','-ParentPid','" + String(zoteroPid) + "')) | Out-Null } catch { exit 2 }";
+    "try { [WordTranslatorBridge.Program]::Run(@('-EventFile','" + evtQ + "','-ParentPid','" + String(zoteroPid) + "','-Block','" + blockFlag + "','-ConsumerKeys','" + consumerFlag + "')) | Out-Null } catch { exit 2 }";
   // ---------------------------------------------------
   return psCommand;
 }
@@ -42,6 +44,12 @@ function run(label, csPath, expectInit) {
     o && o._bridgeInit === expectInit && raw.charCodeAt(0) !== 0xFEFF /* 无 BOM */ &&
     (expectInit === true ? status === 0 : status !== 0);
   console.log(`[${ok ? "PASS" : "FAIL"}] ${label}: exit=${status} parsed=${o ? "_bridgeInit=" + o._bridgeInit : "NO-JSON/UNPARSEABLE"}`);
+  // 鼠标钩子状态必须回报（只报键盘钩子时，「鼠标钩子单独失效」在界面上不可见）
+  if (expectInit) {
+    const mh = !!(o && o.mouseHook === true);
+    console.log(`[${mh ? "PASS" : "FAIL"}] ${label}: mouseHook=${o ? o.mouseHook : "n/a"}`);
+    return ok && mh;
+  }
   return ok;
 }
 

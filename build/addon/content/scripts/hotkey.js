@@ -116,17 +116,9 @@ var WordTranslatorModule_hotkey = {
       add("keyup", function (ev) {
         try { self._handleSelectionTranslateGlobalKeyUp(ev, "main-window"); } catch (e) {}
       });
-      // —— 鼠标：只保留“先选区后按绑定键”的入口；侧键划词已废弃 ——
-      add("mousedown", function (ev) {
-        try {
-          self._refreshPrefsFromStorage();
-          const d = self._data;
-          if (!d || !self._addWordHotkeyActive()) return;
-          if (self._matchSelectionFirstKey(ev)) {
-            self._fireAddWordHotkey();
-          }
-        } catch (e) {}
-      });
+      // —— 鼠标：无监听。侧键划词已废弃；侧键触发走桥接事件文件（不走 DOM 鼠标
+      // 事件），键盘组合键由下方 keydown 处理。此前这里的 mousedown 监听是死代码：
+      // _matchSelectionFirstKey 只读 ev.key，MouseEvent 没有该属性恒为 false。
       // —— 键盘：“先选区后按绑定键” ——
       add("keydown", function (ev) {
         try {
@@ -318,9 +310,9 @@ var WordTranslatorModule_hotkey = {
       }
       const now = Date.now();
       if (this._addWordHotkeyFired && now - this._addWordHotkeyFired < 1000) return;
-      const pending = this._getSelectionFirstPending();
+      const pending = this._getSelectionFirstPending() || this._recoverSelectionFirstPending("hotkey");
       if (!pending) {
-        this._debugLog("addWord hotkey pressed but no selected text cached");
+        this._debugLog("addWord hotkey pressed but no selected text cached (and no live selection)");
         return;
       }
       this._addWordHotkeyFired = now;
@@ -1174,11 +1166,12 @@ var WordTranslatorModule_hotkey = {
   // mode: "ctrl" | "alt" | "shift" | "custom"
   _addWordHotkeyActive() {
     if (!this._data || !this._data.addWordHotkeyEnabled) return false;
-    const mode = this._data.addWordHotkeyMode || "custom";
+    const mode = this._data.addWordHotkeyMode || "ctrl"; // 缺省与 schema 一致
     if (mode === "ctrl" || mode === "alt" || mode === "shift") return true;
     if (mode === "custom") return !!this._data.addWordHotkey;
-    // 侧键模式：依赖桥接进程是否运行
-    if (mode === "xbutton1" || mode === "xbutton2" || mode === "xbutton-both") {
+    // 侧键/泛化键模式（xbutton1 / xbutton2 / xbutton-both / vk:0xNN / hid:0xNNNN）：
+    // 依赖桥接进程是否运行
+    if (typeof this._xbuttonIsSideKeyMode === "function" && this._xbuttonIsSideKeyMode(mode)) {
       return this._xbuttonBridge.active === true;
     }
     return false;
@@ -1187,7 +1180,7 @@ var WordTranslatorModule_hotkey = {
   // 当前“添加单词”快捷键对应的实际 spec（用于运行时匹配）
   _addWordHotkeySpec() {
     if (!this._data) return "";
-    const mode = this._data.addWordHotkeyMode || "custom";
+    const mode = this._data.addWordHotkeyMode || "ctrl"; // 缺省与 schema 一致
     if (mode === "ctrl" || mode === "alt" || mode === "shift") return mode;
     if (mode === "custom") return this._data.addWordHotkey || "";
     return "";
@@ -1257,6 +1250,69 @@ var WordTranslatorModule_hotkey = {
     if (!pending || !pending.text) return null;
     if (Date.now() - (pending.time || 0) > 10000) return null;
     return pending;
+  },
+
+  // 选区缓存失效时的只读兜底：直接读「当前活动阅读器里此刻仍然高亮的实时选区」。
+  // 为什么需要：缓存窗口只有 10 秒，而真实阅读节奏是「划词 → 读一会儿 / 把手移到
+  // 鼠标侧键 → 再按」，屏幕上高亮还在，插件却报「没有划词选区」——这是最容易被
+  // 判成「侧键坏了 / 选区变量丢了」的体验。
+  //（实测日志：15:22:54 抓到 "gibberellins"，15:23:04 按侧键就报没有选区。）
+  // 只做恢复：读不到就返回 null，不影响原有失败路径；读到的文本仍走同一套
+  // 选区校验（_isSelectionTextAllowed），不会绕过单词/长度限制。
+  _recoverSelectionFirstPending(reason) {
+    try {
+      const win = (typeof Zotero !== "undefined" && typeof Zotero.getMainWindow === "function")
+        ? Zotero.getMainWindow() : null;
+      if (typeof Zotero === "undefined" || !Zotero.Reader) return null;
+      // 候选阅读器：当前标签优先；若用户中途切到别的窗口/标签（实测日志里
+      // 有大量 main-window-blur/deactivate），则回退到「最近一次划词的阅读器」，
+      // 那才是屏幕上还高亮着单词的那一个。
+      const candidates = [];
+      try {
+        const tabs = win && win.Zotero_Tabs;
+        const tabID = tabs && tabs.selectedID;
+        if (tabID && typeof Zotero.Reader.getByTabID === "function") {
+          const r0 = Zotero.Reader.getByTabID(tabID);
+          if (r0) candidates.push(r0);
+        }
+      } catch (e) {}
+      try {
+        const popupReader = this._lastSelectionPopup && this._lastSelectionPopup.reader;
+        if (popupReader && candidates.indexOf(popupReader) < 0) candidates.push(popupReader);
+      } catch (e) {}
+      try {
+        const pendingReader = this._selectionFirstPending && this._selectionFirstPending.reader;
+        if (pendingReader && candidates.indexOf(pendingReader) < 0) candidates.push(pendingReader);
+      } catch (e) {}
+      for (const reader of candidates) {
+        try {
+          // PDF 阅读器的选区在 PDF.js iframe 里（_getHotkeyTargetWindow 正是取它）
+          const targetWin = this._getHotkeyTargetWindow(reader);
+          if (!targetWin) continue;
+          let text = "";
+          try {
+            const sel = targetWin.getSelection ? targetWin.getSelection() : null;
+            text = sel ? String(sel.toString() || "").trim() : "";
+          } catch (e) {}
+          if (!text) continue;
+          if (typeof this._isSelectionTextAllowed === "function") {
+            const check = this._isSelectionTextAllowed(text);
+            if (!check || !check.allowed) {
+              this._debugLog("selection recover skipped (" + reason + "): reason=" + (check && check.reason) + ", len=" + text.length);
+              continue;
+            }
+          }
+          const doc = (targetWin.document) || null;
+          const pending = { reader: reader, text: text, doc: doc, append: null, time: Date.now(), recovered: true };
+          this._debugLog("selection recovered from live reader selection (" + reason + "): " + JSON.stringify(text.slice(0, 60)));
+          return pending;
+        } catch (e) {}
+      }
+      return null;
+    } catch (e) {
+      this._debugLog("_recoverSelectionFirstPending ERROR: " + (e && (e.message || String(e))));
+      return null;
+    }
   },
 
   // 先选区后按“添加单词”快捷键的适配器；不属于快捷键-划词翻译会话。

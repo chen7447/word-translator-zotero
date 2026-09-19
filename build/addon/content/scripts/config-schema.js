@@ -5,6 +5,17 @@
 
 var WordTranslatorConfig = {};
 
+// 泛化键绑定值规范化：统一为大写十六进制（事件码由钩子进程以大写发出，
+// 运行期按字符串全等匹配，存储值必须与事件码形态一致，如 "vk:0xA8"）。
+WordTranslatorConfig.canonicalizeKeyMode = function (mode) {
+  if (typeof mode !== "string") return mode;
+  var m = /^vk:0x([0-9a-f]{2})$/i.exec(mode);
+  if (m) return "vk:0x" + m[1].toUpperCase();
+  m = /^hid:0x([0-9a-f]{4})$/i.exec(mode);
+  if (m) return "hid:0x" + m[1].toUpperCase();
+  return mode;
+};
+
 WordTranslatorConfig.DEFAULTS = {
   // 通用
   contextMenuLabel: "添加单词并翻译",
@@ -29,6 +40,16 @@ WordTranslatorConfig.DEFAULTS = {
   selectionFirstEnabled: true,
   // 鼠标侧键桥接
   xbuttonBridgeEnabled: true,
+  xbuttonEnabled: false, // 设置页「鼠标侧键」主开关：关闭时完全不装系统钩子，侧键保持系统默认（其他程序的后退/前进不受影响）
+  // 「兼容模式」：一个开关统管原来两个开关（吞掉侧键 + 捕获多媒体键形态侧键）。
+  //   开（默认）= 捕获多媒体键形态侧键 + 吞掉侧键：蓝牙鼠标/被厂商软件映射成浏览器
+  //                后退/前进的侧键也能触发，且标准侧键不再误触系统后退/前进。
+  //   关        = 只认标准 XButton 形态，且不再吞键（侧键事件全部放行给系统与其他
+  //                鼠标软件；此时按侧键会同时触发后退/前进与翻译）。
+  // 开启时会弹一次说明（含代价与排错提示），取舍交给用户。
+  xbuttonCompat: true,
+  xbuttonConsumerNoticeAck: false, // 是否已提示过「侧键接管系统后退/前进」的取舍说明（一次性，避免反复打扰）
+  xbuttonPrevBind: "", // 勾选「任意侧键」前记住的具体绑定（取消勾选时恢复）
   // 翻译提示
   promptMode: "split",
   promptSystem:
@@ -86,13 +107,34 @@ WordTranslatorConfig.normalize = function (raw) {
     selectionMode: raw.selectionMode === "sentence" ? "sentence" : "word",
     // 旧数据没有新字段时保持默认值（...raw 会用 undefined 覆盖 base，需显式回填）
     addWordHotkeyEnabled: typeof raw.addWordHotkeyEnabled === "boolean" ? raw.addWordHotkeyEnabled : true,
+    // 绑定值：四个标准模式 + 侧键模式（xbutton1/xbutton2/xbutton-both）+
+    // 泛化键指纹（vk:0xNN / hid:0xNNNN——录制第三颗侧键等非标准形态时写入）
     addWordHotkeyMode: (raw.addWordHotkeyMode === "ctrl" || raw.addWordHotkeyMode === "alt" ||
       raw.addWordHotkeyMode === "shift" || raw.addWordHotkeyMode === "custom" ||
       raw.addWordHotkeyMode === "xbutton1" || raw.addWordHotkeyMode === "xbutton2" ||
-      raw.addWordHotkeyMode === "xbutton-both")
-      ? raw.addWordHotkeyMode : "ctrl",
+      raw.addWordHotkeyMode === "xbutton-both" ||
+      (typeof raw.addWordHotkeyMode === "string" &&
+        /^(vk:0x[0-9A-F]{2}|hid:0x[0-9A-F]{4})$/i.test(raw.addWordHotkeyMode)))
+      ? WordTranslatorConfig.canonicalizeKeyMode(raw.addWordHotkeyMode) : "ctrl",
     selectionFirstEnabled: typeof raw.selectionFirstEnabled === "boolean" ? raw.selectionFirstEnabled : true,
     xbuttonBridgeEnabled: typeof raw.xbuttonBridgeEnabled === "boolean" ? raw.xbuttonBridgeEnabled : true,
+    // 鼠标侧键主开关：老数据平滑迁移——已经在用侧键模式的用户默认开启（升级后不失效），
+    // 其余用户默认关闭（先开关、后绑定、才生效；关闭时不影响其他程序的侧键功能）。
+    xbuttonEnabled: typeof raw.xbuttonEnabled === "boolean" ? raw.xbuttonEnabled
+      : (raw.addWordHotkeyMode === "xbutton1" || raw.addWordHotkeyMode === "xbutton2" ||
+        raw.addWordHotkeyMode === "xbutton-both" ||
+        (typeof raw.addWordHotkeyMode === "string" &&
+          /^(vk:0x[0-9A-F]{2}|hid:0x[0-9A-F]{4})$/i.test(raw.addWordHotkeyMode))),
+    // 兼容模式：老数据从原来的两个开关迁移（两者都为「开」才算兼容模式开启），
+    // 之后不再读取旧字段。
+    xbuttonCompat: typeof raw.xbuttonCompat === "boolean" ? raw.xbuttonCompat
+      : (raw.xbuttonBlockEvents !== false && raw.xbuttonConsumerKeys !== false),
+    xbuttonConsumerNoticeAck: raw.xbuttonConsumerNoticeAck === true,
+    // 勾选「任意侧键」前记住的具体绑定（取消勾选时恢复）；只接受具体侧键/泛化键值
+    xbuttonPrevBind: (typeof raw.xbuttonPrevBind === "string" &&
+      (raw.xbuttonPrevBind === "xbutton1" || raw.xbuttonPrevBind === "xbutton2" ||
+        /^(vk:0x[0-9A-F]{2}|hid:0x[0-9A-F]{4})$/i.test(raw.xbuttonPrevBind)))
+      ? WordTranslatorConfig.canonicalizeKeyMode(raw.xbuttonPrevBind) : "",
     hotkeyModifier: (raw.hotkeyModifier === "shift" || raw.hotkeyModifier === "ctrl+shift" || raw.hotkeyModifier === "alt+shift")
       ? "ctrl" : (raw.hotkeyModifier || "ctrl"),
     ttsEngine: (raw.ttsEngine === "api" || raw.ttsEngine === "dict") ? raw.ttsEngine : "system",

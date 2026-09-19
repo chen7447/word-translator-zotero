@@ -195,12 +195,8 @@ var WordTranslatorModule_pane = {
       const el = (tag, attrs, children) => this._createEl(doc, tag, attrs, children);
       const txt = (s) => this._createTxt(doc, s);
       const current = this._normalizeHighlight(card && card.highlight);
-      const colors = [
-        { id: "amber", label: "琥珀" },
-        { id: "sage", label: "苔绿" },
-        { id: "blue", label: "雾蓝" },
-        { id: "rose", label: "玫瑰" },
-      ];
+      // 色板选项与标签直接取自 HIGHLIGHT_COLORS（addon.js 单一来源），与偏好页/卡片永远同源
+      const colors = this.HIGHLIGHT_COLORS || [];
 
       const menu = el("div", { class: "wt-card-menu", role: "menu" });
       colors.forEach((c) => {
@@ -1380,7 +1376,9 @@ var WordTranslatorModule_pane = {
     }
     // 文本部分包在一个容器里，只对它应用字号，并且可被选中
     const textWrap = el("div", { class: "wt-card-text", style: "flex:1;min-width:0;font-size:" + fsVal + "px;line-height:1.5;user-select:text;-webkit-user-select:text;cursor:text;" });
-    const wordEl = el("span", { class: "wt-card-word", style: "font-weight:600;color:Highlight;word-break:break-word;" }, [txt(w.word)]);
+    // 文字降噪：单词默认色由 .wt-card-word 规则给 CanvasText；仅高亮卡片经
+    // .wt-card-hl-{color} .wt-card-word 继承对应高亮色（与色条同色，深浅自动差异化）。
+    const wordEl = el("span", { class: "wt-card-word" }, [txt(w.word)]);
     const arrowEl = el("span", { class: "wt-card-arrow", style: "color:GrayText;flex-shrink:0;margin:0 2px;" }, [txt(" -- ")]);
     const transEl = el("span", { class: "wt-card-trans", style: "word-break:break-word;" + (w.pending ? "color:GrayText;" : "") }, [txt(w.translation)]);
     // 行1 控制：dictFallback 多义项 → [单词 -- 首义项]；单义项 → 只显示单词（整段释义进词典行）
@@ -1476,7 +1474,12 @@ var WordTranslatorModule_pane = {
   },
 
   _getPaneCSS() {
-    return [
+    // 高亮色单一来源：HIGHLIGHT_COLORS（addon.js）→ 所有规则在生成时直接插值 hex 字面值。
+    // 不经 CSS var() 间接引用——实测 Zotero item pane（XUL doc 内 html:div）环境中
+    // 自定义属性继承不可靠，var() 解析失败会导致色板透明/色条消失（b16 教训）。
+    const hl = this.HIGHLIGHT_COLORS || [];
+    this._debugLog("_getPaneCSS: colors=" + hl.length + ", ids=" + hl.map((c) => c.id).join(","));
+    const rules = [
       ".wordtranslator-pane-body { color-scheme: light dark; position: relative; }",
       ".wordtranslator-pane-body button:hover { background: color-mix(in srgb, Canvas 92%, CanvasText); }",
       ".wordtranslator-pane-body select { color: FieldText; background: Field; }",
@@ -1484,23 +1487,29 @@ var WordTranslatorModule_pane = {
       ".wordtranslator-pane-body .wt-api-select { flex:1 1 0; min-width:0; width:0; max-width:100%; }",
       ".wt-card { position:relative; overflow:visible; background:Canvas; border:1px solid ThreeDShadow; border-radius:8px; }",
       ".wt-card-text { user-select: text; -webkit-user-select: text; cursor: text; }",
+      // 文字降噪：未高亮单词用默认文字色；仅高亮卡片的单词继承与色条同款的高亮色
+      ".wt-card-word { font-weight:600; color:CanvasText; word-break:break-word; }",
       ".wt-card-hl { border-left-width: 3px; border-left-style: solid; }",
-      ".wt-card-hl-amber { background: color-mix(in srgb, #c4a35a 16%, Canvas); border-left-color: color-mix(in srgb, #c4a35a 70%, CanvasText); }",
-      ".wt-card-hl-sage { background: color-mix(in srgb, #6f8f72 16%, Canvas); border-left-color: color-mix(in srgb, #6f8f72 70%, CanvasText); }",
-      ".wt-card-hl-blue { background: color-mix(in srgb, #6d86a8 16%, Canvas); border-left-color: color-mix(in srgb, #6d86a8 70%, CanvasText); }",
-      ".wt-card-hl-rose { background: color-mix(in srgb, #b07a86 16%, Canvas); border-left-color: color-mix(in srgb, #b07a86 70%, CanvasText); }",
+    ];
+    for (const c of hl) {
+      // 高亮卡片：只染左侧色条与单词文字（正色 hex），卡片底色保持 Canvas 统一（无涂层）
+      rules.push(".wt-card-hl-" + c.id + " { border-left-color: " + c.hex + "; }");
+      rules.push(".wt-card-hl-" + c.id + " .wt-card-word { color: " + c.hex + "; }");
+    }
+    rules.push(
       ".wt-card-menu { position:absolute; z-index:9999; display:flex; align-items:center; gap:6px; padding:4px 6px; border:1px solid ThreeDShadow; border-radius:8px; background:Canvas; color:CanvasText; box-shadow:0 8px 24px color-mix(in srgb, CanvasText 18%, transparent); }",
       ".wt-card-menu-btn { width:22px; height:22px; padding:0; border:none; background:transparent; color:GrayText; cursor:pointer; font-size:14px; line-height:22px; border-radius:4px; }",
       ".wt-card-menu-btn:hover { background: color-mix(in srgb, Canvas 88%, CanvasText); color:CanvasText; }",
       ".wt-hl-swatch { width:16px; height:16px; padding:0; border:1px solid ThreeDShadow; border-radius:50%; cursor:pointer; box-sizing:border-box; }",
       ".wt-hl-swatch.is-active { outline:2px solid Highlight; outline-offset:1px; }",
       ".wt-dict-mode-btn { font-size:12px; font-weight:600; width:24px; }",
-      ".wt-dict-mode-btn.is-active { outline:2px solid Highlight; outline-offset:-1px; background:color-mix(in srgb, Highlight 15%, transparent); }",
-      ".wt-hl-swatch-amber { background: color-mix(in srgb, #c4a35a 70%, Canvas); }",
-      ".wt-hl-swatch-sage { background: color-mix(in srgb, #6f8f72 70%, Canvas); }",
-      ".wt-hl-swatch-blue { background: color-mix(in srgb, #6d86a8 70%, Canvas); }",
-      ".wt-hl-swatch-rose { background: color-mix(in srgb, #b07a86 70%, Canvas); }",
-    ].join(" ");
+      ".wt-dict-mode-btn.is-active { outline:2px solid Highlight; outline-offset:-1px; background:color-mix(in srgb, Highlight 15%, transparent); }"
+    );
+    for (const c of hl) {
+      // 色板 = 正色 hex：与色条/单词同源同色，所见即所得
+      rules.push(".wt-hl-swatch-" + c.id + " { background: " + c.hex + "; }");
+    }
+    return rules.join(" ");
   },
 
   // ---------- Phase 7：单词本导出（CSV / Markdown / Anki tsv） ----------

@@ -104,13 +104,10 @@
         if (hint) hint.textContent = "开启后：先选中单词，再按下绑定按键，立即执行「添加单词并翻译」。";
         return;
       }
-      // 兼容旧数据：none / mouse1~mouse5 自动迁移到 custom
-      // 鼠标录制已废弃：左/右键无意义、中键与 PDF 冲突、浏览器层收不到侧键事件。
-      // 侧键现在走「鼠标侧键桥接」的 WH_MOUSE_LL 系统层钩子直接触发；
-      let mode = data.addWordHotkeyMode || "custom";
-      if (["none","mouse1","mouse2","mouse3","mouse4","mouse5"].includes(mode)) mode = "custom";
-      data.addWordHotkeyMode = mode;
-      const ids = ["ctrl", "alt", "shift", "custom", "xbutton1", "xbutton2", "xbutton-both"];
+      // 缺省兜底：旧值（none/mouse1~5）已由 config-schema normalize 统一归一为
+      // "ctrl"（含鼠标录制废弃的迁移），这里只补空缺，口径与 schema 一致。
+      if (!data.addWordHotkeyMode) data.addWordHotkeyMode = "ctrl";
+      const ids = ["ctrl", "alt", "shift", "custom"];
       for (const id of ids) {
         const r = get("wt-addword-mode-" + id);
         if (r) r.checked = (mode === id);
@@ -122,7 +119,7 @@
         if (mode === "ctrl") hint.textContent = "先选中单词，再按下 Ctrl 键，立即执行「添加单词并翻译」。";
         else if (mode === "alt") hint.textContent = "先选中单词，再按下 Alt 键，立即执行「添加单词并翻译」。";
         else if (mode === "shift") hint.textContent = "先选中单词，再按下 Shift 键，立即执行「添加单词并翻译」。";
-        else if (mode === "xbutton1" || mode === "xbutton2" || mode === "xbutton-both") hint.textContent = "先选中单词，再按下绑定按键，立即执行「添加单词并翻译」。";
+        else if (isSideKeyMode(mode)) hint.textContent = "先选中单词，再按下绑定按键，立即执行「添加单词并翻译」。";
         else hint.textContent = "请在下方输入框双击录制键盘组合键（如 Ctrl+Enter、Alt+Z）。";
       }
     } catch (e) {}
@@ -219,9 +216,8 @@
       document.removeEventListener("keydown", keyHandler, true);
       inp.blur();
     };
-    // 鼠标录制 → spec 映射（鼠标即录即用已废弃：见顶部"鼠标录制废弃说明"）
-    // 侧键现在走「鼠标侧键桥接」的 WH_MOUSE_LL 系统层钩子直接触发；
-    // 本输入框录到的仍是键盘组合键。
+    // 鼠标录制已废弃（左/右键无意义、中键与 PDF 冲突；侧键走「鼠标侧键桥接」
+    // 的 WH_MOUSE_LL 系统层钩子直接触发）——本输入框只录键盘组合键。
     const clearRecorder = () => {
       recording = false;
       document.removeEventListener("keydown", keyHandler, true);
@@ -229,7 +225,7 @@
     inp.addEventListener("dblclick", () => {
       recording = true;
       inp.value = "请按键…";
-      // 只录键盘组合键；鼠标录制已废弃（见顶部说明）。
+      // 只录键盘组合键（鼠标录制已废弃，见上方注释）。
       document.addEventListener("keydown", keyHandler, true);
     });
     inp.addEventListener("blur", () => {
@@ -332,8 +328,6 @@
     select.value = selected;
   }
 
-  const DEFAULTS = Zotero.WordTranslatorConfig.DEFAULTS;
-
   function normalize(raw) {
     return Zotero.WordTranslatorConfig.normalize(raw);
   }
@@ -354,6 +348,243 @@
     }
   }
 
+  // 侧键桥接实时同步：写盘后让主进程立即按最新配置启停钩子进程
+  //（旧版本缺少此联动，改设置要重启 Zotero 才生效）。
+  function syncBridge() {
+    try {
+      if (Zotero && Zotero.WordTranslator && typeof Zotero.WordTranslator.syncXButtonBridge === "function") {
+        Zotero.WordTranslator.syncXButtonBridge();
+      }
+    } catch (e) {
+      try { Zotero.debug("[WordTranslator prefs] syncBridge ERROR: " + (e && e.message || e)); } catch (e2) {}
+    }
+  }
+
+  // 「兼容模式」悬停提示（tooltip）：刻意比弹窗更短——一句话讲清何时需要、代价、可撤销。
+  // 注：无论开关与否，被绑定的那颗标准侧键始终被本插件接管（触发翻译、不再触发
+  // 系统后退/前进）——「绑定=接管」。兼容模式只决定「未绑定的多媒体键形态侧键」
+  // 是否也一并捕获（蓝牙鼠标/厂商软件改键的那颗）。
+  const COMPAT_TOOLTIP = "侧键正常时无需开启。仅在侧键无反应时开启（常见于蓝牙连接/厂商软件改键）；"
+    + "开启后系统的「后退/前进」也被本插件接管（改为触发翻译），可随时关闭。"
+    + "已绑定的侧键无论如何都会接管；关闭只影响其他键。";
+
+  // 「绑定侧键」录制框悬停提示：一句话讲清交互与适用场景。
+  const BIND_TOOLTIP = "点击后按一下你的侧键，自动绑定为翻译键（60 秒内有效，Esc 取消）。"
+    + "录制期间该键已被本插件接管（不会触发翻页）。换了鼠标或切蓝牙后两颗键编号可能对调，重新绑一次即可。";
+
+  // 「兼容模式」弹窗文案：与主模块共用（_compatNoticeLines），两行短句。
+  function compatNoticeLines() {
+    try {
+      const WT = Zotero && Zotero.WordTranslator;
+      if (WT && typeof WT._compatNoticeLines === "function") {
+        const lines = WT._compatNoticeLines();
+        if (lines && lines.length) return lines;
+      }
+    } catch (e) {}
+    return [
+      "系统级「后退/前进」被侧键接管，改为触发划词翻译。",
+      "侧键正常时无需开启；不需要时在设置页随时关闭。",
+    ];
+  }
+
+  // 开启兼容模式时弹出说明（唯一一次：同时写入 ack，钩子确认时的补弹被跳过）
+  function showCompatNotice() {
+    try {
+      if (!Zotero || !Zotero.ProgressWindow) return;
+      const pw = new Zotero.ProgressWindow({ closeOnClick: true });
+      pw.changeHeadline("单词翻译 · 兼容模式已开启");
+      for (const line of compatNoticeLines()) pw.addDescription(line);
+      pw.show();
+      pw.startCloseTimer(6000);
+    } catch (e) {}
+  }
+
+  // 侧键/泛化键模式判定（与主进程 _xbuttonIsSideKeyMode 同口径）：
+  // xbutton1 / xbutton2 / xbutton-both / vk:0xNN（多媒体键形态）/ hid:0xNNNN（消费页形态）
+  function isSideKeyMode(mode) {
+    // 单一实现收敛：优先委托桥接层方法（hotkey.js 同款做法），本地仅兜底
+    const WT = Zotero && Zotero.WordTranslator;
+    if (WT && typeof WT._xbuttonIsSideKeyMode === "function") {
+      try { return WT._xbuttonIsSideKeyMode(mode); } catch (e) {}
+    }
+    if (mode === "xbutton1" || mode === "xbutton2" || mode === "xbutton-both") return true;
+    return typeof mode === "string" && /^(vk:0x[0-9A-F]{2}|hid:0x[0-9A-F]{4})$/i.test(mode);
+  }
+
+  // 绑定框显示文本（侧键绑定值 → 用户可读名称；键盘模式不在此框显示）。
+  // 文案单一来源 = 桥接层 _xbuttonModeLabel（与状态行/toast 同源，避免措辞漂移）
+  function sideKeyBindText(mode) {
+    const WT = Zotero && Zotero.WordTranslator;
+    if (WT && typeof WT._xbuttonModeLabel === "function") {
+      try { return WT._xbuttonModeLabel(mode); } catch (e) {}
+    }
+    // 兜底副本（桥接层不可达时）：与 _xbuttonModeLabel 措辞保持同步
+    if (mode === "xbutton-both") return "任意侧键（侧键 1 / 侧键 2 均可触发）";
+    if (mode === "xbutton1") return "鼠标侧键 1（后退键）";
+    if (mode === "xbutton2") return "鼠标侧键 2（前进键）";
+    return isSideKeyMode(mode) ? String(mode) : ""; // 非侧键模式：显示 placeholder
+  }
+
+  // 侧键开关回显（主开关 / 兼容模式）+ 绑定框与「任意侧键」勾选 + 绑定区显隐 + 实时状态
+  function applyXbuttonUI() {
+    try {
+      const en = get("wt-xbutton-enabled");
+      if (en) en.checked = data.xbuttonEnabled === true;
+      const compat = get("wt-xbutton-compat");
+      if (compat) compat.checked = data.xbuttonCompat !== false;
+      const wrap = get("wt-xbutton-config-wrap");
+      if (wrap) wrap.style.display = (data.xbuttonEnabled === true) ? "" : "none";
+      const any = get("wt-xbutton-any");
+      if (any) any.checked = data.addWordHotkeyMode === "xbutton-both";
+      const box = get("wt-xbutton-bind-box");
+      if (box) {
+        box.disabled = (data.addWordHotkeyMode === "xbutton-both");
+        const t = sideKeyBindText(data.addWordHotkeyMode);
+        box.value = t || "";
+      }
+      renderXbuttonStatus();
+    } catch (e) {}
+  }
+
+  // 读主进程写下的桥接状态（原先只在调试日志里，界面上是黑盒）
+  function readXbuttonStatus() {
+    try {
+      let raw = null;
+      if (Zotero && Zotero.Prefs && typeof Zotero.Prefs.get === "function") {
+        raw = Zotero.Prefs.get("extensions.zotero.wordtranslator.xbuttonBridgeStatus", true);
+      }
+      if (!raw && typeof Services !== "undefined" && Services.prefs) {
+        raw = Services.prefs.getStringPref("extensions.zotero.wordtranslator.xbuttonBridgeStatus", "");
+      }
+      if (!raw) return null;
+      return JSON.parse(String(raw));
+    } catch (e) { return null; }
+  }
+
+  // 实时状态（结构化两行，不再全部挤一行）：
+  //   第 1 行：状态摘要（生效与否 + 标准模式/兼容模式 + 绑定 + 最近收到的侧键）
+  //   第 2 行：⚠️ 未触发原因（只在真的没触发时出现）
+  function renderXbuttonStatus() {
+    const line = get("wt-xbutton-status-line");
+    if (!line) return;
+    try {
+      if (data.xbuttonEnabled !== true) {
+        line.textContent = "状态：已关闭 —— 不安装系统钩子，侧键保持系统默认（其他程序的后退/前进不受影响）";
+        return;
+      }
+      const WT = Zotero && Zotero.WordTranslator;
+      const b = WT && WT._xbuttonBridge;
+      const detecting = !!(WT && typeof WT._xbuttonRecordActive === "function" && WT._xbuttonRecordActive());
+      const st = readXbuttonStatus() || {};
+      const modeLabel = (data.xbuttonCompat !== false) ? "兼容模式" : "标准模式";
+      let bindLabel = "";
+      try {
+        if (WT && typeof WT._xbuttonModeLabel === "function") bindLabel = WT._xbuttonModeLabel(data.addWordHotkeyMode);
+      } catch (e) {}
+      if (!bindLabel) bindLabel = sideKeyBindText(data.addWordHotkeyMode) || String(data.addWordHotkeyMode || "未绑定");
+      const lines = [];
+
+      // 录制期间的绑定框文案与倒计时（随 1s 状态轮询一起刷新）
+      const box2 = get("wt-xbutton-bind-box");
+      const RECORD_SECS = Math.round(((b && b._XBUTTON_RECORD_MS) || 60000) / 1000);
+      if (detecting) {
+        let left = 0;
+        try { left = Math.max(0, Math.ceil(((b && b.recordUntil) || 0) - Date.now()) / 1000); } catch (e) {}
+        const secs = left > 0 ? Math.ceil(left) : RECORD_SECS;
+        if (box2) box2.value = "请按侧键…（剩余 " + secs + " 秒，Esc 取消）";
+        lines.push("状态：正在绑定（剩余 " + secs + " 秒）——按一下你要绑定的侧键");
+        line.textContent = lines.join("\n");
+        return;
+      }
+
+      // 录制已结束/被取消/超时：把绑定框从「请按侧键…」恢复为当前绑定值。
+      // （以 dataset 标记为准——用框内文案前缀判断会随文案修改悄悄失效）
+      if (box2 && box2.dataset.recording === "1") {
+        delete box2.dataset.recording;
+        box2.value = sideKeyBindText(data.addWordHotkeyMode) || "";
+      }
+
+      // ── 第 1 行：状态摘要（触发详情单列一行，见下）──
+      const seg = [];
+      if (b && b.active && b.confirmed !== false) seg.push("已生效（" + modeLabel + "）");
+      else if (b && b.active) seg.push("启动中，等待钩子确认");
+      else seg.push("未运行");
+      seg.push("绑定：" + bindLabel);
+      lines.push("状态：" + seg.join(" | "));
+
+      // ── 第 2 行：最近一次触发 / ⚠️ 未触发原因（结构化 lastReason 优先，旧 lastNote 兜底解析）──
+      const reason = st.lastReason || (() => {
+        if (!st.lastNote) return "";
+        const m = /^XButton\d?（[^）]*）未触发:\s*([\s\S]*)$/.exec(st.lastNote);
+        return m ? m[1] : "";
+      })();
+      if (reason) {
+        lines.push("⚠️ 未触发：" + reason);
+        // 触发自检三步：帮用户自己判断卡在哪一步（选词？按键？翻译没跑？）
+        lines.push("触发检测：① 选中单词 → ② 按下绑定的侧键 → ③ 观察是否翻译");
+      } else if (st.lastBtn) {
+        // 成功也只占一行：时间 + 具体按键（此前是两行：状态行里的「最近：…」+「成功」行）
+        const when = st.lastNoteTs ? new Date(st.lastNoteTs).toLocaleTimeString() : "";
+        lines.push("最近一次侧键触发：" + st.lastBtn + (when ? "（" + when + "）" : ""));
+      }
+
+      // ── 异常单独成行：鼠标钩子未装上是最容易被误判成「侧键坏了」的情形 ──
+      if (b && b.active && b.confirmed !== false && b.mouseHook === false) {
+        lines.push("⚠️ 鼠标钩子未装上：标准侧键（后退）无法触发，请重启 Zotero，或关闭再开启上方「鼠标侧键」开关以重建钩子");
+      }
+      if (st.hookError) lines.push("⚠️ 错误：" + st.hookError);
+
+      line.textContent = lines.join("\n");
+    } catch (e) {
+      line.textContent = "状态：读取失败";
+    }
+  }
+
+  // 绑定框录制轮询：录制成功后回显（标准侧键 → xbutton1/2；多媒体键 → vk:/hid: 指纹）
+  let recordPollTimer = null;
+  function stopRecordPoll() {
+    if (recordPollTimer) { clearInterval(recordPollTimer); recordPollTimer = null; }
+  }
+  function startRecordPoll() {
+    stopRecordPoll();
+    const t0 = Date.now();
+    recordPollTimer = setInterval(() => {
+      try {
+        const WT = Zotero && Zotero.WordTranslator;
+        const b = WT && WT._xbuttonBridge;
+        if (b && b.lastRecordTs && b.lastRecordTs >= t0) {
+          if (b.lastRecordCode) {
+            // 偏好页是独立沙箱，config-schema 只在主进程 ctx——必须走 Zotero 命名空间
+            //（裸 WordTranslatorConfig 在此作用域未定义，主分支曾是死代码）
+            const cfg = Zotero.WordTranslatorConfig;
+            data.addWordHotkeyMode = (cfg && typeof cfg.canonicalizeKeyMode === "function")
+              ? cfg.canonicalizeKeyMode(b.lastRecordCode) : b.lastRecordCode;
+          } else {
+            const btn = b.lastRecordButton;
+            data.addWordHotkeyMode = (btn === 2) ? "xbutton2" : "xbutton1";
+          }
+          save(false);
+          applyAddWordHotkeyUI();
+          applyXbuttonUI();
+          stopRecordPoll();
+          return;
+        }
+        if (!WT || typeof WT._xbuttonRecordActive !== "function" || !WT._xbuttonRecordActive()) {
+          // 录制超时：状态行（renderXbuttonStatus）已带 ⚠️ 原因，绑定框恢复当前绑定值
+          applyXbuttonUI();
+          stopRecordPoll();
+        }
+      } catch (e) { stopRecordPoll(); }
+    }, 400);
+  }
+  // 状态行定时刷新（状态变化来自主进程，界面需要主动拉）
+  let xbuttonStatusTimer = null;
+  function startXbuttonStatusPoll() {
+    if (xbuttonStatusTimer) return;
+    xbuttonStatusTimer = setInterval(() => { renderXbuttonStatus(); }, 1000);
+    try { window.addEventListener("unload", () => { stopRecordPoll(); if (xbuttonStatusTimer) { clearInterval(xbuttonStatusTimer); xbuttonStatusTimer = null; } }); } catch (e) {}
+  }
+
   // ----- 保存 -----
   // ----- 快捷键冲突检测 -----
   function getSelectionHotkeySpec() {
@@ -368,12 +599,12 @@
 
   function getAddWordHotkeySpec() {
     if (!data.addWordHotkeyEnabled) return "";
-    const mode = data.addWordHotkeyMode || "custom";
+    const mode = data.addWordHotkeyMode || "ctrl"; // 缺省与 schema 一致
     if (mode === "ctrl" || mode === "alt" || mode === "shift") {
       return mode;
     }
     // 侧键模式不占用键盘按键，不参与键盘冲突检测
-    if (mode === "xbutton1" || mode === "xbutton2" || mode === "xbutton-both") {
+    if (isSideKeyMode(mode)) {
       return "";
     }
     return String(data.addWordHotkey || "").toLowerCase();
@@ -941,10 +1172,7 @@
       #wordtranslator-pref-root input[type="checkbox"], #wordtranslator-pref-root input[type="radio"] { accent-color: Highlight; }
       #wordtranslator-pref-root .wt-hl-swatch { width:16px; height:16px; padding:0; border:1px solid ThreeDShadow; border-radius:50%; cursor:pointer; box-sizing:border-box; }
       #wordtranslator-pref-root .wt-hl-swatch.is-active { outline:2px solid Highlight; outline-offset:1px; }
-      #wordtranslator-pref-root .wt-hl-swatch-amber { background: color-mix(in srgb, #c4a35a 70%, Canvas); }
-      #wordtranslator-pref-root .wt-hl-swatch-sage { background: color-mix(in srgb, #6f8f72 70%, Canvas); }
-      #wordtranslator-pref-root .wt-hl-swatch-blue { background: color-mix(in srgb, #6d86a8 70%, Canvas); }
-      #wordtranslator-pref-root .wt-hl-swatch-rose { background: color-mix(in srgb, #b07a86 70%, Canvas); }
+      ${(Zotero.WordTranslator && Zotero.WordTranslator.HIGHLIGHT_COLORS || []).map((c) => "#wordtranslator-pref-root .wt-hl-swatch-" + c.id + " { background: " + c.hex + "; }").join("\n      ")}
       /* 右上角“检查更新”标签 */
       #wordtranslator-pref-root .wt-update-check {
         color: ButtonText; background: ButtonFace; border: 1px solid ThreeDShadow;
@@ -1067,22 +1295,71 @@
             return l;
           })(),
         ]),
-        // 第二行 = 鼠标侧键（XButton 桥接触发）
-        el("div", { class: "wt-row-inline", style: "gap:14px;flex-wrap:wrap;margin-top:6px;" }, [
+        // ── 鼠标侧键（Windows）：开关 → 绑定（录制）→ 生效 ─
+        // 主开关关闭时：不装任何系统钩子，侧键保持系统默认，其他程序的后退/前进不受影响。
+        el("div", { class: "wt-row-inline", style: "gap:6px;margin-top:8px;" }, [
+          (() => { const c = el("input", { type: "checkbox", id: "wt-xbutton-enabled" }); return c; })(),
           (() => {
-            const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
-              (() => { const r = el("input", { type: "radio", name: "wt-addword-mode", id: "wt-addword-mode-xbutton1", value: "xbutton1" }); return r; })(),
-              txt("鼠标侧键 1（后退键）"),
-            ]);
-            return l;
+            const lbl = el("label", { for: "wt-xbutton-enabled", title: "开启后才会安装系统层钩子接管侧键；关闭时侧键完全保持系统默认（浏览器/阅读器的后退前进照常可用）" },
+              [txt("鼠标侧键（Windows）")]);
+            return lbl;
           })(),
-          (() => {
-            const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;" }, [
-              (() => { const r = el("input", { type: "radio", name: "wt-addword-mode", id: "wt-addword-mode-xbutton2", value: "xbutton2" }); return r; })(),
-              txt("鼠标侧键 2（前进键）"),
-            ]);
-            return l;
-          })(),
+        ]),
+        // 绑定区：仅主开关打开后显示（未开启时谈不上绑定，整块不展开）
+        el("div", { id: "wt-xbutton-config-wrap", style: "margin:4px 0 0 22px;display:none;" }, [
+          // 第一行：「任意侧键都可触发」勾选（默认关——关=按下方框里绑定的具体键触发）
+          el("div", { class: "wt-row-inline", style: "gap:10px;flex-wrap:wrap;" }, [
+            (() => {
+              const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;",
+                title: "勾选后侧键 1、侧键 2 按任意一颗都能触发翻译，不区分具体是哪颗"
+                  + "（推荐：不同鼠标/蓝牙模式下两颗键的编号可能对调）。"
+                  + "关闭时按下侧框里绑定的那一颗触发。" }, [
+                (() => { const c = el("input", { type: "checkbox", id: "wt-xbutton-any" }); return c; })(),
+                txt("任意侧键都可触发（推荐）"),
+              ]);
+              return l;
+            })(),
+          ]),
+          // 第二行：绑定框（勾选「任意侧键」时框显示当前策略并禁用）
+          el("div", { class: "wt-row-inline", style: "gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px;" }, [
+            el("label", { class: "wt-label", for: "wt-xbutton-bind-box",
+              title: "当前绑定：按这个侧键/按键就会执行「添加单词并翻译」。点右侧输入框可重新绑定。" }, [txt("绑定侧键")]),
+            (() => {
+              // 与「绑定按键 Z」录制框同款交互：点击框 → 按一下侧键 → 自动绑定。
+              // 钩子进程在录制窗口内上报所有多媒体键/消费页键，所以第三颗侧键
+              //（游戏鼠标常见）也能录进来；人在哪儿按都行，不需要切到 PDF 划词。
+              const inp = el("input", { type: "text", id: "wt-xbutton-bind-box", class: "wt-input",
+                readonly: "readonly", placeholder: "点击后按侧键",
+                title: BIND_TOOLTIP });
+              return inp;
+            })(),
+          ]),
+          // ── 展开项「状态与诊断」：实时状态（含 ⚠️ 未触发原因）──────────────
+          // 点标题可折叠/展开；主开关关闭时整块不展开（见 applyXbuttonUI）。
+          el("div", { id: "wt-xbutton-diag-wrap", style: "margin-top:6px;" }, [
+            (() => {
+              const head = el("div", { id: "wt-xbutton-diag-head", class: "wt-hint",
+                style: "cursor:pointer;user-select:none;margin:0 0 4px 0;font-weight:600;",
+                title: "展开/收起「状态与诊断」" }, [txt("▾ 状态与诊断")]);
+              return head;
+            })(),
+            el("div", { id: "wt-xbutton-diag-body", style: "margin-left:2px;" }, [
+              // 实时状态（pre-line 让状态行按 \n 分行）
+              el("p", { class: "wt-hint", id: "wt-xbutton-status-line", style: "width:100%;margin:6px 0 0 0;white-space:pre-line;" }, [txt("状态：未启动")]),
+            ]),
+          ]),
+          el("div", { class: "wt-row-inline", style: "gap:14px;flex-wrap:wrap;margin-top:8px;" }, [
+            (() => {
+              // 兼容模式 = 原来两个开关（吞掉侧键 + 捕获多媒体键形态侧键）合并。
+              // 悬停提示是一句短话（COMPAT_TOOLTIP）；开启时的弹窗是两行短句（compatNoticeLines）。
+              const l = el("label", { style: "display:inline-flex;align-items:center;gap:4px;",
+                title: COMPAT_TOOLTIP }, [
+                (() => { const c = el("input", { type: "checkbox", id: "wt-xbutton-compat" }); return c; })(),
+                txt("兼容模式"),
+              ]);
+              return l;
+            })(),
+          ]),
         ]),
         el("div", { class: "wt-row", id: "wt-addword-custom-wrap", style: "margin:6px 0 0 4px;display:none;" }, [
           el("label", { class: "wt-label", for: "wt-addword-hotkey" }, [txt("绑定按键")]),
@@ -1707,14 +1984,21 @@
     const awEn = get("wt-addword-hotkey-enabled");
     if (awEn) awEn.addEventListener("change", () => {
       data.addWordHotkeyEnabled = awEn.checked;
-      save(false); applyAddWordHotkeyUI();
+      save(false); applyAddWordHotkeyUI(); syncBridge();
     });
-    ["ctrl", "alt", "shift", "custom", "xbutton1", "xbutton2", "xbutton-both"].forEach((mode) => {
+    ["ctrl", "alt", "shift", "custom"].forEach((mode) => {
       const r = get("wt-addword-mode-" + mode);
       if (r) r.addEventListener("change", () => {
         if (r.checked) {
           data.addWordHotkeyMode = mode;
-          save(false); applyAddWordHotkeyUI();
+          // 四选一闭合：切回键盘模式（Ctrl/Alt/Shift/自定义）= 自动关闭侧键主开关
+          // 并收回绑定区——侧键与键盘快捷键互斥，两边各留一半会让用户以为没关掉。
+          if (data.xbuttonEnabled === true) {
+            data.xbuttonEnabled = false;
+            const en = get("wt-xbutton-enabled");
+            if (en) en.checked = false;
+          }
+          save(false); applyAddWordHotkeyUI(); applyXbuttonUI(); syncBridge();
         }
       });
     });
@@ -1724,7 +2008,97 @@
       if (data.addWordHotkeyMode !== "custom") {
         data.addWordHotkeyMode = "custom";
       }
-      save(false); applyAddWordHotkeyUI();
+      // 四选一闭合：录制自定义键 = 关闭侧键主开关（同上）
+      if (data.xbuttonEnabled === true) {
+        data.xbuttonEnabled = false;
+        const en2 = get("wt-xbutton-enabled");
+        if (en2) en2.checked = false;
+      }
+      save(false); applyAddWordHotkeyUI(); applyXbuttonUI(); syncBridge();
+    });
+    // 侧键桥接：主开关（关闭=完全不装钩子，侧键保持系统默认）
+    const xbEnabled = get("wt-xbutton-enabled");
+    if (xbEnabled) xbEnabled.addEventListener("change", () => {
+      data.xbuttonEnabled = !!xbEnabled.checked;
+      if (data.xbuttonEnabled && !isSideKeyMode(data.addWordHotkeyMode)) {
+        // 开启但还没有侧键绑定时，给一个具体的默认绑定（侧键 1=后退键），
+        // 用户可再点框重新录制，或勾选上方「任意侧键都可触发」
+        data.addWordHotkeyMode = "xbutton1";
+      }
+      save(false); applyAddWordHotkeyUI(); applyXbuttonUI(); syncBridge();
+    });
+    // 侧键桥接：「任意侧键都可触发」勾选（= 绑定值 xbutton-both，不区分具体哪颗）。
+    // 勾选前记住当前的具体绑定（xbuttonPrevBind），取消勾选时恢复——否则取消后
+    // 没有具体绑定可用。
+    const xbAny = get("wt-xbutton-any");
+    if (xbAny) xbAny.addEventListener("change", () => {
+      if (xbAny.checked) {
+        if (data.addWordHotkeyMode !== "xbutton-both") {
+          data.xbuttonPrevBind = data.addWordHotkeyMode;
+          data.addWordHotkeyMode = "xbutton-both";
+        }
+      } else if (data.addWordHotkeyMode === "xbutton-both") {
+        const prev = (typeof data.xbuttonPrevBind === "string" && isSideKeyMode(data.xbuttonPrevBind)
+          && data.xbuttonPrevBind !== "xbutton-both") ? data.xbuttonPrevBind : "xbutton1";
+        data.addWordHotkeyMode = prev;
+      }
+      save(false); applyAddWordHotkeyUI(); applyXbuttonUI(); syncBridge();
+    });
+    // 侧键桥接：绑定框（点击 → 按一下侧键 → 自动绑定；再点一次或 Esc 取消）
+    const xbBox = get("wt-xbutton-bind-box");
+    if (xbBox) {
+      xbBox.addEventListener("click", () => {
+        try {
+          if (xbBox.disabled) return;
+          const WT = Zotero && Zotero.WordTranslator;
+          if (!WT || typeof WT.startXButtonRecord !== "function") return;
+          if (typeof WT._xbuttonRecordActive === "function" && WT._xbuttonRecordActive()) {
+            // 录制中再点一次 = 取消
+            WT.stopXButtonRecord();
+            delete xbBox.dataset.recording;
+            startRecordPoll(); // 轮询随即结束并复位框文案
+            return;
+          }
+          WT.startXButtonRecord();
+          xbBox.dataset.recording = "1"; // 录制中标记（结束时由状态轮询复位框文案）
+          renderXbuttonStatus();
+          startRecordPoll();
+        } catch (e) {}
+      });
+      // Esc 取消录制（框是 readonly input，可接收焦点）
+      xbBox.addEventListener("keydown", (ev) => {
+        try {
+          const WT = Zotero && Zotero.WordTranslator;
+          if (!WT || typeof WT._xbuttonRecordActive !== "function") return;
+          if (ev.key === "Escape" && WT._xbuttonRecordActive()) {
+            ev.preventDefault();
+            WT.stopXButtonRecord();
+            delete xbBox.dataset.recording;
+            startRecordPoll();
+          }
+        } catch (e) {}
+      });
+    }
+    // 展开项「状态与诊断」标题：点击折叠/展开
+    const detectHead = get("wt-xbutton-diag-head");
+    if (detectHead) detectHead.addEventListener("click", () => {
+      const body = get("wt-xbutton-diag-body");
+      if (!body) return;
+      const hidden = (body.style.display === "none");
+      body.style.display = hidden ? "" : "none";
+      detectHead.textContent = (hidden ? "▾ " : "▸ ") + "状态与诊断";
+    });
+    // 兼容模式（原「吞掉侧键」+「捕获多媒体键形态侧键」两开关合并）：
+    // 开启时弹一次说明（两行短句），并立即写入 ack——钩子进程确认时的补弹会被
+    // 跳过，保证用户只看到一次弹窗（此前实测会连弹两次）。
+    const xbCompat = get("wt-xbutton-compat");
+    if (xbCompat) xbCompat.addEventListener("change", () => {
+      data.xbuttonCompat = !!xbCompat.checked;
+      if (data.xbuttonCompat) {
+        data.xbuttonConsumerNoticeAck = true;
+        showCompatNotice();
+      }
+      save(false); applyXbuttonUI(); syncBridge();
     });
 
 
@@ -1959,12 +2333,6 @@
     if (hotkeyCustom) { hotkeyCustom.value = data.customHotkey || ""; hotkeyCustom.dataset.prev = data.customHotkey || ""; }
     if (addWordHotkeyEnabled) addWordHotkeyEnabled.checked = !!data.addWordHotkeyEnabled;
     if (addWordHotkey) { addWordHotkey.value = data.addWordHotkey || ""; addWordHotkey.dataset.prev = data.addWordHotkey || ""; }
-    // 兼容旧数据：none / mouse1~mouse5 自动迁移到 custom
-    // 鼠标录制已废弃：左/右键无意义、中键与 PDF 冲突、侧键无浏览器级接口。
-    if (!data.addWordHotkeyMode || ["none","mouse1","mouse2","mouse3","mouse4","mouse5"].includes(data.addWordHotkeyMode)) {
-      data.addWordHotkeyMode = "custom";
-    }
-    applyAddWordHotkeyUI();
     if (promptSystem) promptSystem.value = data.promptSystem || DEFAULT_PROMPT_SYSTEM;
     if (promptUser) promptUser.value = data.promptUser || DEFAULT_PROMPT_USER;
     if (promptGlobal) promptGlobal.value = data.promptGlobal || DEFAULT_PROMPT_GLOBAL;
@@ -1974,6 +2342,8 @@
     applyPromptModeUI();
     applyHotkeyUI();
     applyAddWordHotkeyUI();
+    applyXbuttonUI();
+    startXbuttonStatusPoll();
     applyDefaultHighlightUI();
     const fontSize = get("wt-font-size");
     const fontSizeRange = get("wt-font-size-range");

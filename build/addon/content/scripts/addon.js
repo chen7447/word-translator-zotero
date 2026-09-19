@@ -13,6 +13,15 @@ var WordTranslator = {
   // 禁止在业务逻辑里散落比较显示字符串（旧版 "翻译中…"/"正在翻译…" 混用导致失败卡重译失效）。
   STATUS_TRANSLATING: "翻译中…",
   STATUS_FAILED: "翻译失败",
+  // 高亮色单一来源：右键菜单色板、偏好页色板、面板 CSS 变量、色条与高亮单词文字全部由本表生成。
+  // id 参与数据持久化（words/*.json 的 highlight 字段），新增颜色必须同步
+  // wordbook-pane._normalizeHighlight / storage.js / config-schema.js 的白名单；hex/label 只服务 UI。
+  HIGHLIGHT_COLORS: [
+    { id: "amber", label: "琥珀", hex: "#c4a35a" },
+    { id: "sage", label: "苔绿", hex: "#6f8f72" },
+    { id: "blue", label: "雾蓝", hex: "#6d86a8" },
+    { id: "rose", label: "玫瑰", hex: "#b07a86" },
+  ],
   hooks: {
     onPrefsLoad(event) {
       WordTranslator.onPrefsLoad(event);

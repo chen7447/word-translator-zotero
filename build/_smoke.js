@@ -106,11 +106,18 @@ function section(title) { console.log("\n===== " + title + " ====="); }
   ].every((m) => typeof Z.WordTranslatorDict[m] === "function")));
 
   // Phase 5 拆分校验：成员集合与拆分前基线完全一致（纯移动，无增无减）
+  // 新增功能会合法扩充成员集合：用 WT_REGEN_BASELINE=1 重新生成基线，再正常跑一遍校验。
   try {
-    const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, "_wt_keys_baseline.json"), "utf8"));
+    const baselinePath = path.join(__dirname, "_wt_keys_baseline.json");
     const now = Object.keys(WT).sort();
-    check("成员集合与拆分基线一致", JSON.stringify(now) === JSON.stringify(baseline),
-      "diff: " + now.filter((k) => !baseline.includes(k)).concat(baseline.filter((k) => !now.includes(k))).join(","));
+    if (process.env.WT_REGEN_BASELINE === "1") {
+      fs.writeFileSync(baselinePath, JSON.stringify(now, null, 2) + "\n");
+      check("成员集合基线已重新生成（" + now.length + " 项）", true);
+    } else {
+      const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
+      check("成员集合与拆分基线一致", JSON.stringify(now) === JSON.stringify(baseline),
+        "diff: " + now.filter((k) => !baseline.includes(k)).concat(baseline.filter((k) => !now.includes(k))).join(","));
+    }
   } catch (e) {
     check("成员集合基线校验", false, e && e.message);
   }
@@ -727,6 +734,568 @@ function section(title) { console.log("\n===== " + title + " ====="); }
       check("actionWrap 恢复原 display", /actionWrapDisplay \|\| ""/.test(paneSrc));
     } catch (e) {
       check("S11 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
+  // ============================================================
+  // S12 侧键三形态捕获（Phase 12 回归：多媒体键/消费页通道 + 接管提醒）
+  // ============================================================
+  section("S12 侧键三形态捕获");
+  if (WT) {
+    try {
+      const bridgeSrc = readAddon("content/scripts/xbutton-bridge.js");
+      const csSrc = readAddon("content/scripts/bridge-hook.cs");
+
+      // 1) 默认值：「兼容模式」默认开启（蓝牙鼠标开箱可用），且可被配置关闭
+      const d12 = CFG.normalize(null);
+      check("xbuttonCompat 默认开启", d12.xbuttonCompat === true);
+      check("normalize 保留显式关闭", CFG.normalize({ xbuttonCompat: false }).xbuttonCompat === false);
+      check("normalize 非布尔回落默认值", CFG.normalize({ xbuttonCompat: "no" }).xbuttonCompat === true);
+      // 老数据迁移：原来两个开关（吞键 + 消费键）都为开 → 兼容模式开
+      check("老数据迁移：两开关都开 → 兼容模式开",
+        CFG.normalize({ xbuttonCompat: true }).xbuttonCompat === true);
+      check("老数据迁移：任一个关 → 兼容模式关",
+        CFG.normalize({ xbuttonBlockEvents: false, xbuttonConsumerKeys: true }).xbuttonCompat === false
+        && CFG.normalize({ xbuttonCompat: false }).xbuttonCompat === false);
+
+      // 2) 开关读取：兼容模式统一决定两条通道（-Block 与 -ConsumerKeys）
+      WT._data = { xbuttonCompat: undefined };
+      check("_xbuttonConsumerKeysFlag 默认 1", WT._xbuttonConsumerKeysFlag() === 1);
+      check("_xbuttonBlockFlag 默认 1", WT._xbuttonBlockFlag() === 1);
+      WT._data = { xbuttonCompat: false };
+      check("兼容模式关闭 → 消费键通道 0", WT._xbuttonConsumerKeysFlag() === 0);
+      check("兼容模式关闭 → 不吞键（放行）", WT._xbuttonBlockFlag() === 0);
+
+      // 3) 指纹必须包含这两个参数：否则改了开关不重建进程，用户以为开关无效
+      WT._data = { xbuttonCompat: true };
+      const fpOn = WT._xbuttonBridgeFingerprint();
+      WT._data = { xbuttonCompat: false };
+      const fpOff = WT._xbuttonBridgeFingerprint();
+      check("指纹含 consumer 且随开关变化", fpOn !== fpOff && fpOn.indexOf("consumer=1") >= 0 && fpOff.indexOf("consumer=0") >= 0);
+      check("指纹含 block（与 consumer 同步变化）", fpOn.indexOf("block=1;consumer=1") >= 0 && fpOff.indexOf("block=0;consumer=0") >= 0);
+
+      // 4) 事件来源标签可区分三形态（诊断提示要能说清是哪种侧键）
+      const l1 = WT._xbuttonSrcLabel("mouse"), l2 = WT._xbuttonSrcLabel("vk"), l3 = WT._xbuttonSrcLabel("hid");
+      check("src 标签三形态各不相同", l1 !== l2 && l2 !== l3 && l1 !== l3 && l1 !== undefined);
+      check("src=vk 标签点明多媒体键形态", /多媒体键/.test(String(l2)));
+      check("src=hid 标签点明仅检测", /仅检测|无法拦截/.test(String(l3)));
+
+      // 5) 接管提醒的门控：兼容模式关闭（既不捕获也不吞键）时不提示
+      WT._data = { xbuttonCompat: false };
+      WT._xbuttonBridge.consumerNoticeShown = false;
+      WT._maybeNotifyConsumerTakeover(false);
+      check("兼容模式关闭时不提示接管", WT._xbuttonBridge.consumerNoticeShown === false);
+
+      // 5b) 提示一次即记住（跨会话不重复打扰）；设置页开启时的弹窗由 prefs 负责，
+      // 钩子确认时只补一次（ack 后永不重复）——保证用户开启时只看到一次弹窗
+      WT._data = { xbuttonCompat: true };
+      WT._maybeNotifyConsumerTakeover();
+      check("兼容模式开启时提示一次", WT._xbuttonBridge.consumerNoticeShown === true);
+      check("提示后写入 ack 并落盘", WT._data.xbuttonConsumerNoticeAck === true);
+      WT._xbuttonBridge.consumerNoticeShown = false;
+      WT._maybeNotifyConsumerTakeover();
+      check("已 ack 后不再重复提示", WT._xbuttonBridge.consumerNoticeShown === false);
+      check("不再有 force 二次弹窗入口（用户实测连弹两次的根源）",
+        !/\.maybeNotifyConsumerTakeover\(true\)/.test(bridgeSrc));
+      check("xbuttonConsumerNoticeAck 默认 false", CFG.normalize(null).xbuttonConsumerNoticeAck === false);
+
+      // 5c) 弹窗文案唯一来源：两行短句（一行讲后果，一行讲怎么关）
+      const noticeLines = WT._compatNoticeLines();
+      check("兼容模式弹窗为 2 行短句", Array.isArray(noticeLines) && noticeLines.length === 2);
+      check("弹窗第 1 行讲清后果", /后退\/前进.*被侧键接管|被侧键接管/.test(noticeLines[0]));
+      check("弹窗第 2 行讲清可随时关闭", /随时关闭/.test(noticeLines[1]));
+
+      // 6) 启动参数确实把 -ConsumerKeys 传给钩子进程（否则开关是摆设）
+      check("PS 命令传 -ConsumerKeys", /'-ConsumerKeys','" \+ consumerFlag/.test(bridgeSrc));
+      check("PS 命令传 -Block 回归", /'-Block','" \+ blockFlag/.test(bridgeSrc));
+
+      // 7) C# 侧：三通道 + 两个开关参数都落地
+      check("C# 安装低级键盘钩子(WH_KEYBOARD_LL=13)", /WH_KEYBOARD_LL = 13/.test(csSrc) && /_kbHookId = SetWindowsHookEx\(WH_KEYBOARD_LL/.test(csSrc));
+      check("C# 识别 VK_BROWSER_BACK/FORWARD", /VK_BROWSER_BACK = 0xA6/.test(csSrc) && /VK_BROWSER_FORWARD = 0xA7/.test(csSrc));
+      check("C# 键盘回调可吞键（返回 1）", (() => {
+        // 按函数体切片断言（不依赖注释长度，中间插注释也不会误报）
+        const at = csSrc.indexOf("static IntPtr KbHookCallback");
+        if (at < 0) return false;
+        const body = csSrc.slice(at, csSrc.indexOf("CallNextHookEx(_kbHookId", at));
+        return body.indexOf('EmitAsync(btn, "vk")') >= 0
+          && body.indexOf("_blockFlag != 0") >= 0
+          && body.indexOf("return (IntPtr)1;") >= 0;
+      })());
+      check("C# 注册消费页原始输入 sink", /RIDEV_INPUTSINK/.test(csSrc) && /RegisterRawInputDevices/.test(csSrc));
+      check("C# 消费页报文扫描仅认 AC_BACK/FORWARD", /HID_USAGE_AC_BACK = 0x0224/.test(csSrc) && /HID_USAGE_AC_FORWARD = 0x0225/.test(csSrc));
+      check("C# -ConsumerKeys 参数解析", /args\[i\] == "-ConsumerKeys"/.test(csSrc));
+      check("C# 重装钩子同时恢复两条钩子", /hooks reinstalled[\s\S]{0,120}keyboard=/.test(csSrc));
+      check("C# _bridgeInit 回报探测器状态", /kbHook/.test(csSrc) && /hidSink/.test(csSrc));
+
+      // 8) 事件源标记贯穿：钩子写 src → JS 读取用于诊断
+      check("C# 事件 JSON 带 src 字段", /Append\(",\\"src\\":\\""\)/.test(csSrc));
+      check("JS 诊断读取 event.src", /_xbuttonSrcLabel\(event && event\.src\)/.test(bridgeSrc));
+
+      // 9) 设置页 UI 与开关联动（兼容模式 = 原两开关合并）
+      const prefSrc = readAddon("content/preferences.js");
+      check("设置页含兼容模式复选框", /id: "wt-xbutton-compat"/.test(prefSrc));
+      check("设置页已移除旧的两个复选框",
+        !/id: "wt-xbutton-block"/.test(prefSrc) && !/id: "wt-xbutton-consumer"/.test(prefSrc));
+      check("复选框回显读 xbuttonCompat", /compat\.checked = data\.xbuttonCompat !== false/.test(prefSrc));
+      check("复选框改动触发 syncBridge", /xbCompat\.addEventListener\("change"[\s\S]{0,300}syncBridge\(\);/.test(prefSrc));
+      check("开启时弹窗（prefs 内，唯一入口）", /function showCompatNotice\(\)/.test(prefSrc)
+        && /data\.xbuttonConsumerNoticeAck = true;/.test(prefSrc) && /showCompatNotice\(\);/.test(prefSrc));
+      check("悬停提示是独立短文案（用户指定的一句话）",
+        /COMPAT_TOOLTIP = "侧键正常时无需开启/.test(prefSrc)
+        && /title: COMPAT_TOOLTIP/.test(prefSrc));
+
+      // 10) 端到端（JS 决策路径）：钩子回写的 _bridgeInit 应被识别并记录探测器状态
+      const savedRefresh = WT._refreshPrefsFromStorage;
+      const savedFire = WT._fireAddWordHotkey;
+      const savedPending = WT._getSelectionFirstPending;
+      try {
+        WT._refreshPrefsFromStorage = () => {};
+        WT._data = { xbuttonCompat: true, xbuttonConsumerNoticeAck: true,
+          addWordHotkeyEnabled: true, addWordHotkeyMode: "xbutton1", selectionFirstEnabled: true };
+        WT._xbuttonBridge.active = true;
+        WT._processXButtonEvent({ _bridgeInit: true, kbHook: true, hidSink: true }, "file");
+        check("_bridgeInit 确认时记录 kbHook/hidSink",
+          WT._xbuttonBridge.confirmed === true && WT._xbuttonBridge.kbHook === true && WT._xbuttonBridge.hidSink === true);
+
+        // 11) 多媒体键形态（src=vk）的事件应走通到「添加单词」触发（此前该形态根本到不了这里）
+        let fired = 0;
+        WT._fireAddWordHotkey = () => { fired++; };
+        WT._getSelectionFirstPending = () => true;
+        WT._xbuttonBridge.lastEventTs = 0;
+        WT._processXButtonEvent({ ts: Date.now(), x1: 1, src: "vk" }, "file");
+        check("src=vk 的侧键事件可触发划词翻译", fired === 1);
+
+        // 12) 同样的事件在「兼容模式关闭」时不会启动（开关真的生效）
+        WT._data.xbuttonCompat = false;
+        WT._xbuttonBridge.lastEventTs = 0;
+        fired = 0;
+        WT._processXButtonEvent({ ts: Date.now(), x1: 1, src: "vk" }, "file");
+        check("关闭兼容模式后不再由该形态触发", fired === 0);
+      } finally {
+        WT._refreshPrefsFromStorage = savedRefresh;
+        WT._fireAddWordHotkey = savedFire;
+        WT._getSelectionFirstPending = savedPending;
+        WT._xbuttonBridge.active = false;
+        WT._xbuttonBridge.confirmed = false;
+        WT._xbuttonBridge.lastEventTs = 0;
+        WT._xbuttonBridge._lastNoteTs = 0;
+      }
+    } catch (e) {
+      check("S12 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
+  // ============================================================
+  // S13 侧键主开关 + 识别绑定 + 实时选区兜底（Phase 13 回归）
+  // 背景（实测日志）：用户按的物理侧键上报 XButton2、绑定是 xbutton1 → 不匹配；
+  // 且缓存 10 秒过期后屏幕上高亮还在却报「没有划词选区」。
+  // ============================================================
+  section("S13 侧键主开关 / 识别 / 选区兜底");
+  if (WT) {
+    try {
+      const bridgeSrc = readAddon("content/scripts/xbutton-bridge.js");
+      const prefSrc = readAddon("content/preferences.js");
+      const hotkeySrc = readAddon("content/scripts/hotkey.js");
+      const savedRefresh = WT._refreshPrefsFromStorage;
+      const savedFire = WT._fireAddWordHotkey;
+      const savedPending = WT._getSelectionFirstPending;
+      const savedRecover = WT._recoverSelectionFirstPending;
+      try {
+        WT._refreshPrefsFromStorage = () => {};
+        WT._xbuttonBridge.active = false;
+        WT._xbuttonBridge.recordUntil = 0;
+        WT._xbuttonBridge.lastRecordButton = 0;
+        WT._xbuttonBridge.lastRecordTs = 0;
+        WT._xbuttonBridge.lastConsumerSync = null;
+
+        // 1) 主开关门控：关闭时绝不装钩子（也不影响其他程序的侧键）
+        WT._data = { xbuttonEnabled: false, xbuttonCompat: true,
+          addWordHotkeyEnabled: true, addWordHotkeyMode: "xbutton1", selectionFirstEnabled: true };
+        check("主开关关闭 → wanted=false", WT._xbuttonHotkeyWanted() === false);
+        WT._data.xbuttonEnabled = true;
+        check("主开关开启 + 侧键模式 → wanted=true", WT._xbuttonHotkeyWanted() === true);
+        WT._data.addWordHotkeyMode = "ctrl";
+        check("键盘模式 → wanted=false", WT._xbuttonHotkeyWanted() === false);
+        WT._data.addWordHotkeyMode = "xbutton-both";
+        check("任意侧键模式 → wanted=true", WT._xbuttonHotkeyWanted() === true);
+        WT._data.addWordHotkeyEnabled = false;
+        check("添加单词关闭 → wanted=false", WT._xbuttonHotkeyWanted() === false);
+        WT._data.addWordHotkeyEnabled = true;
+        WT._data.selectionFirstEnabled = false;
+        check("划词先选关闭 → wanted=false", WT._xbuttonHotkeyWanted() === false);
+
+        // 2) 老数据迁移：已在用侧键的用户升级后不失效，其余默认关闭
+        check("迁移：xbutton1 → xbuttonEnabled=true", CFG.normalize({ addWordHotkeyMode: "xbutton1" }).xbuttonEnabled === true);
+        check("迁移：xbutton-both → true", CFG.normalize({ addWordHotkeyMode: "xbutton-both" }).xbuttonEnabled === true);
+        check("迁移：ctrl → false（默认不接管）", CFG.normalize({ addWordHotkeyMode: "ctrl" }).xbuttonEnabled === false);
+        check("迁移：显式 false 被尊重", CFG.normalize({ addWordHotkeyMode: "xbutton1", xbuttonEnabled: false }).xbuttonEnabled === false);
+        check("xbuttonEnabled 默认值存在", CFG.DEFAULTS.xbuttonEnabled === false);
+
+        // 3) 识别流程：识别期间放行不吞键，识别成功后自动绑定
+        WT._data = { xbuttonEnabled: true, xbuttonCompat: true,
+          addWordHotkeyEnabled: true, addWordHotkeyMode: "ctrl", selectionFirstEnabled: true };
+        check("未识别时 block=1", WT._xbuttonBlockFlag() === 1);
+        WT.startXButtonRecord();
+        check("识别窗口已开启", WT._xbuttonRecordActive() === true);
+        check("录制期间强制吞键 block=1（防 PDF 翻页，用户实测反馈）", WT._xbuttonBlockFlag() === 1);
+        let detectFired = 0;
+        WT._fireAddWordHotkey = () => { detectFired++; };
+        WT._processXButtonEvent({ ts: Date.now(), x2: 1, src: "mouse" }, "file");
+        check("识别：按侧键2 → 自动绑定 xbutton2", WT._data.addWordHotkeyMode === "xbutton2");
+        check("识别：识别期间不触发翻译", detectFired === 0);
+        check("识别：窗口已结束、恢复吞键", WT._xbuttonRecordActive() === false && WT._xbuttonBlockFlag() === 1);
+        check("识别：结果可供设置页回显", WT._xbuttonBridge.lastRecordButton === 2 && WT._xbuttonBridge.lastRecordTs > 0);
+        WT.startXButtonRecord();
+        WT.stopXButtonRecord();
+        check("识别可手动取消", WT._xbuttonRecordActive() === false);
+
+        // 4) 状态写入必须是合并语义：局部更新不得抹掉「最近未触发原因」
+        //（覆盖式写入正是状态一直是黑盒的原因之一：启动/停止会清掉诊断信息）
+        const realPrefs = Z.Prefs;
+        try {
+          const store = {};
+          Z.Prefs = {
+            get: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null),
+            set: (k, v) => { store[k] = v; },
+            clear: (k) => { delete store[k]; },
+          };
+          const KEY = "extensions.zotero.wordtranslator.xbuttonBridgeStatus";
+          WT._updateXButtonBridgeStatus({ lastNote: "收到侧键，但绑定不匹配", lastNoteTs: 111 });
+          WT._updateXButtonBridgeStatus({ hookError: null });
+          const merged = JSON.parse(store[KEY]);
+          check("局部状态更新保留 lastNote（诊断信息不再被抹掉）",
+            merged.lastNote === "收到侧键，但绑定不匹配" && merged.lastNoteTs === 111 && !("running" in merged));
+          WT._updateXButtonBridgeStatus({ hookError: null });
+          check("显式 null 可清除字段（启动成功清掉旧错误）",
+            !Object.prototype.hasOwnProperty.call(JSON.parse(store[KEY]), "error"));
+          WT._updateXButtonBridgeStatus({ hookError: "hook-init-failed" });
+          WT._updateXButtonBridgeStatus({ hookError: null });
+          check("错误字段可写可清", !Object.prototype.hasOwnProperty.call(JSON.parse(store[KEY]), "error"));
+        } finally {
+          Z.Prefs = realPrefs;
+        }
+        check("启动成功时清掉旧错误（error:null 调用点在位）",
+          /hookError: null/.test(bridgeSrc));
+
+        // 5) 实时选区兜底：缓存过期但屏幕仍有高亮 → 照常触发
+        WT._data = { xbuttonEnabled: true, xbuttonCompat: true,
+          addWordHotkeyEnabled: true, addWordHotkeyMode: "xbutton2", selectionFirstEnabled: true };
+        WT._xbuttonBridge.active = true; // 侧键模式要求桥接运行中（_addWordHotkeyActive 的实际前置）
+        WT._getSelectionFirstPending = () => null;
+        let fireCount = 0;
+        WT._fireAddWordHotkey = () => { fireCount++; };
+        WT._recoverSelectionFirstPending = () => ({ reader: {}, text: "gibberellins", doc: null, append: null, time: Date.now(), recovered: true });
+        WT._xbuttonBridge.lastEventTs = 0;
+        WT._processXButtonEvent({ ts: Date.now(), x2: 1, src: "mouse" }, "file");
+        check("缓存过期但屏幕仍有选区 → 正常触发（本次修复点）", fireCount === 1);
+        WT._xbuttonBridge.lastEventTs = 0;
+        fireCount = 0;
+        WT._recoverSelectionFirstPending = () => null;
+        WT._processXButtonEvent({ ts: Date.now(), x2: 1, src: "mouse" }, "file");
+        check("无缓存且无实时选区 → 不触发（不引入误触发）", fireCount === 0);
+        check("hotkey 路径也接入了选区兜底", /_getSelectionFirstPending\(\) \|\| this\._recoverSelectionFirstPending/.test(hotkeySrc));
+        check("兜底读 PDF iframe 的实时选区", /_getHotkeyTargetWindow\(reader\)[\s\S]{0,400}getSelection/.test(hotkeySrc));
+        check("兜底有候选阅读器链（当前标签 → 最近划词）",
+          /_lastSelectionPopup && this\._lastSelectionPopup\.reader/.test(hotkeySrc)
+          && /_selectionFirstPending && this\._selectionFirstPending\.reader/.test(hotkeySrc));
+        check("兜底仍走选区合法性校验", /_recoverSelectionFirstPending[\s\S]{0,2000}_isSelectionTextAllowed/.test(hotkeySrc));
+
+        // 5) 诊断可见：未触发原因带「按下的键 vs 绑定的键」，并指向绑定框
+        check("不匹配提示点名按下的键与绑定", /收到" \+ btnLabel[\s\S]{0,120}_xbuttonModeLabel\(mode\)/.test(bridgeSrc));
+        check("不匹配提示指向「绑定侧键」框", /请在设置页的「绑定侧键」框重新绑定/.test(bridgeSrc));
+        check("事件形态标签仍在诊断中使用", /_xbuttonSrcLabel\(/.test(bridgeSrc));
+
+        // 6) 设置页结构：开关 → 绑定框 + 任意侧键勾选 → 实时状态（录制框方案 A）
+        check("设置页含主开关", /id: "wt-xbutton-enabled"/.test(prefSrc));
+        check("绑定区默认隐藏（开关开启后才出现）", /id: "wt-xbutton-config-wrap"[^)]*display:none/.test(prefSrc));
+        check("主开关控制绑定区显隐", /wrap\.style\.display = \(data\.xbuttonEnabled === true\)/.test(prefSrc));
+        check("设置页含「绑定侧键」录制框", /id: "wt-xbutton-bind-box"/.test(prefSrc));
+        check("绑定框 tooltip 指导录制", /点击后按一下你的侧键，自动绑定为翻译键/.test(prefSrc));
+        check("设置页含「任意侧键」勾选框", /id: "wt-xbutton-any"/.test(prefSrc));
+        check("勾选「任意侧键」前记住具体绑定（取消时恢复）", /data\.xbuttonPrevBind = data\.addWordHotkeyMode/.test(prefSrc));
+        check("绑定框点击启动录制", /WT\.startXButtonRecord\(\)/.test(prefSrc));
+        check("录制中再点一次可取消（Esc 同）", /WT\.stopXButtonRecord\(\)/.test(prefSrc));
+        check("设置页含实时状态行", /id: "wt-xbutton-status-line"/.test(prefSrc));
+        check("状态轮询已启动且有清理钩子", /startXbuttonStatusPoll\(\)/.test(prefSrc) && /addEventListener\("unload"/.test(prefSrc));
+        check("主开关改动触发 syncBridge", /xbEnabled\.addEventListener\("change"[\s\S]{0,800}syncBridge\(\);/.test(prefSrc));
+        check("开启主开关时默认绑定侧键 1（勾选「任意侧键」才切 xbutton-both）",
+          /xbEnabled\.addEventListener\("change"[\s\S]{0,400}data\.addWordHotkeyMode = "xbutton1"/.test(prefSrc));
+        check("勾选框在绑定框上方（先勾选策略、后展示具体绑定）",
+          (() => {
+            const anyAt = prefSrc.indexOf('id: "wt-xbutton-any"');
+            const boxAt = prefSrc.indexOf('id: "wt-xbutton-bind-box"');
+            return anyAt > 0 && boxAt > anyAt;
+          })());
+        check("任意侧键文案不再用「两颗」（用户反馈歧义）",
+          prefSrc.indexOf("两颗都触发") < 0 && bridgeSrc.indexOf("两颗都触发") < 0
+            && /任意侧键（侧键 1 \/ 侧键 2 均可触发）/.test(prefSrc));
+        check("成功触发只占一行：最近一次侧键触发：XButtonN（时间）",
+          /最近一次侧键触发：" \+ st\.lastBtn \+ \(when \? "（" \+ when \+ "）" : ""\)/.test(prefSrc));
+        check("未触发原因下方带触发自检三步",
+          /触发检测：① 选中单词 → ② 按下绑定的侧键 → ③ 观察是否翻译/.test(prefSrc));
+        check("未触发文案不再引导回 PDF（自检行承担步骤说明）",
+          bridgeSrc.indexOf("请先在 PDF/网页中划选单词") < 0);
+      } finally {
+        WT._refreshPrefsFromStorage = savedRefresh;
+        WT._fireAddWordHotkey = savedFire;
+        WT._getSelectionFirstPending = savedPending;
+        WT._recoverSelectionFirstPending = savedRecover;
+        WT._xbuttonBridge.active = false;
+        WT._xbuttonBridge.confirmed = false;
+        WT._xbuttonBridge.recordUntil = 0;
+        WT._xbuttonBridge.lastRecordButton = 0;
+        WT._xbuttonBridge.lastRecordTs = 0;
+        WT._xbuttonBridge.lastEventTs = 0;
+        WT._xbuttonBridge._lastNoteTs = 0;
+      }
+    } catch (e) {
+      check("S13 执行无异常", false, e && (e.stack || e.message));
+    }
+  }
+
+  // ============================================================
+  // S14 兼容模式语义 + 识别窗口复位 + 设置页合并/展开（Phase 14 回归）
+  // 背景：① 原「吞掉侧键」与「捕获多媒体键形态侧键」两个开关合并为一个
+  // 「兼容模式」；② 识别窗口自然到期此前没有任何回调，钩子会一直停在放行参数；
+  // ③ 关闭兼容模式时识别必须仍能「看见」多媒体键形态，否则会把
+  // 「信号存在但没监听」误判成「该键没发出任何信号」。
+  // ============================================================
+  section("S14 兼容模式 / 识别窗口复位 / 设置页合并");
+  if (WT) {
+    try {
+      const bridgeSrc = readAddon("content/scripts/xbutton-bridge.js");
+      const prefSrc = readAddon("content/preferences.js");
+      const csSrc = readAddon("content/scripts/bridge-hook.cs");
+      const schemaSrc = readAddon("content/scripts/config-schema.js");
+      // manifest 打包完整性：曾因 PowerShell Set-Content -Encoding UTF8 写入 BOM
+      // （Zotero JSON 解析失败 → 「无法安装/可能不兼容」），同时中文字段被按 GBK
+      // 误读成乱码。这里把「无 BOM + JSON 可解析 + 必需字段齐全」固化为断言。
+      {
+        const mfBytes = fs.readFileSync(path.join(base, "manifest.json"));
+        const mfNoBom = !(mfBytes[0] === 0xEF && mfBytes[1] === 0xBB && mfBytes[2] === 0xBF);
+        let mfJson = null;
+        try { mfJson = JSON.parse(mfBytes.toString("utf8")); } catch (e) {}
+        check("manifest 无 BOM（UTF-8 裸码）", mfNoBom);
+        check("manifest 是合法 JSON", !!mfJson);
+        check("manifest 版本号为 b 版格式", !!mfJson && /^6\.\d+\.\d+b\d+$/.test(mfJson.version || ""));
+        check("manifest 必需字段齐全（id/update_url/strict_max_version）",
+          !!mfJson && !!mfJson.applications && !!mfJson.applications.zotero
+            && !!mfJson.applications.zotero.id && !!mfJson.applications.zotero.update_url
+            && !!mfJson.applications.zotero.strict_max_version);
+        check("manifest 中文名无乱码（mojibake 特征字节检查）",
+          !!mfJson && typeof mfJson.name === "string" && mfJson.name.indexOf("翻译") >= 0);
+      }
+      const savedRefresh = WT._refreshPrefsFromStorage;
+      const savedSync = WT.syncXButtonBridge;
+      const savedToast = WT._showXButtonToast;
+      const savedFire = WT._fireAddWordHotkey;
+      const savedPending = WT._getSelectionFirstPending;
+      const savedStatusWrite = WT._updateXButtonBridgeStatus;
+      let lastStatusWrite = null;
+      try {
+        WT._refreshPrefsFromStorage = () => {};
+        WT._showXButtonToast = () => {};
+        // 拦截状态写盘：断言写入内容即可，避免测试触碰真实偏好存储
+        WT._updateXButtonBridgeStatus = (o) => { lastStatusWrite = o; return true; };
+        WT._data = { xbuttonEnabled: true, xbuttonCompat: true,
+          addWordHotkeyEnabled: true, addWordHotkeyMode: "xbutton-both", selectionFirstEnabled: true };
+        WT._xbuttonBridge.recordUntil = 0;
+        WT._xbuttonBridge.lastRecordTs = 0;
+        WT._xbuttonBridge.lastEventTs = 0;
+
+        // 1) 测试功能已清理（自动诊断通道 + 无 UI 入口的测试函数都不再存在）
+        check("已移除 -Diag 诊断通道（C#）", !/"-Diag"/.test(csSrc) && !/_diagFlag/.test(csSrc));
+        check("已移除诊断采集与异步写入", !/DiagAsync/.test(csSrc) && !/\[input\] key vk=0x/.test(csSrc));
+        check("已移除 JS 侧诊断代码", !/_summarizeBridgeDiag|_readTextFileTail|_bridgeDebugLogPath|_xbuttonDiagFlag/.test(bridgeSrc));
+        check("已移除无入口的 testXButtonEvent", !/testXButtonEvent/.test(bridgeSrc));
+        check("_bridgeInit 仍回报 mouseHook（属可观测性，非测试功能）",
+          /\\"mouseHook\\":/.test(csSrc) && /MakeInitJson\(bool ok, string error, bool kbHook, bool hidSink, bool mouseHook\)/.test(csSrc));
+        check("识别窗口到期复位保留（属 bug 修复）", /_armRecordExpiry\(\)/.test(bridgeSrc)
+          && /record started \(/.test(bridgeSrc));
+
+        // 2) 兼容模式：一个开关同时决定 block 与 consumer（两条通道同开同关）
+        WT._data.xbuttonCompat = true;
+        check("兼容模式开 → 吞键 + 捕获多媒体键形态",
+          WT._xbuttonBlockFlag() === 1 && WT._xbuttonConsumerKeysFlag() === 1);
+        WT._data.xbuttonCompat = false;
+        check("兼容模式关 → 不吞键 + 只认标准侧键",
+          WT._xbuttonBlockFlag() === 0 && WT._xbuttonConsumerKeysFlag() === 0);
+
+        // 3) 识别期间强制开启观察通道（观察 ≠ 接管：block 仍为 0）
+        WT._xbuttonBridge.recordUntil = Date.now() + 5000;
+        check("识别期间强制开启观察通道", WT._xbuttonConsumerKeysFlag() === 1);
+        check("录制期间一律吞键（block=1）", WT._xbuttonBlockFlag() === 1);
+        // 兼容模式关闭 + 识别到多媒体键形态 → 明确引导开启兼容模式，且不绑定
+        WT._xbuttonBridge.lastEventTs = 0;
+        WT._processXButtonEvent({ ts: Date.now(), x1: 1, src: "vk" }, "file");
+        const compatNote = (lastStatusWrite && lastStatusWrite.lastNote) || "";
+        check("识别到多媒体键形态但兼容模式关闭 → 引导开启兼容模式",
+          /兼容模式/.test(compatNote), compatNote);
+        check("此时不把该形态绑定成侧键", WT._data.addWordHotkeyMode === "xbutton-both");
+        check("此时识别窗口立即结束", WT._xbuttonRecordActive() === false);
+
+        // 4) 打开兼容模式后，同一形态可正常识别并绑定
+        WT._data.xbuttonCompat = true;
+        WT._xbuttonBridge.recordUntil = Date.now() + 5000;
+        WT._xbuttonBridge.lastEventTs = 0;
+        WT._processXButtonEvent({ ts: Date.now(), x1: 1, src: "vk" }, "file");
+        check("兼容模式开启后多媒体键形态可识别绑定", WT._data.addWordHotkeyMode === "xbutton1");
+
+        // 5) 识别窗口到期必须复位钩子参数（否则永远停在放行、吞键静默失效）
+        let syncCalls = 0;
+        WT.syncXButtonBridge = () => { syncCalls++; };
+        const realWindow = WT._XBUTTON_RECORD_MS;
+        WT._XBUTTON_RECORD_MS = 60;
+        WT._xbuttonBridge.recordUntil = 0;
+        WT._xbuttonBridge.recordTimer = null;
+        WT.startXButtonRecord();
+        check("识别启动即同步钩子（放行参数）", syncCalls >= 1);
+        check("识别窗口期间 detectActive=true", WT._xbuttonRecordActive() === true);
+        await new Promise((r) => setTimeout(r, 500));
+        check("识别窗口到期后自动结束", WT._xbuttonRecordActive() === false);
+        check("识别窗口到期后复位钩子参数", syncCalls >= 2, "syncCalls=" + syncCalls);
+        check("绑定超时写入可读结论（指向厂商软件/硬件）",
+          /绑定超时/.test(String((lastStatusWrite && lastStatusWrite.lastNote) || "")));
+        WT._XBUTTON_RECORD_MS = realWindow;
+
+        // 5b) 热切换契约：进程活着时配置变化绝不走「杀进程→重启」路径（重启空窗
+        // 曾让侧键漏到系统、PDF 翻页——用户实测 16:18 时段反复出现）。
+        {
+          const savedActive = WT._xbuttonBridge.active;
+          const savedProc = WT._xbuttonBridge.process;
+          const savedFp = WT._xbuttonBridge.fingerprint;
+          const savedStop = WT._stopXButtonBridge;
+          const savedStart = WT._startXButtonBridge;
+          const savedWrite = WT._writeTextFile;
+          let stopped = 0, started = 0, wroteParams = null;
+          WT.syncXButtonBridge = savedSync; // 前面的到期测试留下的计数 stub 已完成使命
+          WT._xbuttonBridge.active = true;
+          WT._xbuttonBridge.process = { pid: 12345 };
+          WT._xbuttonBridge.confirmed = false; // 未确认也必须热切换
+          WT._xbuttonBridge.fingerprint = "stale-fingerprint"; // 强制离开 unchanged 分支
+          if (!WT._xbuttonBridge.eventFile) {
+            WT._xbuttonBridge.eventFile = "C:\\test\\bridge-events.json";
+          }
+          WT._stopXButtonBridge = () => { stopped++; };
+          WT._startXButtonBridge = () => { started++; };
+          WT._writeTextFile = (path, content) => {
+            if (/bridge-params\.json$/.test(path)) wroteParams = content;
+            return true;
+          };
+          WT._xbuttonBridge.recordUntil = Date.now() + 5000;
+          WT.syncXButtonBridge();
+          check("录制开启 → 进程存活即热切换（不杀进程）", stopped === 0 && started === 0);
+          check("参数文件已写入（record=1, block=1）",
+            !!wroteParams && /"record":1/.test(wroteParams) && /"block":1/.test(wroteParams),
+            String(wroteParams));
+          check("参数文件含绑定按钮编号（兼容关时只吞绑定那颗）",
+            !!wroteParams && /"xbutton":\d/.test(wroteParams), String(wroteParams));
+          WT._xbuttonBridge.recordUntil = 0;
+          wroteParams = null;
+          WT.syncXButtonBridge();
+          check("录制结束 → 热切换回常规参数（record=0）",
+            !!wroteParams && /"record":0/.test(wroteParams));
+          WT._xbuttonBridge.active = savedActive;
+          WT._xbuttonBridge.process = savedProc;
+          WT._xbuttonBridge.fingerprint = savedFp;
+          WT._stopXButtonBridge = savedStop;
+          WT._startXButtonBridge = savedStart;
+          WT._writeTextFile = savedWrite;
+        }
+
+        // 6) 识别成功应取消到期定时器（不能过一会儿又把绑定覆盖掉）
+        WT._xbuttonBridge.recordUntil = Date.now() + 60000;
+        WT._armRecordExpiry();
+        check("识别期间存在到期定时器", !!WT._xbuttonBridge.recordTimer);
+        WT._xbuttonBridge.lastEventTs = 0;
+        WT._processXButtonEvent({ ts: Date.now(), x2: 1, src: "mouse" }, "file");
+        check("识别成功后清掉到期定时器", !WT._xbuttonBridge.recordTimer);
+        check("识别成功后绑定为 xbutton2", WT._data.addWordHotkeyMode === "xbutton2");
+
+        // 7) 非识别期间，兼容模式关闭时消费键形态仍被拦截（用户开关有效）
+        WT._xbuttonBridge.recordUntil = 0;
+        WT._xbuttonBridge.lastEventTs = 0;
+        WT._data.xbuttonCompat = false;
+        let consumerFired = 0;
+        WT._fireAddWordHotkey = () => { consumerFired++; };
+        WT._getSelectionFirstPending = () => ({ reader: {}, text: "x", doc: null, append: null, time: Date.now() });
+        WT._xbuttonBridge.active = true;
+        WT._processXButtonEvent({ ts: Date.now(), x1: 1, src: "vk" }, "file");
+        check("兼容模式关闭后消费键形态不再触发", consumerFired === 0);
+
+        // 8) 设置页：兼容模式单开关 + 「识别与状态」展开项 + 状态行并入该块
+        check("设置页只有兼容模式一个开关", /id: "wt-xbutton-compat"/.test(prefSrc)
+          && !/id: "wt-xbutton-block"/.test(prefSrc) && !/id: "wt-xbutton-consumer"/.test(prefSrc));
+        check("设置页含「状态与诊断」展开项标题", /id: "wt-xbutton-diag-head"/.test(prefSrc)
+          && /id: "wt-xbutton-diag-body"/.test(prefSrc));
+        check("展开项可折叠（点击标题切换）",
+          /detectHead\.addEventListener\("click"[\s\S]{0,400}body\.style\.display/.test(prefSrc));
+        const bodyAt = prefSrc.indexOf('id: "wt-xbutton-diag-body"');
+        const statusAt = prefSrc.indexOf('id: "wt-xbutton-status-line"');
+        check("状态行并入展开项（标题与状态在同一块）",
+          bodyAt > 0 && statusAt > bodyAt && (statusAt - bodyAt) < 1200);
+        check("主开关关闭时整块不展开（含展开项）",
+          /wrap\.style\.display = \(data\.xbuttonEnabled === true\) \? "" : "none"/.test(prefSrc));
+        check("状态行显示绑定倒计时", /剩余 " \+ secs \+ " 秒/.test(prefSrc));
+        check("状态行第 1 行含 标准模式/兼容模式 标注",
+          /已生效（" \+ modeLabel \+ "）/.test(prefSrc) && /"兼容模式" : "标准模式"/.test(prefSrc));
+        check("状态行结构化两行（\\n 分行 + pre-line）",
+          /lines\.push\("⚠️ 未触发："/.test(prefSrc) && /lines\.join\("\\n"\)/.test(prefSrc)
+            && /white-space:pre-line/.test(prefSrc));
+        check("状态行未触发原因用结构化 lastReason（旧 lastNote 兜底解析）",
+          /st\.lastReason \|\|/.test(prefSrc) && /未触发:\\s\*/.test(prefSrc));
+        check("侧键按下后的检测提示已取消（不再弹 toast）",
+          (() => {
+            const at = bridgeSrc.indexOf("_xbuttonNoteSkip(reason, event)");
+            return at > 0 && bridgeSrc.indexOf("ProgressWindow", at) < 0
+              || at > 0 && bridgeSrc.slice(at, bridgeSrc.indexOf("},", at)).indexOf("ProgressWindow") < 0;
+          })());
+        check("未触发只记录到状态行（lastBtn/lastReason 结构化）",
+          /lastBtn: detail/.test(bridgeSrc) && /lastReason: String\(reason\)/.test(bridgeSrc));
+        check("录制成功清除过期的未触发警示", /lastReason: null/.test(bridgeSrc));
+        // 四选一闭合：切回键盘模式自动关闭侧键主开关并收回
+        check("选择 Ctrl/Alt/Shift/自定义 时自动关闭侧键主开关",
+          /\["ctrl", "alt", "shift", "custom"\]\.forEach\(\(mode\) => \{[\s\S]{0,600}data\.xbuttonEnabled = false/.test(prefSrc));
+        check("录制自定义键也会关闭侧键主开关",
+          /makeHotkeyRecorder\("wt-addword-hotkey"[\s\S]{0,600}xbuttonEnabled = false/.test(prefSrc));
+        check("设置页对「鼠标钩子未装上」给出提示", /鼠标钩子未装上/.test(prefSrc));
+        check("录制框有 60 秒窗口与 Esc 取消说明", /60 秒内有效，Esc 取消/.test(prefSrc));
+        check("设置页不再有独立的兼容提示段落（已并入悬停提示与弹窗）",
+          !/id: "wt-xbutton-compat-hint"/.test(prefSrc));
+        check("展开项标题已更名为「状态与诊断」", /状态与诊断/.test(prefSrc));
+        // 泛化绑定（三颗及以上侧键的鼠标）：录制收集窗 + 择优 + code 匹配
+        check("录制窗口收集 code 候选并择优（vk 优先于 hid）",
+          /recordCodes\[event\.code\] = true/.test(bridgeSrc)
+            && /const vkCode = Object\.keys\(codes\)\.filter\(\(c\) => c\.indexOf\("vk:"\) === 0\)\[0\] \|\| ""/.test(bridgeSrc)
+            && /const best = vkCode \|\| hidCode/.test(bridgeSrc));
+        check("code 键绑定写回配置（lastRecordCode）", /this\._xbuttonBridge\.lastRecordCode = code \|\| ""/.test(bridgeSrc)
+          && /data\.addWordHotkeyMode = dmode;/.test(bridgeSrc));
+        check("运行期按 code 匹配泛化绑定", /matched = \(event\.code === mode\)/.test(bridgeSrc));
+        check("显式绑定的 code 键不受兼容模式开关拦截", /isBoundCodeEvent/.test(bridgeSrc));
+        check("钩子进程收到 -Record 与 -BindCode 参数",
+          /'-Record','" \+ recordFlag \+ "'/.test(bridgeSrc) && /'-BindCode','" \+ bindCodeQ \+ "'/.test(bridgeSrc));
+        check("指纹含 record 与 bind（录制窗口/绑定键变化需重建进程）",
+          /;record=" \+ \(this\._xbuttonRecordActive\(\) \? 1 : 0\) \+ ";bind=" \+ bindCode/.test(bridgeSrc));
+        check("schema 允许泛化键绑定值（vk:0xNN / hid:0xNNNN）",
+          /vk:0x\[0-9A-F\]\{2\}\|hid:0x\[0-9A-F\]\{4\}/.test(schemaSrc));
+        check("绑定值规范化为大写十六进制（与事件码形态一致）",
+          /canonicalizeKeyMode/.test(schemaSrc));
+      } finally {
+        WT._refreshPrefsFromStorage = savedRefresh;
+        WT.syncXButtonBridge = savedSync;
+        WT._showXButtonToast = savedToast;
+        WT._fireAddWordHotkey = savedFire;
+        WT._getSelectionFirstPending = savedPending;
+        WT._updateXButtonBridgeStatus = savedStatusWrite;
+        try { if (WT._xbuttonBridge.recordTimer) clearTimeout(WT._xbuttonBridge.recordTimer); } catch (e) {}
+        WT._xbuttonBridge.recordTimer = null;
+        WT._xbuttonBridge.recordUntil = 0;
+        WT._xbuttonBridge.lastRecordTs = 0;
+        WT._xbuttonBridge.lastEventTs = 0;
+        WT._xbuttonBridge.active = false;
+      }
+    } catch (e) {
+      check("S14 执行无异常", false, e && (e.stack || e.message));
     }
   }
 
